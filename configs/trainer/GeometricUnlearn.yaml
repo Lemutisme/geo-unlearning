@@ -1,0 +1,17 @@
+defaults:
+  - finetune # Inherits base training arguments like learning_rate, batch_size, etc.
+
+handler: GeometricUnlearn
+
+method_args:
+  geometric_config:
+    distance_mode: "hidden_answer"  # "hidden_answer" or "hidden_question"
+    ema_momentum: 0.99
+    cost_metric: "l2"               # "l2", "l1", or "cosine"
+    hidden_pool: "mean"             # "mean" or "last"
+    mu: 1.0
+    wasserstein_epsilon: 0.1
+    ot_smoothing_eta: 0.05
+    lambda_gp: 0.1
+    gp_target: 1.0
+    gp_topk: 8
