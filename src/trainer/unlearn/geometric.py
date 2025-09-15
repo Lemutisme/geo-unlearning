@@ -21,28 +21,17 @@ class OnlineDistanceBuilder:
 
     @torch.no_grad()
     def update_whitener(self, E: torch.Tensor):
+        # E is the source of truth for the current device
         current_device = E.device
+        
+        # Ensure EMA tensors are on the correct device before the operation
         self._ema_mean = self._ema_mean.to(current_device)
-        self._ema_var  = self._ema_var.to(current_device)
+        self._ema_var = self._ema_var.to(current_device)
 
-        # 更稳的聚合：聚合一阶/二阶矩，避免“直接平均方差”的偏差
-        n = torch.tensor([E.size(0)], device=current_device, dtype=E.dtype)
-        sum_x  = E.sum(dim=0)
-        sum_x2 = (E * E).sum(dim=0)
-
-        # DDP 同步
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
-            torch.distributed.all_reduce(n,     op=torch.distributed.ReduceOp.SUM)
-            torch.distributed.all_reduce(sum_x, op=torch.distributed.ReduceOp.SUM)
-            torch.distributed.all_reduce(sum_x2,op=torch.distributed.ReduceOp.SUM)
-
-        N = n.clamp_min(1.0)
-        mean = sum_x / N
-        var  = (sum_x2 / N) - mean * mean
-        var  = var.clamp_min(0.0)
-
-        self._ema_mean = self.m * self._ema_mean + (1 - self.m) * mean
-        self._ema_var  = self.m * self._ema_var  + (1 - self.m) * var
+        bmean = E.mean(dim=0)
+        bvar  = E.var(dim=0, unbiased=False)
+        self._ema_mean = self.m * self._ema_mean + (1 - self.m) * bmean
+        self._ema_var  = self.m * self._ema_var  + (1 - self.m) * bvar
 
     def whiten(self, E: torch.Tensor) -> torch.Tensor:
         current_device = E.device
@@ -55,13 +44,10 @@ class OnlineDistanceBuilder:
     def update_retain_anchor(self, E_retain_white: torch.Tensor):
         current_device = E_retain_white.device
         rmean = E_retain_white.mean(dim=0)
-
-        # DDP 同步
-        rmean = _ddp_mean(rmean)
-
         if self._anchor is None:
-            self._anchor = rmean.clone().to(current_device)
+            self._anchor = rmean.clone()
         else:
+            # Ensure anchor is on the correct device before the EMA update
             self._anchor = self._anchor.to(current_device)
             self._anchor = self.m * self._anchor + (1 - self.m) * rmean
 
@@ -96,14 +82,6 @@ class OnlineDistanceBuilder:
         C = C - torch.diag_embed(torch.diagonal(C))
         return C
 
-def _ddp_mean(t: torch.Tensor):
-    if t is None:
-        return None
-    if torch.distributed.is_available() and torch.distributed.is_initialized():
-        t = t.clone()
-        torch.distributed.all_reduce(t, op=torch.distributed.ReduceOp.SUM)
-        t /= torch.distributed.get_world_size()
-    return t
 
 class GeometricUnlearn(GradDiff):
     def __init__(self, *args, **kwargs):
@@ -164,22 +142,20 @@ class GeometricUnlearn(GradDiff):
         pi = torch.softmax(M_masked, dim=1)
         return pi
 
-    def _ot_penalty(self, g_for_grad, C, M_logits, target_slope=1.0, eps=1e-6, topk=8):
+    def _ot_penalty(self, g_for_grad, C, M_star, target_slope=1.0, eps=1e-6, topk=8) -> torch.Tensor:
         if g_for_grad.numel() < 2:
             return torch.zeros((), device=g_for_grad.device)
-        # C 已在外部 normalize 过，这里不要再 normalize，避免二次缩放的漂移
-        denom = C.clamp_min(0).sqrt() + eps
-
-        # 用 logits 计算 off-diagonal 概率，且仅保留 topk
+        Cn = self._normalize_cost(C.detach())
+        denom = Cn.clamp_min(0).sqrt() + eps
         with torch.no_grad():
-            pi_off = self._row_softmax_offdiag(M_logits, topk=topk)   # logits -> softmax
+            pi_off = self._row_softmax_offdiag(M_star.detach(), topk=topk)
         gi = g_for_grad.view(-1, 1)
         gj = g_for_grad.view(1, -1)
         slopes = (gj - gi) / denom
-        per_pair = (slopes - target_slope) ** 2
+        per_pair = (slopes - target_slope)**2
         penalty = (per_pair * pi_off).sum() / (pi_off.sum().clamp_min(1e-12))
         return penalty
-
+    
     def _solve_kantorovich_dual(self, g_batch, cost_matrix, epsilon, eta):
         g = g_batch.detach()
         C = cost_matrix.detach()
@@ -189,20 +165,17 @@ class GeometricUnlearn(GradDiff):
         for _ in range(50):
             optimizer.zero_grad()
             lam = F.softplus(lambda_param)
-            M = (g.unsqueeze(0) - lam * C) / eta           # (B,B) logits
-            dual_obj = lam * epsilon + (eta / B) * torch.logsumexp(M, dim=1).sum()
-            dual_obj.backward()
+            M = (g.unsqueeze(0) - lam * C) / eta
+            dual_objective = lam * epsilon + (eta / B) * torch.logsumexp(M, dim=1).sum()
+            dual_objective.backward()
             optimizer.step()
-
         lam_star = F.softplus(lambda_param).detach()
         with torch.no_grad():
-            M_star = (g.unsqueeze(0) - lam_star * C) / eta  # logits
+            M_star = (g.unsqueeze(0) - lam_star * C) / eta
             robust_risk = lam_star * epsilon + (eta / B) * torch.logsumexp(M_star, dim=1).sum()
-            # 列正则化得到列边缘（与你原来的做法一致）
-            pi_star_cols = torch.softmax(M_star.T, dim=1)
-            adv_weights = pi_star_cols.mean(dim=0)          # (B,)
-
-        return robust_risk, adv_weights, M_star
+            pi_star = torch.softmax(M_star.T, dim=1)
+            adv_weights = pi_star.mean(dim=0)
+        return robust_risk, adv_weights, pi_star
 
     def compute_loss(self, model, inputs, return_outputs=False):
         ## Get the actual model object, whether it's wrapped or not
@@ -257,24 +230,32 @@ class GeometricUnlearn(GradDiff):
         # 4) Calculate distance and cost matrix
         d_vec = self.fastdist.dvec_to_anchor(E_f_white, metric="l2")
         C = self.fastdist.pairwise_cost(E_f_white, metric=self.geometric_config.cost_metric)
-        
-        # 5) Compute g(x) and solve dual for adversarial weights
-        # 把 base_g 的尺度对齐到 CE 的中位数
-        with torch.no_grad():
-            ce_med = per_sample_loss.median()                       # 标尺
-            d_med  = (d_vec + 1e-6).median()
-            s = (ce_med / d_med).clamp(0.25, 4.0)                  # 防爆、防塌
-        d_aligned = s * d_vec
-        g_batch = per_sample_loss + self.geometric_config.mu * d_aligned
 
-        robust_risk, adv_weights, M_star = self._solve_kantorovich_dual(
+        # ---- 距离无量纲化：d_hat ~ O(1) ----
+        H = E_f_white.size(1)
+        scale = (2.0 * H) ** 0.5
+        d_hat = d_vec / (scale + 1e-6)
+
+        # 5) Compute g(x) and solve dual for adversarial weights
+        # ---- 自动调 μ：让 μ·median(d_hat) ≈ β·median(CE) ----
+        with torch.no_grad():
+            ce_med = per_sample_loss.median()
+            d_med  = (d_hat + 1e-6).median()
+            beta = getattr(self.geometric_config, "mu_auto_coeff", 0.5)  # 推荐 0.3~0.7
+            mu_max = getattr(self.geometric_config, "mu_max", 0.2)       # 上限避免暴冲
+            mu_eff = (beta * ce_med / d_med).clamp(1e-3, mu_max)
+
+        # 用 d_hat + mu_eff 替换原来的 d_vec + self.geometric_config.mu
+        g_batch = per_sample_loss + mu_eff * d_hat
+
+        robust_risk, adv_weights, pi_star = self._solve_kantorovich_dual(
             g_batch.detach(), C.detach(),
             self.geometric_config.wasserstein_epsilon,
             self.geometric_config.ot_smoothing_eta
         )
 
         # 6) Calculate the final differentiable loss
-        g_batch_for_grad = self._per_sample_ce(f_out.logits, forget_inputs["labels"]) + self.geometric_config.mu * d_vec
+        g_batch_for_grad = self._per_sample_ce(f_out.logits, forget_inputs["labels"]) + mu_eff * d_hat
         robust_forget_risk = torch.sum(adv_weights * g_batch_for_grad)
 
         # 7) KL Anchor on retain set
@@ -287,7 +268,7 @@ class GeometricUnlearn(GradDiff):
         if self.geometric_config.lambda_gp > 0.0:
             C_norm = self._normalize_cost(C)
             gp_pen_raw = self._ot_penalty(
-                g_for_grad=g_batch_for_grad, C=C_norm, M_logits=M_star,
+                g_for_grad=g_batch_for_grad, C=C_norm, M_star=pi_star,
                 target_slope=self.geometric_config.gp_target,
                 topk=self.geometric_config.gp_topk,
             )

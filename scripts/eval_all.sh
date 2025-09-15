@@ -10,7 +10,7 @@ echo "Master Port: $MASTER_PORT"
 export CUDA_VISIBLE_DEVICES=4,6
 
 # --- Configuration ---
-EVAL_DIR="saves/exp/Eval_$(date +%m%d%H%M)" 
+EVAL_DIR="saves/exp/Eval_test" # $(date +%m%d%H%M)" 
 UNLEARN_METHODS=(
     # "GradAscent"
     # "GradDiff"
