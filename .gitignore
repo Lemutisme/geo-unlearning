@@ -181,3 +181,7 @@ cython_debug/
 .idea/
 
 .vscode/
+
+summary_results.csv
+analysis.ipynb
+nohup.out

@@ -10,14 +10,14 @@ defaults: # include all defined metrics files
     - model_utility # populated in the metrics key as metrics.model_utility
     - privleak
     - extraction_strength
-    # - exact_memorization
-    # - mia_min_k_plus_plus
-    # - mia_min_k
-    # - mia_loss
-    # - mia_zlib
-    # - mia_gradnorm
-    # - mia_reference # set reference model path appropriately
-    # - forget_Q_A_gibberish
+    - exact_memorization
+    - mia_min_k_plus_plus
+    - mia_min_k
+    - mia_loss
+    - mia_zlib
+    - mia_gradnorm
+    - mia_reference # set reference model path appropriately
+    - forget_Q_A_gibberish
 
 handler: TOFUEvaluator
 output_dir: ${paths.output_dir} # set to default eval directory
