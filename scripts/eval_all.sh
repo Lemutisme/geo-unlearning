@@ -10,20 +10,20 @@ echo "Master Port: $MASTER_PORT"
 export CUDA_VISIBLE_DEVICES=4,6
 
 # --- Configuration ---
-EVAL_DIR="saves/exp/Eval_test" # $(date +%m%d%H%M)" 
+EVAL_DIR="saves/exp/Eval_base" # $(date +%m%d%H%M)" 
 UNLEARN_METHODS=(
-    # "GradAscent"
-    # "GradDiff"
-    "GeometricUnlearn"
+    "GradAscent"
+    "GradDiff"
+    # "GeometricUnlearn"
     "NPO"
     "SimNPO"
     "DPO"
     "RMU"
-    # "UNDIAL"
-    # "CEU"
-    # "SatImp"
-    # "WGA"
-    # "PDU"
+    "UNDIAL"
+    "CEU"
+    "SatImp"
+    "WGA"
+    "PDU"
 )
 
 per_device_train_batch_size=4
@@ -118,6 +118,9 @@ for method in "${UNLEARN_METHODS[@]}"; do
             task_name=muse_${model}_${data_split}_${method}
             model_path=muse-bench/MUSE-${data_split}_target
 
+            per_device_train_batch_size=2
+            gradient_accumulation_steps=8
+
             echo "--- Running MUSE Task: ${task_name} ---"
             echo "Model: ${model_path}, Data Split: ${data_split}"
 
@@ -181,7 +184,10 @@ for method in "${UNLEARN_METHODS[@]}"; do
         trainer.args.per_device_train_batch_size=1 \
         trainer.args.gradient_accumulation_steps=16 \
         trainer.args.ddp_find_unused_parameters=true \
-        trainer.args.gradient_checkpointing=true
+        trainer.args.gradient_checkpointing=true \
+        ~trainer.method_args.steering_coeff \
+        ~trainer.method_args.module_regex \
+        ~trainer.method_args.trainable_params_regex
 
         # 步骤 2: 评估
         CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \

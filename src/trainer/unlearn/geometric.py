@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 
 from trainer.unlearn.grad_diff import GradDiff
-from trainer.utils import compute_kl_divergence
+from trainer.utils import compute_batch_nll, compute_kl_divergence
 
 class OnlineDistanceBuilder:
     """
@@ -41,7 +41,7 @@ class OnlineDistanceBuilder:
         return (E - ema_mean) / (ema_var + self._eps).sqrt()
 
     @torch.no_grad()
-    def update_retain_anchor(self, E_retain_white: torch.Tensor):
+    def update_retain_anchor(self, E_retain_white):
         current_device = E_retain_white.device
         rmean = E_retain_white.mean(dim=0)
         if self._anchor is None:
@@ -51,34 +51,18 @@ class OnlineDistanceBuilder:
             self._anchor = self._anchor.to(current_device)
             self._anchor = self.m * self._anchor + (1 - self.m) * rmean
 
-    def dvec_to_anchor(self, E_forget_white: torch.Tensor, metric="l2") -> torch.Tensor:
+    def dvec_to_anchor(self, E_forget_white):
         current_device = E_forget_white.device
-        if self._anchor is None:
-            return torch.zeros(E_forget_white.size(0), device=current_device, dtype=E_forget_white.dtype)
-        
-        # Ensure anchor is on the correct device before calculating distance
         anchor = self._anchor.to(current_device)
-        diff = E_forget_white - anchor.unsqueeze(0)
-        if metric == "l2":
-            return diff.norm(dim=1)
-        elif metric == "l1":
-            return diff.abs().sum(dim=1)
-        else:  # cosine
-            num = (E_forget_white * anchor).sum(dim=1)
-            den = E_forget_white.norm(dim=1).clamp_min(1e-8) * anchor.norm().clamp_min(1e-8)
-            return 1 - (num / den)
+        num = (E_forget_white * anchor).sum(dim=1)
+        den = E_forget_white.norm(dim=1).clamp_min(1e-8) * anchor.norm().clamp_min(1e-8)
+        return 1 - (num / den)
 
     # The pairwise_cost method doesn't use internal state, so it doesn't need changes.
-    def pairwise_cost(self, E_white: torch.Tensor, metric="l2") -> torch.Tensor:
-        # ... (no changes needed here)
-        if metric == "l2":
-            C = torch.cdist(E_white, E_white, p=2)
-        elif metric == "l1":
-            C = torch.cdist(E_white, E_white, p=1)
-        else:  # cosine
-            X = F.normalize(E_white, dim=1)
-            C = 1 - X @ X.t()
-            C = C.clamp(min=0)
+    def pairwise_cost(self, E_white):
+        X = F.normalize(E_white, dim=1)
+        C = 1 - X @ X.t()
+        C = C.clamp(min=0)
         C = C - torch.diag_embed(torch.diagonal(C))
         return C
 
@@ -97,20 +81,16 @@ class GeometricUnlearn(GradDiff):
             device=self.model.device,
             dtype=torch.float32,
         )
+        self.simnpo_beta = self.geometric_config.get("simnpo_beta", 4.5)
+        self.simnpo_delta = self.geometric_config.get("simnpo_delta", 0.0)
 
-    def _hidden_embed(self, outputs, labels, mode="hidden_answer", pool="mean"):
+    def _hidden_embed(self, outputs, labels):
         H = outputs.hidden_states[-1]
-        if mode == "hidden_answer":
-            mask = (labels != -100).unsqueeze(-1)
-        else:
-            mask = (labels == -100).unsqueeze(-1)
+        # hidden answer
+        mask = (labels != -100).unsqueeze(-1)
         Hw = H.masked_fill(~mask, 0.0)
         cnt = mask.sum(dim=1).clamp_min(1)
-        if pool == "mean":
-            return Hw.sum(dim=1) / cnt
-        else:
-            idx = mask.squeeze(-1).int().argmax(dim=1)
-            return H[torch.arange(H.size(0), device=H.device), idx, :]
+        return Hw.sum(dim=1) / cnt
 
     def _per_sample_ce(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         ce_tok = F.cross_entropy(
@@ -190,13 +170,18 @@ class GeometricUnlearn(GradDiff):
         # 1) Forward pass on forget set
         f_out = model(**forget_inputs)
         with torch.no_grad():
-            per_sample_loss = self._per_sample_ce(f_out.logits.detach(), forget_inputs["labels"])
+            forget_nll, _ = compute_batch_nll(model, forget_inputs)
+            forget_labels = forget_inputs["labels"]
+            loss_mask = forget_labels != -100
+
+            # 计算每个样本的 SimNPO 损失，但先不求平均
+            per_sample_loss = F.logsigmoid(
+                self.simnpo_beta * (forget_nll / loss_mask.sum(-1) - self.simnpo_delta)
+            ) * 2 / self.simnpo_beta
 
         # 2) Get hidden embeddings and whiten them
         E_f_raw = self._hidden_embed(
             f_out, forget_inputs["labels"],
-            mode=self.geometric_config.distance_mode,
-            pool=self.geometric_config.hidden_pool
         )
 
         # 3) Update whitener and anchor using retain set (if available) or oracle
@@ -205,8 +190,6 @@ class GeometricUnlearn(GradDiff):
                 r_out = model(**retain_inputs)
                 E_r_raw = self._hidden_embed(
                     r_out, retain_inputs["labels"],
-                    mode=self.geometric_config.distance_mode,
-                    pool=self.geometric_config.hidden_pool
                 )
                 self.fastdist.update_whitener(torch.cat([E_f_raw.detach(), E_r_raw.detach()], dim=0))
                 E_r_white = self.fastdist.whiten(E_r_raw)
@@ -216,8 +199,6 @@ class GeometricUnlearn(GradDiff):
                 t_out = self.ref_model(**forget_inputs)
                 E_t_raw = self._hidden_embed(
                     t_out, forget_inputs["labels"],
-                    mode=self.geometric_config.distance_mode,
-                    pool=self.geometric_config.hidden_pool
                 )
                 self.fastdist.update_whitener(torch.cat([E_f_raw.detach(), E_t_raw.detach()], dim=0))
                 E_t_white = self.fastdist.whiten(E_t_raw)
@@ -228,8 +209,8 @@ class GeometricUnlearn(GradDiff):
         E_f_white = self.fastdist.whiten(E_f_raw)
 
         # 4) Calculate distance and cost matrix
-        d_vec = self.fastdist.dvec_to_anchor(E_f_white, metric="l2")
-        C = self.fastdist.pairwise_cost(E_f_white, metric=self.geometric_config.cost_metric)
+        d_vec = self.fastdist.dvec_to_anchor(E_f_white)
+        C = self.fastdist.pairwise_cost(E_f_white)
 
         # ---- 距离无量纲化：d_hat ~ O(1) ----
         H = E_f_white.size(1)
@@ -244,18 +225,26 @@ class GeometricUnlearn(GradDiff):
             beta = getattr(self.geometric_config, "mu_auto_coeff", 0.5)  # 推荐 0.3~0.7
             mu_max = getattr(self.geometric_config, "mu_max", 0.2)       # 上限避免暴冲
             mu_eff = (beta * ce_med / d_med).clamp(1e-3, mu_max)
+            C_off = C[C > 0]
+            C_med = C_off.median() if C_off.numel() else torch.tensor(1.0, device=C.device)
+            rho = getattr(self.geometric_config, "eps_rho", 0.3)  # 推荐 0.2~0.5
+            eps_adapt = rho * C_med
 
         # 用 d_hat + mu_eff 替换原来的 d_vec + self.geometric_config.mu
         g_batch = per_sample_loss + mu_eff * d_hat
 
         robust_risk, adv_weights, pi_star = self._solve_kantorovich_dual(
-            g_batch.detach(), C.detach(),
-            self.geometric_config.wasserstein_epsilon,
-            self.geometric_config.ot_smoothing_eta
+            g_batch.detach(), C.detach(), eps_adapt, self.geometric_config.ot_smoothing_eta
         )
 
         # 6) Calculate the final differentiable loss
-        g_batch_for_grad = self._per_sample_ce(f_out.logits, forget_inputs["labels"]) + mu_eff * d_hat
+        # g_batch_for_grad = self._per_sample_ce(f_out.logits, forget_inputs["labels"]) + mu_eff * d_hat
+        # robust_forget_risk = torch.sum(adv_weights * g_batch_for_grad)
+        forget_nll_for_grad, _ = compute_batch_nll(model, forget_inputs)
+        g_batch_for_grad = F.logsigmoid(
+            self.simnpo_beta * (forget_nll_for_grad / loss_mask.sum(-1) - self.simnpo_delta)
+        ) # * 2 / self.simnpo_beta
+
         robust_forget_risk = torch.sum(adv_weights * g_batch_for_grad)
 
         # 7) KL Anchor on retain set
@@ -277,7 +266,7 @@ class GeometricUnlearn(GradDiff):
             gp_pen = torch.tensor(0.0, device=model.device)
 
         # Final loss
-        loss = -robust_forget_risk + kl_term + gp_pen
+        loss = - 0.25 * robust_forget_risk + kl_term + gp_pen
 
         # Logging
         self.log({
