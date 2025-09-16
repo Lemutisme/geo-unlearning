@@ -39,8 +39,9 @@ class QADataset(Dataset):
         if self.fs_data is None:
             prompt_msgs, response_msgs = [question], [answer]
         else:
-            prompt_msgs = self.fs_data[self.question_key] + [question]
-            response_msgs = self.fs_data[self.answer_key] + [answer]
+            # Explicitly convert the dataset columns to Python lists before concatenation
+            prompt_msgs = list(self.fs_data[self.question_key]) + [question]
+            response_msgs = list(self.fs_data[self.answer_key]) + [answer]
         tokenized_data = preprocess_chat_instance(
             self.tokenizer,
             self.template_args,

@@ -187,7 +187,8 @@ for method in "${UNLEARN_METHODS[@]}"; do
         trainer.args.gradient_checkpointing=true \
         ~trainer.method_args.steering_coeff \
         ~trainer.method_args.module_regex \
-        ~trainer.method_args.trainable_params_regex
+        ~trainer.method_args.trainable_params_regex \
+        trainer.method_args.retain_loss_type=NLL
 
         # 步骤 2: 评估
         CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \

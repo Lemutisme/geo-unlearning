@@ -23,7 +23,7 @@ class OnlineDistanceBuilder:
     def update_whitener(self, E: torch.Tensor):
         # E is the source of truth for the current device
         current_device = E.device
-        
+
         # Ensure EMA tensors are on the correct device before the operation
         self._ema_mean = self._ema_mean.to(current_device)
         self._ema_var = self._ema_var.to(current_device)
@@ -71,6 +71,9 @@ class GeometricUnlearn(GradDiff):
     def __init__(self, *args, **kwargs):
         # Pop your custom config from kwargs
         self.geometric_config = kwargs.pop('geometric_config')
+        if self.geometric_config.loss == "simnpo":
+            self.simnpo_config = kwargs.pop("simnpo_config")
+
         super().__init__(*args, **kwargs)
         if self.ref_model is None:
             self.ref_model = self._prepare_ref_model(self.model)
@@ -81,8 +84,6 @@ class GeometricUnlearn(GradDiff):
             device=self.model.device,
             dtype=torch.float32,
         )
-        self.simnpo_beta = self.geometric_config.get("simnpo_beta", 4.5)
-        self.simnpo_delta = self.geometric_config.get("simnpo_delta", 0.0)
 
     def _hidden_embed(self, outputs, labels):
         H = outputs.hidden_states[-1]
@@ -122,10 +123,36 @@ class GeometricUnlearn(GradDiff):
         pi = torch.softmax(M_masked, dim=1)
         return pi
 
+    def _cal_distance_n_cost(self, per_sample_loss, E_f_white):
+        d_vec = self.fastdist.dvec_to_anchor(E_f_white)
+        C = self.fastdist.pairwise_cost(E_f_white)
+
+        # ---- 距离无量纲化：d_hat ~ O(1) ----
+        H = E_f_white.size(1)
+        scale = (2.0 * H) ** 0.5
+        d_hat = d_vec / (scale + 1e-6)
+
+        # 5) Compute g(x) and solve dual for adversarial weights
+        # ---- 自动调 μ：让 μ·median(d_hat) ≈ β·median(CE) ----
+        with torch.no_grad():
+            ce_med = per_sample_loss.median()
+            d_med  = (d_hat + 1e-6).median()
+            beta = getattr(self.geometric_config, "mu_auto_coeff", 0.5)
+            mu_max = getattr(self.geometric_config, "mu_max", 0.2)
+            mu_eff = (beta * ce_med / d_med).clamp(1e-3, mu_max)
+            C_off = C[C > 0]
+            C_med = C_off.median() if C_off.numel() else torch.tensor(1.0, device=C.device)
+            rho = getattr(self.geometric_config, "eps_rho", 0.3)  # 推荐 0.2~0.5
+            eps_adapt = rho * C_med
+        return d_hat, C, mu_eff, eps_adapt
+
     def _ot_penalty(self, g_for_grad, C, M_star, target_slope=1.0, eps=1e-6, topk=8) -> torch.Tensor:
         if g_for_grad.numel() < 2:
             return torch.zeros((), device=g_for_grad.device)
-        Cn = self._normalize_cost(C.detach())
+        target_slope = self.geometric_config.gp_target
+        topk = self.geometric_config.gp_topk
+        C_norm = self._normalize_cost(C)
+        Cn = self._normalize_cost(C_norm.detach())
         denom = Cn.clamp_min(0).sqrt() + eps
         with torch.no_grad():
             pi_off = self._row_softmax_offdiag(M_star.detach(), topk=topk)
@@ -134,7 +161,7 @@ class GeometricUnlearn(GradDiff):
         slopes = (gj - gi) / denom
         per_pair = (slopes - target_slope)**2
         penalty = (per_pair * pi_off).sum() / (pi_off.sum().clamp_min(1e-12))
-        return penalty
+        return self.geometric_config.lambda_gp * penalty
     
     def _solve_kantorovich_dual(self, g_batch, cost_matrix, epsilon, eta):
         g = g_batch.detach()
@@ -160,29 +187,28 @@ class GeometricUnlearn(GradDiff):
     def compute_loss(self, model, inputs, return_outputs=False):
         ## Get the actual model object, whether it's wrapped or not
         unwrapped_model = self.accelerator.unwrap_model(model)
-
         # Enable hidden state outputs on the actual model
         unwrapped_model.config.output_hidden_states = True
 
         forget_inputs = inputs["forget"]
         retain_inputs = inputs.get("retain")
 
-        # 1) Forward pass on forget set
+        # 1) Forward pass using per sample loss on forget set
         f_out = model(**forget_inputs)
         with torch.no_grad():
-            forget_nll, _ = compute_batch_nll(model, forget_inputs)
-            forget_labels = forget_inputs["labels"]
-            loss_mask = forget_labels != -100
+            if self.geometric_config.loss == "simnpo":
+                forget_nll, _ = compute_batch_nll(model, forget_inputs)
+                forget_labels = forget_inputs["labels"]
+                loss_mask = forget_labels != -100
 
-            # 计算每个样本的 SimNPO 损失，但先不求平均
-            per_sample_loss = F.logsigmoid(
-                self.simnpo_beta * (forget_nll / loss_mask.sum(-1) - self.simnpo_delta)
-            ) * 2 / self.simnpo_beta
+                per_sample_loss = F.logsigmoid(
+                    self.simnpo_config.beta * (forget_nll / loss_mask.sum(-1) - self.simnpo_config.delta)
+                ) * 2 / self.simnpo_config.beta
+            else:
+                per_sample_loss = self._per_sample_ce(f_out.logits, forget_inputs["labels"])
 
         # 2) Get hidden embeddings and whiten them
-        E_f_raw = self._hidden_embed(
-            f_out, forget_inputs["labels"],
-        )
+        E_f_raw = self._hidden_embed(f_out, forget_inputs["labels"])
 
         # 3) Update whitener and anchor using retain set (if available) or oracle
         if retain_inputs:
@@ -209,71 +235,36 @@ class GeometricUnlearn(GradDiff):
         E_f_white = self.fastdist.whiten(E_f_raw)
 
         # 4) Calculate distance and cost matrix
-        d_vec = self.fastdist.dvec_to_anchor(E_f_white)
-        C = self.fastdist.pairwise_cost(E_f_white)
+        d_hat, C, mu_eff, eps_adapt = self._cal_distance_n_cost(per_sample_loss, E_f_white)
 
-        # ---- 距离无量纲化：d_hat ~ O(1) ----
-        H = E_f_white.size(1)
-        scale = (2.0 * H) ** 0.5
-        d_hat = d_vec / (scale + 1e-6)
-
-        # 5) Compute g(x) and solve dual for adversarial weights
-        # ---- 自动调 μ：让 μ·median(d_hat) ≈ β·median(CE) ----
-        with torch.no_grad():
-            ce_med = per_sample_loss.median()
-            d_med  = (d_hat + 1e-6).median()
-            beta = getattr(self.geometric_config, "mu_auto_coeff", 0.5)  # 推荐 0.3~0.7
-            mu_max = getattr(self.geometric_config, "mu_max", 0.2)       # 上限避免暴冲
-            mu_eff = (beta * ce_med / d_med).clamp(1e-3, mu_max)
-            C_off = C[C > 0]
-            C_med = C_off.median() if C_off.numel() else torch.tensor(1.0, device=C.device)
-            rho = getattr(self.geometric_config, "eps_rho", 0.3)  # 推荐 0.2~0.5
-            eps_adapt = rho * C_med
-
-        # 用 d_hat + mu_eff 替换原来的 d_vec + self.geometric_config.mu
+        # 5) Calculate g(x) = \ell + μ·d_hat
         g_batch = per_sample_loss + mu_eff * d_hat
-
-        robust_risk, adv_weights, pi_star = self._solve_kantorovich_dual(
+        _, adv_weights, pi_star = self._solve_kantorovich_dual(
             g_batch.detach(), C.detach(), eps_adapt, self.geometric_config.ot_smoothing_eta
         )
 
         # 6) Calculate the final differentiable loss
-        # g_batch_for_grad = self._per_sample_ce(f_out.logits, forget_inputs["labels"]) + mu_eff * d_hat
-        # robust_forget_risk = torch.sum(adv_weights * g_batch_for_grad)
-        forget_nll_for_grad, _ = compute_batch_nll(model, forget_inputs)
-        g_batch_for_grad = F.logsigmoid(
-            self.simnpo_beta * (forget_nll_for_grad / loss_mask.sum(-1) - self.simnpo_delta)
-        ) # * 2 / self.simnpo_beta
+        if self.geometric_config.loss == "simnpo":
+            forget_nll_for_grad, _ = compute_batch_nll(model, forget_inputs)
+            g_batch_for_grad = F.logsigmoid(
+                self.simnpo_config.beta * (forget_nll_for_grad / loss_mask.sum(-1) - self.simnpo_config.delta)
+            ) * 2 / self.simnpo_config.beta
+        else:
+            g_batch_for_grad = self._per_sample_ce(f_out.logits, forget_inputs["labels"]) + mu_eff * d_hat
 
         robust_forget_risk = torch.sum(adv_weights * g_batch_for_grad)
 
-        # 7) KL Anchor on retain set
-        if retain_inputs and self.ref_model:
-            kl_term, _ = compute_kl_divergence(model, self.ref_model, retain_inputs)
-        else:
-            kl_term = torch.tensor(0.0, device=model.device)
-
-        # 8) Gradient Penalty
-        if self.geometric_config.lambda_gp > 0.0:
-            C_norm = self._normalize_cost(C)
-            gp_pen_raw = self._ot_penalty(
-                g_for_grad=g_batch_for_grad, C=C_norm, M_star=pi_star,
-                target_slope=self.geometric_config.gp_target,
-                topk=self.geometric_config.gp_topk,
-            )
-            gp_pen = self.geometric_config.lambda_gp * gp_pen_raw
-        else:
-            gp_pen = torch.tensor(0.0, device=model.device)
-
-        # Final loss
-        loss = - 0.25 * robust_forget_risk + kl_term + gp_pen
+        # 7) Get the final loss by adding retain loss and OT penalty
+        retain_loss = self.compute_retain_loss(model, retain_inputs)
+        ot_pen = self._ot_penalty(g_for_grad=g_batch_for_grad, C=C, M_star=pi_star)
+        loss = - self.gamma * robust_forget_risk + self.alpha * retain_loss + ot_pen
 
         # Logging
         self.log({
             "train/loss": loss.item(),
             "train/robust_forget_risk": -robust_forget_risk.item(),
-            "train/kl_anchor": kl_term.item(),
-            "train/gp_penalty": gp_pen.item()
+            "train/retain_loss": retain_loss.item(),
+            "train/ot_penalty": ot_pen.item()
         })
 
         return (loss, f_out) if return_outputs else loss

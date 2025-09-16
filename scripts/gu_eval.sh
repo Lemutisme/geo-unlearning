@@ -7,17 +7,17 @@
 export MASTER_PORT=$(python -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()")
 echo "Master Port: $MASTER_PORT"
 
-export CUDA_VISIBLE_DEVICES=2,7
+export CUDA_VISIBLE_DEVICES=4,6
 
 # --- Configuration ---
-EVAL_DIR="saves/exp/Eval_geosimnpo4" # $(date +%m%d%H%M)" 
+EVAL_DIR="saves/exp/Eval_geosimnpo7" # $(date +%m%d%H%M)" 
 UNLEARN_METHODS=(
     "GeometricUnlearn"
     # "GradAscent"
     # "GradDiff"
-    "NPO"
+    # "NPO"
     "SimNPO"
-    "DPO"
+    # "DPO"
     # "RMU"
     # "UNDIAL"
     # "CEU"
@@ -29,7 +29,7 @@ UNLEARN_METHODS=(
 per_device_train_batch_size=4
 gradient_accumulation_steps=4
 NUM_GPUS=2
-EVAL_GPU=2
+EVAL_GPU=4
 
 # 创建评估目录，如果它不存在的话
 mkdir -p ${EVAL_DIR}
@@ -131,8 +131,8 @@ for method in "${UNLEARN_METHODS[@]}"; do
             model.model_args.pretrained_model_name_or_path=${model_path} \
             data_split=${data_split} \
             retain_logs_path=saves/eval/muse_${model}_${data_split}_retrain/MUSE_EVAL.json \
-            trainer.args.per_device_train_batch_size=1 \
-            trainer.args.gradient_accumulation_steps=16 \
+            trainer.args.per_device_train_batch_size=4 \
+            trainer.args.gradient_accumulation_steps=4 \
             trainer.args.ddp_find_unused_parameters=true \
             trainer.args.gradient_checkpointing=true
 
@@ -178,8 +178,8 @@ for method in "${UNLEARN_METHODS[@]}"; do
         task_name=${task_name} \
         model=${wmdp_model} \
         data_split=${data_split} \
-        trainer.args.per_device_train_batch_size=1 \
-        trainer.args.gradient_accumulation_steps=16 \
+        trainer.args.per_device_train_batch_size=4 \
+        trainer.args.gradient_accumulation_steps=4 \
         trainer.args.ddp_find_unused_parameters=true \
         trainer.args.gradient_checkpointing=true \
         ~trainer.method_args.steering_coeff \

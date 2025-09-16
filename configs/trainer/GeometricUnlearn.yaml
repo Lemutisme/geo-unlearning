@@ -4,11 +4,18 @@ defaults:
 handler: GeometricUnlearn
 
 method_args:
+  alpha: 1.0
+  gamma: 0.5
+  retain_loss_type: KL
   geometric_config:
     ema_momentum: 0.99
-    mu: 1.0
-    wasserstein_epsilon: 0.1
     ot_smoothing_eta: 0.05
     lambda_gp: 0.5
     gp_target: 1.0
     gp_topk: 8
+    loss: "simnpo"
+
+  # all other config options are inherited from SimNPO
+  simnpo_config:
+    delta: 0.0 # gamma in https://github.com/OPTML-Group/Unlearn-Simple/blob/main/TOFU/config/forget.yaml
+    beta: 4.5
