@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==============================================================================
-# Comprehensive Evaluation Script for Unlearning Methods
+# Comprehensive Evaluation Script for GeometricUnlearn Method with Various Losses
 # ==============================================================================
 
 export MASTER_PORT=$(python -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()")
@@ -9,80 +9,82 @@ echo "Master Port: $MASTER_PORT"
 
 export CUDA_VISIBLE_DEVICES=4,6
 
-# --- Configuration ---
-EVAL_DIR="saves/exp/Eval_geosimnpo7" # $(date +%m%d%H%M)" 
-UNLEARN_METHODS=(
-    "GeometricUnlearn"
-    # "GradAscent"
-    # "GradDiff"
-    # "NPO"
-    "SimNPO"
-    # "DPO"
-    # "RMU"
-    # "UNDIAL"
-    # "CEU"
-    # "SatImp"
-    # "WGA"
-    # "PDU"
-)
-
+# --- 可配置参数 ---
 per_device_train_batch_size=4
 gradient_accumulation_steps=4
 NUM_GPUS=2
-EVAL_GPU=4
+EVAL_GPU=6
 
-# 创建评估目录，如果它不存在的话
+EVAL_DIR="saves/exp/Eval_geotest" # $(date +%m%d%H%M)"
+# --- 新增：定义要测试的 Geometric Unlearn 内部损失函数 ---
+# 您可以在这里添加或删除损失函数，例如 "ce", "simnpo", "dpo" 等
+LOSS_FUNCTIONS=(
+    "ce"
+    "npo"
+    "simnpo"
+    "dpo"
+)
+
 mkdir -p ${EVAL_DIR}
 
 ###################################################################################################
 # TOFU Benchmark Evaluation
 ###################################################################################################
-for method in "${UNLEARN_METHODS[@]}"; do
-    echo "================================================="
-    echo "Starting ${method} on TOFU Benchmark"
-    echo "================================================="
+echo "================================================="
+echo "Starting GeometricUnlearn on TOFU Benchmark"
+echo "================================================="
 
-    tofu_models=(
-        "Llama-3.2-1B-Instruct"
-        # "Llama-3.2-3B-Instruct"
-        # "Llama-3.1-8B-Instruct"
-    )
+tofu_models=(
+    "Llama-3.2-1B-Instruct"
+    "Llama-2-7b-hf"
+)
+tofu_splits=(
+    "forget10 holdout10 retain90"
+    "forget05 holdout05 retain95"
+    "forget01 holdout01 retain99"
+)
 
-    tofu_splits=(
-        #"forget10 holdout10 retain90"
-        "forget05 holdout05 retain95"
-        # "forget01 holdout01 retain99"
-    )
-
+# --- 修改：在原有循环内增加对 LOSS_FUNCTIONS 的循环 ---
+for loss_func in "${LOSS_FUNCTIONS[@]}"; do
     for model in "${tofu_models[@]}"; do
         for split in "${tofu_splits[@]}"; do
+
             forget_split=$(echo $split | cut -d' ' -f1)
             holdout_split=$(echo $split | cut -d' ' -f2)
             retain_split=$(echo $split | cut -d' ' -f3)
 
-            task_name=tofu_${model}_${forget_split}_${method}
+            # --- 修改：动态构建 task_name，加入损失函数信息 ---
+            task_name=tofu_${model}_${forget_split}_GeometricUnlearn_${loss_func}
             model_path=open-unlearning/tofu_${model}_full
 
             echo "--- Running TOFU Task: ${task_name} ---"
-            echo "Model: ${model_path}, Forget Split: ${forget_split}"
+            echo "Model: ${model_path}, Forget Split: ${forget_split}, Loss: ${loss_func}"
+            
+            # --- 新增：根据损失类型选择 experiment 配置文件 (处理DPO等特殊情况) ---
+            if [ "$loss_func" = "dpo" ] || [ "$loss_func" = "altpo" ]; then
+                experiment_config="unlearn/tofu/idk.yaml"
+            else
+                experiment_config="unlearn/tofu/default"
+            fi
 
-            # Unlearn
+            # 步骤 1: 使用您的 GeometricUnlearn 方法进行遗忘训练
             accelerate launch --config_file configs/accelerate/default_config.yaml --main_process_port $MASTER_PORT --num_processes $NUM_GPUS \
             src/train.py --config-name=unlearn.yaml \
-            experiment=unlearn/tofu/default \
-            trainer=${method} \
+            experiment=${experiment_config} \
+            trainer=GeometricUnlearn \
             task_name=${task_name} \
             model=${model} \
             model.model_args.pretrained_model_name_or_path=${model_path} \
             forget_split=${forget_split} \
             retain_split=${retain_split} \
-            retain_logs_path=saves/eval/tofu_${model}_${retain_split}/TOFU_EVAL.json \
+            retain_logs_path=saves/eval/GU/tofu_${model}_${retain_split}/TOFU_EVAL.json \
             trainer.args.per_device_train_batch_size=$per_device_train_batch_size \
             trainer.args.gradient_accumulation_steps=$gradient_accumulation_steps \
             trainer.args.ddp_find_unused_parameters=true \
-            trainer.args.gradient_checkpointing=true
+            trainer.args.gradient_checkpointing=true \
+            ++trainer.method_args.geometric_config.loss=${loss_func} # --- 修改：通过命令行覆盖损失函数 ---
 
-            # 步骤 2: 评估
+            # 步骤 2: 评估刚刚经过遗忘训练的模型
             CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \
             experiment=eval/tofu/default.yaml \
             task_name=${task_name} \
@@ -99,9 +101,10 @@ done
 ###################################################################################################
 # MUSE Benchmark Evaluation
 ###################################################################################################
-for method in "${UNLEARN_METHODS[@]}"; do
+
+for loss_func in "${LOSS_FUNCTIONS[@]}"; do
     echo "================================================="
-    echo "Starting ${method} on MUSE Benchmark"
+    echo "Starting ${loss_func} on MUSE Benchmark"
     echo "================================================="
 
     muse_models=(
@@ -115,7 +118,7 @@ for method in "${UNLEARN_METHODS[@]}"; do
     for model in "${muse_models[@]}"; do
         for data_split in "${muse_data_splits[@]}"; do
 
-            task_name=muse_${model}_${data_split}_${method}
+            task_name=muse_${model}_${data_split}_GeometricUnlearn_${loss_func}
             model_path=muse-bench/MUSE-${data_split}_target
 
             echo "--- Running MUSE Task: ${task_name} ---"
@@ -125,7 +128,7 @@ for method in "${UNLEARN_METHODS[@]}"; do
             accelerate launch --config_file configs/accelerate/default_config.yaml --main_process_port $MASTER_PORT --num_processes $NUM_GPUS \
             src/train.py --config-name=unlearn.yaml \
             experiment=unlearn/muse/default \
-            trainer=${method} \
+            trainer=GeometricUnlearn \
             task_name=${task_name} \
             model=${model} \
             model.model_args.pretrained_model_name_or_path=${model_path} \
@@ -134,7 +137,8 @@ for method in "${UNLEARN_METHODS[@]}"; do
             trainer.args.per_device_train_batch_size=4 \
             trainer.args.gradient_accumulation_steps=4 \
             trainer.args.ddp_find_unused_parameters=true \
-            trainer.args.gradient_checkpointing=true
+            trainer.args.gradient_checkpointing=true \
+            ++trainer.method_args.geometric_config.loss=${loss_func}
 
             # 步骤 2: 评估
             CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \
@@ -152,19 +156,20 @@ done
 ###################################################################################################
 # WMDP Benchmark Evaluation
 ###################################################################################################
-for method in "${UNLEARN_METHODS[@]}"; do
+for loss_func in "${LOSS_FUNCTIONS[@]}"; do
     echo "================================================="
     echo "Starting ${method} on WMDP Benchmark"
     echo "================================================="
 
     wmdp_data_splits=(
         "cyber"
-        # "bio" 
+        "bio" 
+        "chem"
     )
     wmdp_model="zephyr-7b-beta"
 
     for data_split in "${wmdp_data_splits[@]}"; do
-        task_name=wmdp_${wmdp_model}_${data_split}_${method}
+        task_name=wmdp_${wmdp_model}_${data_split}_GeometricUnlearn_${loss_func}
         model_path=wmdp-bench/WMDP-${data_split}_target
 
         echo "--- Running WMDP Task: ${task_name} ---"
@@ -174,7 +179,7 @@ for method in "${UNLEARN_METHODS[@]}"; do
         accelerate launch --config_file configs/accelerate/default_config.yaml --main_process_port $MASTER_PORT --num_processes $NUM_GPUS \
         src/train.py --config-name=unlearn.yaml \
         experiment=unlearn/wmdp/default \
-        trainer=${method} \
+        trainer=GeometricUnlearn \
         task_name=${task_name} \
         model=${wmdp_model} \
         data_split=${data_split} \
@@ -182,9 +187,7 @@ for method in "${UNLEARN_METHODS[@]}"; do
         trainer.args.gradient_accumulation_steps=4 \
         trainer.args.ddp_find_unused_parameters=true \
         trainer.args.gradient_checkpointing=true \
-        ~trainer.method_args.steering_coeff \
-        ~trainer.method_args.module_regex \
-        ~trainer.method_args.trainable_params_regex
+        ++trainer.method_args.geometric_config.loss=${loss_func}
 
         # 步骤 2: 评估
         CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \

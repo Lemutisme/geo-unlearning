@@ -7,10 +7,10 @@
 export MASTER_PORT=$(python -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()")
 echo "Master Port: $MASTER_PORT"
 
-export CUDA_VISIBLE_DEVICES=4,6
+export CUDA_VISIBLE_DEVICES=6,7
 
 # --- Configuration ---
-EVAL_DIR="saves/exp/Eval_base" # $(date +%m%d%H%M)" 
+EVAL_DIR="saves/exp/Eval_baseline" # $(date +%m%d%H%M)" 
 UNLEARN_METHODS=(
     "GradAscent"
     "GradDiff"
@@ -29,7 +29,7 @@ UNLEARN_METHODS=(
 per_device_train_batch_size=4
 gradient_accumulation_steps=4
 NUM_GPUS=2
-EVAL_GPU=4
+EVAL_GPU=6
 
 # 创建评估目录，如果它不存在的话
 mkdir -p ${EVAL_DIR}
@@ -53,6 +53,15 @@ for method in "${UNLEARN_METHODS[@]}"; do
         "forget05 holdout05 retain95"
         "forget01 holdout01 retain99"
     )
+    if [ "$trainer" = "DPO" ] || [ "$trainer" = "AltPO" ]; then
+        # 如果是 DPO 或 AltPO，这些方法需要偏好数据集 (e.g., idk 或 alternate)
+        experiment="unlearn/tofu/idk.yaml"
+        echo "Trainer is ${trainer}, selecting preference-based experiment: ${experiment}"
+    else
+        # 对于其他所有方法，使用默认的 unlearning 配置
+        experiment="unlearn/tofu/default"
+        echo "Trainer is ${trainer}, selecting default experiment: ${experiment}"
+    fi
 
     for model in "${tofu_models[@]}"; do
         for split in "${tofu_splits[@]}"; do
@@ -69,7 +78,7 @@ for method in "${UNLEARN_METHODS[@]}"; do
             # Unlearn
             accelerate launch --config_file configs/accelerate/default_config.yaml --main_process_port $MASTER_PORT --num_processes $NUM_GPUS \
             src/train.py --config-name=unlearn.yaml \
-            experiment=unlearn/tofu/default \
+            experiment=${experiment} \
             trainer=${method} \
             task_name=${task_name} \
             model=${model} \
@@ -162,7 +171,8 @@ for method in "${UNLEARN_METHODS[@]}"; do
 
     wmdp_data_splits=(
         "cyber"
-        # "bio" 
+        "bio" 
+        "chem"
     )
     wmdp_model="zephyr-7b-beta"
 
@@ -181,14 +191,10 @@ for method in "${UNLEARN_METHODS[@]}"; do
         task_name=${task_name} \
         model=${wmdp_model} \
         data_split=${data_split} \
-        trainer.args.per_device_train_batch_size=1 \
-        trainer.args.gradient_accumulation_steps=16 \
+        trainer.args.per_device_train_batch_size=2 \
+        trainer.args.gradient_accumulation_steps=8 \
         trainer.args.ddp_find_unused_parameters=true \
         trainer.args.gradient_checkpointing=true \
-        ~trainer.method_args.steering_coeff \
-        ~trainer.method_args.module_regex \
-        ~trainer.method_args.trainable_params_regex \
-        trainer.method_args.retain_loss_type=NLL
 
         # 步骤 2: 评估
         CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \

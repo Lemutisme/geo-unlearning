@@ -1,23 +1,25 @@
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 from trainer.unlearn.grad_diff import GradDiff
-from trainer.utils import compute_batch_nll, compute_kl_divergence
+from trainer.utils import compute_batch_nll
 
 class OnlineDistanceBuilder:
     """
     Online distance builder adapted for multi-GPU training.
     """
-    def __init__(self, hidden_size: int, momentum: float = 0.99, device=None, dtype=torch.float32):
+    def __init__(self, hidden_size: int, momentum: float = 0.99, device=None, dtype=torch.float32,
+                 freeze_anchor: bool = True):
         self.initial_device = device or torch.device("cpu")
         self.dtype = dtype
         H = hidden_size
         self.m = momentum
-        # Initialize on the initial device, but they will be moved as needed.
         self._ema_mean = torch.zeros(H, device=self.initial_device, dtype=self.dtype)
         self._ema_var  = torch.ones(H,  device=self.initial_device, dtype=self.dtype)
         self._anchor = None
         self._eps = 1e-8
+        self._freeze_anchor = freeze_anchor
 
     @torch.no_grad()
     def update_whitener(self, E: torch.Tensor):
@@ -27,7 +29,6 @@ class OnlineDistanceBuilder:
         # Ensure EMA tensors are on the correct device before the operation
         self._ema_mean = self._ema_mean.to(current_device)
         self._ema_var = self._ema_var.to(current_device)
-
         bmean = E.mean(dim=0)
         bvar  = E.var(dim=0, unbiased=False)
         self._ema_mean = self.m * self._ema_mean + (1 - self.m) * bmean
@@ -42,23 +43,23 @@ class OnlineDistanceBuilder:
 
     @torch.no_grad()
     def update_retain_anchor(self, E_retain_white):
+        # Freeze-after-first if configured
         current_device = E_retain_white.device
         rmean = E_retain_white.mean(dim=0)
         if self._anchor is None:
-            self._anchor = rmean.clone()
-        else:
-            # Ensure anchor is on the correct device before the EMA update
+            self._anchor = rmean.clone().to(current_device)
+        elif not self._freeze_anchor:
             self._anchor = self._anchor.to(current_device)
             self._anchor = self.m * self._anchor + (1 - self.m) * rmean
 
     def dvec_to_anchor(self, E_forget_white):
+        # distance to anchor: cosine
         current_device = E_forget_white.device
         anchor = self._anchor.to(current_device)
         num = (E_forget_white * anchor).sum(dim=1)
         den = E_forget_white.norm(dim=1).clamp_min(1e-8) * anchor.norm().clamp_min(1e-8)
         return 1 - (num / den)
 
-    # The pairwise_cost method doesn't use internal state, so it doesn't need changes.
     def pairwise_cost(self, E_white):
         X = F.normalize(E_white, dim=1)
         C = 1 - X @ X.t()
@@ -71,8 +72,9 @@ class GeometricUnlearn(GradDiff):
     def __init__(self, *args, **kwargs):
         # Pop your custom config from kwargs
         self.geometric_config = kwargs.pop('geometric_config')
-        if self.geometric_config.loss == "simnpo":
-            self.simnpo_config = kwargs.pop("simnpo_config")
+        self.simnpo_config = kwargs.pop("simnpo_config")
+        self.npo_config = kwargs.pop("npo_config")
+        self.dpo_config = kwargs.pop("dpo_config", None)
 
         super().__init__(*args, **kwargs)
         if self.ref_model is None:
@@ -92,14 +94,6 @@ class GeometricUnlearn(GradDiff):
         Hw = H.masked_fill(~mask, 0.0)
         cnt = mask.sum(dim=1).clamp_min(1)
         return Hw.sum(dim=1) / cnt
-
-    def _per_sample_ce(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        ce_tok = F.cross_entropy(
-            logits.permute(0, 2, 1), labels, reduction="none", ignore_index=-100
-        )
-        mask = (labels != -100)
-        denom = mask.sum(dim=1).clamp_min(1)
-        return (ce_tok * mask).sum(dim=1) / denom
 
     def _normalize_cost(self, C: torch.Tensor) -> torch.Tensor:
         Cn = C.clone()
@@ -146,43 +140,137 @@ class GeometricUnlearn(GradDiff):
             eps_adapt = rho * C_med
         return d_hat, C, mu_eff, eps_adapt
 
-    def _ot_penalty(self, g_for_grad, C, M_star, target_slope=1.0, eps=1e-6, topk=8) -> torch.Tensor:
+    def _ot_penalty(self, g_for_grad, C, M_star, target_slope=1.0, eps=1e-8, topk=8) -> torch.Tensor:
+        # Use cost (not sqrt) as denominator per doc; weight pairs by row-softmax over M_star with masked diagonal
         if g_for_grad.numel() < 2:
             return torch.zeros((), device=g_for_grad.device)
-        target_slope = self.geometric_config.gp_target
-        topk = self.geometric_config.gp_topk
-        C_norm = self._normalize_cost(C)
-        Cn = self._normalize_cost(C_norm.detach())
-        denom = Cn.clamp_min(0).sqrt() + eps
+        target_slope = getattr(self.geometric_config, "gp_target", 1.0)
+        topk = getattr(self.geometric_config, "gp_topk", 8)
+        Cn = self._normalize_cost(C.detach())
+        denom = Cn + eps
         with torch.no_grad():
             pi_off = self._row_softmax_offdiag(M_star.detach(), topk=topk)
         gi = g_for_grad.view(-1, 1)
         gj = g_for_grad.view(1, -1)
         slopes = (gj - gi) / denom
-        per_pair = (slopes - target_slope)**2
+        per_pair = (slopes - target_slope) ** 2
         penalty = (per_pair * pi_off).sum() / (pi_off.sum().clamp_min(1e-12))
         return self.geometric_config.lambda_gp * penalty
-    
+
     def _solve_kantorovich_dual(self, g_batch, cost_matrix, epsilon, eta):
+        # Fix: return M_star (score matrix), and compute row-softmax π(j|i), then column-marginal adv weights
         g = g_batch.detach()
         C = cost_matrix.detach()
-        lambda_param = torch.nn.Parameter(torch.tensor(1.0, device=g.device))
-        optimizer = torch.optim.Adam([lambda_param], lr=0.1)
+        lam_param = torch.nn.Parameter(torch.tensor(1.0, device=g.device))
+        opt = torch.optim.Adam([lam_param], lr=0.1)
         B = g.numel()
+        big_neg = -1e9
+
         for _ in range(50):
-            optimizer.zero_grad()
-            lam = F.softplus(lambda_param)
-            M = (g.unsqueeze(0) - lam * C) / eta
-            dual_objective = lam * epsilon + (eta / B) * torch.logsumexp(M, dim=1).sum()
-            dual_objective.backward()
-            optimizer.step()
-        lam_star = F.softplus(lambda_param).detach()
+            opt.zero_grad()
+            lam = F.softplus(lam_param)
+            M = (g.unsqueeze(0) - lam * C) / eta                 # shape [B, B], row i, col j
+            # mask diagonal to avoid self-transport
+            M_masked = M.masked_fill(torch.eye(B, device=M.device, dtype=torch.bool), big_neg)
+            dual = lam * epsilon + (eta / B) * torch.logsumexp(M_masked, dim=1).sum()
+            dual.backward()
+            opt.step()
+
         with torch.no_grad():
+            lam_star = F.softplus(lam_param)
             M_star = (g.unsqueeze(0) - lam_star * C) / eta
+            M_star = M_star.masked_fill(torch.eye(B, device=M_star.device, dtype=torch.bool), big_neg)
             robust_risk = lam_star * epsilon + (eta / B) * torch.logsumexp(M_star, dim=1).sum()
-            pi_star = torch.softmax(M_star.T, dim=1)
-            adv_weights = pi_star.mean(dim=0)
-        return robust_risk, adv_weights, pi_star
+            pi_row = torch.softmax(M_star, dim=1)                 # π(j|i)
+            adv_weights = pi_row.mean(dim=0)                      # \bar a_j = (1/n) sum_i π(j|i)
+        return robust_risk, adv_weights, M_star
+
+    def compute_activation_loss(self, activation1, activation2, mask):
+        squared_diff = torch.nn.functional.mse_loss(
+            activation1, activation2, reduction="none"
+        )  # Shape (b, s, d)
+        expanded_mask = mask.unsqueeze(-1).expand_as(squared_diff)  # Shape: [b, s, d]
+        squared_diff_sum = (
+            (squared_diff * expanded_mask).mean(dim=2).sum(dim=(1))
+        )  # Shape: [b, 1]
+        num_tokens = mask.sum(dim=-1, keepdim=True)  # Sum over seq_len, Shape: [b, 1]
+        return (squared_diff_sum / num_tokens)
+    
+    def _per_sample_loss(self, model, forget_inputs, f_out):
+        if self.geometric_config.loss == "simnpo":
+            forget_loss, _ = compute_batch_nll(model, forget_inputs)
+            forget_labels = forget_inputs["labels"]
+            loss_mask = forget_labels != -100
+            per_sample_loss = F.logsigmoid(
+                self.simnpo_config.beta * (forget_loss / loss_mask.sum(-1) - self.simnpo_config.delta)
+            ) * 2 / self.simnpo_config.beta
+        elif self.geometric_config.loss == "npo":
+            # NPO loss is the negative log-likelihood ratio against a reference model.
+            forget_loss, _ = compute_batch_nll(model, forget_inputs)
+            with torch.no_grad():
+                ref_forget_loss, _ = compute_batch_nll(self.ref_model, forget_inputs)
+            log_ratio = -(forget_loss - ref_forget_loss)
+            per_sample_loss = F.logsigmoid(self.npo_config.beta * log_ratio) * 2 / self.npo_config.beta
+        elif self.geometric_config.loss == "dpo":
+            # DPO requires 'original' and 'alternate' inputs for chosen and rejected responses.
+            original_inputs = forget_inputs["original"]
+            alternate_inputs = forget_inputs["alternate"]
+            
+            win_loss, _ = compute_batch_nll(model, alternate_inputs)
+            lose_loss, _ = compute_batch_nll(model, original_inputs)
+            with torch.no_grad():
+                ref_win_loss, _ = compute_batch_nll(self.ref_model, alternate_inputs)
+                ref_lose_loss, _ = compute_batch_nll(self.ref_model, original_inputs)
+
+            win_log_ratio = -(win_loss - ref_win_loss)
+            lose_log_ratio = -(lose_loss - ref_lose_loss)
+            per_sample_loss = F.logsigmoid(self.dpo_config.beta * (win_log_ratio - lose_log_ratio)) * 2 / self.dpo_config.beta
+        elif self.geometric_config.loss == "rmu":
+            # RMU minimizes the distance between forget activations and a control vector.
+            model_forget_activations, _ = self.forward_with_cache(
+                model, forget_inputs, self.model_module, no_grad=False
+            )
+            control_vec = self.get_control_vector(model_forget_activations.shape[-1])
+            control_vec = control_vec.to(
+                dtype=model_forget_activations.dtype, device=model_forget_activations.device
+            )
+            control_vec = control_vec.expand_as(model_forget_activations)
+            mask = forget_inputs["labels"] != -100
+            per_sample_loss = self.compute_activation_loss(
+                model_forget_activations, control_vec, mask, reduction='none' 
+            )
+        elif self.geometric_config.loss == "undial":
+            # UNDIAL uses KL divergence against a reference model with adjusted logits.
+            logits = f_out.logits
+            with torch.no_grad():
+                ref_logits = self.ref_model(**forget_inputs).logits
+
+            shift_labels = forget_inputs["labels"][..., 1:].contiguous()
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_ref_logits = ref_logits[..., :-1, :].contiguous()
+            
+            mask = torch.zeros_like(shift_ref_logits)
+            batch_idx = torch.arange(mask.shape[0]).view(-1, 1, 1)
+            seq_idx = torch.arange(mask.shape[1]).view(1, -1, 1)
+            mask[batch_idx, seq_idx, shift_labels.unsqueeze(-1)] = 1.0
+
+            pre_softmax = shift_ref_logits - mask * self.undial_config.beta
+            soft_label = F.softmax(pre_softmax, dim=-1)
+
+            loss_fct = nn.CrossEntropyLoss(reduction="none")
+            per_sample_loss = loss_fct(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                soft_label.view(-1, soft_label.size(-1)),
+            ).view(shift_logits.size(0), -1).mean(dim=1)
+        else:
+            logits = f_out.logits
+            ce_tok = F.cross_entropy(
+                logits.permute(0, 2, 1), forget_inputs["labels"], reduction="none", ignore_index=-100
+            )
+            mask = (forget_inputs["labels"] != -100)
+            denom = mask.sum(dim=1).clamp_min(1)
+            per_sample_loss = (ce_tok * mask).sum(dim=1) / denom
+        return per_sample_loss
 
     def compute_loss(self, model, inputs, return_outputs=False):
         ## Get the actual model object, whether it's wrapped or not
@@ -196,16 +284,7 @@ class GeometricUnlearn(GradDiff):
         # 1) Forward pass using per sample loss on forget set
         f_out = model(**forget_inputs)
         with torch.no_grad():
-            if self.geometric_config.loss == "simnpo":
-                forget_nll, _ = compute_batch_nll(model, forget_inputs)
-                forget_labels = forget_inputs["labels"]
-                loss_mask = forget_labels != -100
-
-                per_sample_loss = F.logsigmoid(
-                    self.simnpo_config.beta * (forget_nll / loss_mask.sum(-1) - self.simnpo_config.delta)
-                ) * 2 / self.simnpo_config.beta
-            else:
-                per_sample_loss = self._per_sample_ce(f_out.logits, forget_inputs["labels"])
+            per_sample_loss = self._per_sample_loss(model, forget_inputs, f_out)
 
         # 2) Get hidden embeddings and whiten them
         E_f_raw = self._hidden_embed(f_out, forget_inputs["labels"])
@@ -220,7 +299,7 @@ class GeometricUnlearn(GradDiff):
                 self.fastdist.update_whitener(torch.cat([E_f_raw.detach(), E_r_raw.detach()], dim=0))
                 E_r_white = self.fastdist.whiten(E_r_raw)
                 self.fastdist.update_retain_anchor(E_r_white.detach())
-        elif self.ref_model:
+        else:
             with torch.no_grad():
                 t_out = self.ref_model(**forget_inputs)
                 E_t_raw = self._hidden_embed(
@@ -229,8 +308,6 @@ class GeometricUnlearn(GradDiff):
                 self.fastdist.update_whitener(torch.cat([E_f_raw.detach(), E_t_raw.detach()], dim=0))
                 E_t_white = self.fastdist.whiten(E_t_raw)
                 self.fastdist.update_retain_anchor(E_t_white.detach())
-        else: # Fallback
-            self.fastdist.update_whitener(E_f_raw.detach())
 
         E_f_white = self.fastdist.whiten(E_f_raw)
 
@@ -239,24 +316,18 @@ class GeometricUnlearn(GradDiff):
 
         # 5) Calculate g(x) = \ell + μ·d_hat
         g_batch = per_sample_loss + mu_eff * d_hat
-        _, adv_weights, pi_star = self._solve_kantorovich_dual(
-            g_batch.detach(), C.detach(), eps_adapt, self.geometric_config.ot_smoothing_eta
+        _, adv_weights, M_star = self._solve_kantorovich_dual(
+            g_batch, C, eps_adapt, self.geometric_config.ot_smoothing_eta
         )
 
         # 6) Calculate the final differentiable loss
-        if self.geometric_config.loss == "simnpo":
-            forget_nll_for_grad, _ = compute_batch_nll(model, forget_inputs)
-            g_batch_for_grad = F.logsigmoid(
-                self.simnpo_config.beta * (forget_nll_for_grad / loss_mask.sum(-1) - self.simnpo_config.delta)
-            ) * 2 / self.simnpo_config.beta
-        else:
-            g_batch_for_grad = self._per_sample_ce(f_out.logits, forget_inputs["labels"]) + mu_eff * d_hat
+        g_batch_for_grad = self._per_sample_loss(model, forget_inputs, f_out) + mu_eff * d_hat
 
         robust_forget_risk = torch.sum(adv_weights * g_batch_for_grad)
 
         # 7) Get the final loss by adding retain loss and OT penalty
         retain_loss = self.compute_retain_loss(model, retain_inputs)
-        ot_pen = self._ot_penalty(g_for_grad=g_batch_for_grad, C=C, M_star=pi_star)
+        ot_pen = self._ot_penalty(g_for_grad=g_batch_for_grad, C=C, M_star=M_star)
         loss = - self.gamma * robust_forget_risk + self.alpha * retain_loss + ot_pen
 
         # Logging
