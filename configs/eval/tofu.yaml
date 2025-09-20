@@ -7,6 +7,7 @@ defaults: # include all defined metrics files
     - forget_quality
     - forget_Q_A_Prob
     - forget_Q_A_ROUGE
+    - forget_Truth_Ratio
     - model_utility # populated in the metrics key as metrics.model_utility
     - privleak
     - extraction_strength
@@ -15,6 +16,15 @@ defaults: # include all defined metrics files
     - mia_min_k
     - mia_loss
     - mia_zlib
+    - ra_Q_A_Prob
+    - ra_Q_A_ROUGE
+    - ra_Truth_Ratio
+    - retain_Q_A_Prob
+    - retain_Q_A_ROUGE
+    - retain_Truth_Ratio
+    - wf_Q_A_Prob
+    - wf_Q_A_ROUGE
+    - wf_Truth_Ratio
     # - mia_gradnorm
     # - mia_reference # set reference model path appropriately
     # - forget_Q_A_gibberish

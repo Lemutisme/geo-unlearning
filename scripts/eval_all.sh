@@ -7,23 +7,23 @@
 export MASTER_PORT=$(python -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()")
 echo "Master Port: $MASTER_PORT"
 
-export CUDA_VISIBLE_DEVICES=6,7
+export CUDA_VISIBLE_DEVICES=5,6
 
 # --- Configuration ---
-EVAL_DIR="saves/exp/Eval_baseline" # $(date +%m%d%H%M)" 
+EVAL_DIR="saves/exp/Eval_UNDIAL" # $(date +%m%d%H%M)" 
 UNLEARN_METHODS=(
-    "GradAscent"
-    "GradDiff"
-    # "GeometricUnlearn"
-    "NPO"
-    "SimNPO"
-    "DPO"
-    "RMU"
+    # "GradAscent"
+    # "GradDiff"
+    # # "GeometricUnlearn"
+    # "NPO"
+    # "SimNPO"
+    # "DPO"
+    # "RMU"
     "UNDIAL"
-    "CEU"
-    "SatImp"
-    "WGA"
-    "PDU"
+    # "CEU"
+    # "SatImp"
+    # "WGA"
+    # "PDU"
 )
 
 per_device_train_batch_size=4
@@ -55,7 +55,7 @@ for method in "${UNLEARN_METHODS[@]}"; do
     )
     if [ "$trainer" = "DPO" ] || [ "$trainer" = "AltPO" ]; then
         # 如果是 DPO 或 AltPO，这些方法需要偏好数据集 (e.g., idk 或 alternate)
-        experiment="unlearn/tofu/idk.yaml"
+        experiment="unlearn/tofu/idk"
         echo "Trainer is ${trainer}, selecting preference-based experiment: ${experiment}"
     else
         # 对于其他所有方法，使用默认的 unlearning 配置

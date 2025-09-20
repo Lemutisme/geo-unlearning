@@ -7,22 +7,26 @@
 export MASTER_PORT=$(python -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()")
 echo "Master Port: $MASTER_PORT"
 
-export CUDA_VISIBLE_DEVICES=4,6
+export CUDA_VISIBLE_DEVICES=2,4
 
 # --- 可配置参数 ---
 per_device_train_batch_size=4
 gradient_accumulation_steps=4
 NUM_GPUS=2
-EVAL_GPU=6
+EVAL_GPU=4
 
-EVAL_DIR="saves/exp/Eval_geotest" # $(date +%m%d%H%M)"
+EVAL_DIR="saves/exp/Eval_GU_exp_woR/$(date +%m%d%H%M)"
 # --- 新增：定义要测试的 Geometric Unlearn 内部损失函数 ---
 # 您可以在这里添加或删除损失函数，例如 "ce", "simnpo", "dpo" 等
 LOSS_FUNCTIONS=(
-    "ce"
+    "graddiff"
+    "ceu"
     "npo"
     "simnpo"
     "dpo"
+    "undial"
+    "wga"
+    "satimp"
 )
 
 mkdir -p ${EVAL_DIR}
@@ -36,7 +40,8 @@ echo "================================================="
 
 tofu_models=(
     "Llama-3.2-1B-Instruct"
-    "Llama-2-7b-hf"
+    "Llama-3.2-3B-Instruct"
+    "Llama-3.1-8B-Instruct"
 )
 tofu_splits=(
     "forget10 holdout10 retain90"
@@ -62,7 +67,7 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
             
             # --- 新增：根据损失类型选择 experiment 配置文件 (处理DPO等特殊情况) ---
             if [ "$loss_func" = "dpo" ] || [ "$loss_func" = "altpo" ]; then
-                experiment_config="unlearn/tofu/idk.yaml"
+                experiment_config="unlearn/tofu/idk"
             else
                 experiment_config="unlearn/tofu/default"
             fi
@@ -82,7 +87,9 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
             trainer.args.gradient_accumulation_steps=$gradient_accumulation_steps \
             trainer.args.ddp_find_unused_parameters=true \
             trainer.args.gradient_checkpointing=true \
-            ++trainer.method_args.geometric_config.loss=${loss_func} # --- 修改：通过命令行覆盖损失函数 ---
+            +trainer.args.gradient_checkpointing_kwargs.use_reentrant=false \
+            trainer.method_args.geometric_config.loss=${loss_func} \
+            trainer.method_args.alpha=0
 
             # 步骤 2: 评估刚刚经过遗忘训练的模型
             CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \
@@ -164,7 +171,6 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
     wmdp_data_splits=(
         "cyber"
         "bio" 
-        "chem"
     )
     wmdp_model="zephyr-7b-beta"
 

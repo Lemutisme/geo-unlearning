@@ -185,3 +185,5 @@ cython_debug/
 summary_results.csv
 analysis.ipynb
 nohup.out
+
+*.csv
