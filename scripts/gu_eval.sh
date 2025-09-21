@@ -7,15 +7,17 @@
 export MASTER_PORT=$(python -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()")
 echo "Master Port: $MASTER_PORT"
 
-export CUDA_VISIBLE_DEVICES=2,4
+export CUDA_VISIBLE_DEVICES=6,7
+
+gp=0.01
 
 # --- 可配置参数 ---
 per_device_train_batch_size=4
 gradient_accumulation_steps=4
 NUM_GPUS=2
-EVAL_GPU=4
+EVAL_GPU=6
 
-EVAL_DIR="saves/exp/Eval_GU_exp_woR/$(date +%m%d%H%M)"
+EVAL_DIR="saves/exp/Eval_GU_exp_OT_KL/$(date +%m%d%H%M)"
 # --- 新增：定义要测试的 Geometric Unlearn 内部损失函数 ---
 # 您可以在这里添加或删除损失函数，例如 "ce", "simnpo", "dpo" 等
 LOSS_FUNCTIONS=(
@@ -51,15 +53,50 @@ tofu_splits=(
 
 # --- 修改：在原有循环内增加对 LOSS_FUNCTIONS 的循环 ---
 for loss_func in "${LOSS_FUNCTIONS[@]}"; do
+
+    METHOD_NAME=""
+        case "$loss_func" in
+            "graddiff")
+                METHOD_NAME="GradDiff"
+                ;;
+            "ceu")
+                METHOD_NAME="CEU"
+                ;;
+            "npo")
+                METHOD_NAME="NPO"
+                ;;
+            "simnpo")
+                METHOD_NAME="SimNPO"
+                ;;
+            "dpo")
+                METHOD_NAME="DPO"
+                ;;
+            "undial")
+                METHOD_NAME="UNDIAL"
+                ;;
+            "wga")
+                METHOD_NAME="WGA"
+                ;;
+            "satimp")
+                METHOD_NAME="SatImp"
+                ;;
+            *)
+                # 如果有未知的 loss_func，可以设置一个默认名称或报错
+                echo "未知的 loss function: $loss_func"
+                continue
+                ;;
+        esac
     for model in "${tofu_models[@]}"; do
         for split in "${tofu_splits[@]}"; do
+        # --- 新增：根据 loss_func 设置对应的任务名称 ---
+            
 
             forget_split=$(echo $split | cut -d' ' -f1)
             holdout_split=$(echo $split | cut -d' ' -f2)
             retain_split=$(echo $split | cut -d' ' -f3)
 
             # --- 修改：动态构建 task_name，加入损失函数信息 ---
-            task_name=tofu_${model}_${forget_split}_GeometricUnlearn_${loss_func}
+            task_name=tofu_${model}_${forget_split}_GeometricUnlearn_${METHOD_NAME}
             model_path=open-unlearning/tofu_${model}_full
 
             echo "--- Running TOFU Task: ${task_name} ---"
@@ -89,7 +126,7 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
             trainer.args.gradient_checkpointing=true \
             +trainer.args.gradient_checkpointing_kwargs.use_reentrant=false \
             trainer.method_args.geometric_config.loss=${loss_func} \
-            trainer.method_args.alpha=0
+            trainer.method_args.geometric_config.lambda_gp=${gp}
 
             # 步骤 2: 评估刚刚经过遗忘训练的模型
             CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \
@@ -122,10 +159,44 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
         "Books"
     )
 
+    # --- 新增：根据 loss_func 设置对应的任务名称 ---
+    METHOD_NAME=""
+    case "$loss_func" in
+        "graddiff")
+            METHOD_NAME="GradDiff"
+            ;;
+        "ceu")
+            METHOD_NAME="CEU"
+            ;;
+        "npo")
+            METHOD_NAME="NPO"
+            ;;
+        "simnpo")
+            METHOD_NAME="SimNPO"
+            ;;
+        "dpo")
+            METHOD_NAME="DPO"
+            ;;
+        "undial")
+            METHOD_NAME="UNDIAL"
+            ;;
+        "wga")
+            METHOD_NAME="WGA"
+            ;;
+        "satimp")
+            METHOD_NAME="SatImp"
+            ;;
+        *)
+            # 如果有未知的 loss_func，可以设置一个默认名称或报错
+            echo "未知的 loss function: $loss_func"
+            continue
+            ;;
+    esac
+
     for model in "${muse_models[@]}"; do
         for data_split in "${muse_data_splits[@]}"; do
 
-            task_name=muse_${model}_${data_split}_GeometricUnlearn_${loss_func}
+            task_name=muse_${model}_${data_split}_GeometricUnlearn_${METHOD_NAME}
             model_path=muse-bench/MUSE-${data_split}_target
 
             echo "--- Running MUSE Task: ${task_name} ---"
@@ -145,7 +216,8 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
             trainer.args.gradient_accumulation_steps=4 \
             trainer.args.ddp_find_unused_parameters=true \
             trainer.args.gradient_checkpointing=true \
-            ++trainer.method_args.geometric_config.loss=${loss_func}
+            trainer.method_args.geometric_config.loss=${loss_func} \
+            trainer.method_args.geometric_config.lambda_gp=${gp}
 
             # 步骤 2: 评估
             CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \
@@ -167,6 +239,39 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
     echo "================================================="
     echo "Starting ${method} on WMDP Benchmark"
     echo "================================================="
+    # --- 新增：根据 loss_func 设置对应的任务名称 ---
+    METHOD_NAME=""
+    case "$loss_func" in
+        "graddiff")
+            METHOD_NAME="GradDiff"
+            ;;
+        "ceu")
+            METHOD_NAME="CEU"
+            ;;
+        "npo")
+            METHOD_NAME="NPO"
+            ;;
+        "simnpo")
+            METHOD_NAME="SimNPO"
+            ;;
+        "dpo")
+            METHOD_NAME="DPO"
+            ;;
+        "undial")
+            METHOD_NAME="UNDIAL"
+            ;;
+        "wga")
+            METHOD_NAME="WGA"
+            ;;
+        "satimp")
+            METHOD_NAME="SatImp"
+            ;;
+        *)
+            # 如果有未知的 loss_func，可以设置一个默认名称或报错
+            echo "未知的 loss function: $loss_func"
+            continue
+            ;;
+    esac
 
     wmdp_data_splits=(
         "cyber"
@@ -175,7 +280,7 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
     wmdp_model="zephyr-7b-beta"
 
     for data_split in "${wmdp_data_splits[@]}"; do
-        task_name=wmdp_${wmdp_model}_${data_split}_GeometricUnlearn_${loss_func}
+        task_name=wmdp_${wmdp_model}_${data_split}_GeometricUnlearn_${METHOD_NAME}
         model_path=wmdp-bench/WMDP-${data_split}_target
 
         echo "--- Running WMDP Task: ${task_name} ---"
@@ -193,7 +298,8 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
         trainer.args.gradient_accumulation_steps=4 \
         trainer.args.ddp_find_unused_parameters=true \
         trainer.args.gradient_checkpointing=true \
-        ++trainer.method_args.geometric_config.loss=${loss_func}
+        trainer.method_args.geometric_config.loss=${loss_func} \
+        trainer.method_args.geometric_config.lambda_gp=${gp}
 
         # 步骤 2: 评估
         CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \

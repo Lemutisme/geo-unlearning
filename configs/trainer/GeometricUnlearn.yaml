@@ -12,11 +12,11 @@ trainer:
 method_args:
   alpha: 1.0
   gamma: 1.0
-  retain_loss_type: NLL
+  retain_loss_type: KL
   geometric_config:
     ema_momentum: 0.99
     ot_smoothing_eta: 0.02
-    lambda_gp: 0.1
+    lambda_gp: 0.0
     gp_target: 1.0
     gp_topk: 8
     loss: "npo"
