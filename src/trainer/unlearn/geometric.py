@@ -1,6 +1,5 @@
 import re
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 
 from trainer.unlearn.ceu import compute_batch_ceu
@@ -125,29 +124,39 @@ class RetainNullProjector:
                 U.append(g_tilde / norm)
 
     @torch.no_grad()
-    def project_current_grads(self, lambda_align=0.05):
-        for name, p in self.model.named_parameters():
-            if name not in self.param_names or p.grad is None:
-                continue
-            g = p.grad
-            U = self.basis[name]
-            if not U:
-                continue
-
-            # Soft alignment: g ← g - λ * P_T g
+    def _project_tensor(self, g, U, mode='perp', lambda_align=0.0):
+        if not U:
+            return g
+        if mode == 'perp':
             if lambda_align > 0:
                 for u in U:
                     u = u.to(g.dtype)
                     coef = (g * u).sum().div(u.pow(2).sum().clamp_min(1e-12))
                     g = g - lambda_align * coef * u
-
-            # Hard projection: g ← P_⊥ g
             for u in U:
                 u = u.to(g.dtype)
                 coef = (g * u).sum().div(u.pow(2).sum().clamp_min(1e-12))
                 g = g - coef * u
+            return g
+        elif mode == 'tan':
+            g_tan = torch.zeros_like(g)
+            for u in U:
+                u = u.to(g.dtype)
+                coef = (g * u).sum().div(u.pow(2).sum().clamp_min(1e-12))
+                g_tan = g_tan + coef * u
+            return g_tan
+        else:
+            raise ValueError(f"Unknown mode={mode}")
 
-            p.grad.copy_(g)
+    @torch.no_grad()
+    def project_current_grads(self, mode='perp', lambda_align=0.0):
+        for name, p in self.model.named_parameters():
+            if name not in self.param_names or p.grad is None:
+                continue
+            U = self.basis[name]
+            if not U:
+                continue
+            p.grad.copy_( self._project_tensor(p.grad, U, mode=mode, lambda_align=lambda_align) )
 
 
 # =========================
@@ -237,9 +246,10 @@ class GeometricUnlearn(GradDiff):
         self.satimp = kwargs.pop("satimp_config", None)
 
         super().__init__(*args, **kwargs)
+        print("self.retain_loss_type")
 
         # === 自动推断最后 K 层 ===
-        auto_k = getattr(self.geometric_config, "auto_last_k_layers", 3)
+        auto_k = getattr(self.geometric_config, "auto_last_k_layers", 5)
         if auto_k is not None:
             auto_regex = build_last_layers_regex(
                 self.model,
@@ -302,7 +312,7 @@ class GeometricUnlearn(GradDiff):
                 Cn = Cn / med
         return Cn
 
-    def _row_softmax_offdiag(self, A: torch.Tensor, temp: float = 1.0, topk: int = None):
+    def _row_softmax_offdiag(self, A: torch.Tensor, temp: float = 1.0, topk: int = 8):
         """
         按行 softmax，mask 对角，支持 top-k 邻域截断；A 为 '负代价' 或相似度矩阵。
         """
@@ -334,112 +344,161 @@ class GeometricUnlearn(GradDiff):
 
         return d_hat, C, mu_eff
 
-    def _ot_penalty(self, g_for_grad: torch.Tensor, C: torch.Tensor) -> torch.Tensor:
-        """
-        改进版 OT 斜率正则：
-          - 仅用 cost 矩阵构造 soft 邻域（无需求解对偶）；
-          - slope = Δg / C，行 softmax 权重；可 top-k 稀疏；
-          - 归一化 cost 的中位数，稳定跨 batch 标度；
-          - 可设置目标斜率 τ（通常 0）。
-        """
-        if (not getattr(self.geometric_config, "use_ot_slope", True)) or g_for_grad.numel() < 2:
-            return torch.zeros((), device=g_for_grad.device)
-
-        target_slope = getattr(self.geometric_config, "gp_target", 0.0)
-        topk = getattr(self.geometric_config, "gp_topk", 8)
-        temp = getattr(self.geometric_config, "gp_softmax_temp", 1.0)
-        lam_gp = getattr(self.geometric_config, "lambda_gp", 0.0)
-
-        if lam_gp <= 0.0:
-            return torch.zeros((), device=g_for_grad.device)
-
-        # 归一化 cost 并构建 soft 邻域（对角置 -inf）
-        with torch.no_grad():
-            Cn = self._normalize_cost(C.detach())
-            pi_off = self._row_softmax_offdiag(-Cn, temp=temp, topk=topk)
-
-        denom = (Cn + 1e-8)
-        gi = g_for_grad.view(-1, 1)
-        gj = g_for_grad.view(1, -1)
-        slopes = (gj - gi) / denom
-        per_pair = (slopes - target_slope) ** 2
-
-        penalty = (per_pair * pi_off).sum() / (pi_off.sum().clamp_min(1e-12))
-        return lam_gp * penalty
-
     def _per_sample_loss(self, model, forget_inputs, f_out):
         """
-        生成与选择的遗忘损失一致的 per-sample 度量（用于 OT slope 的 g）。
-        注意：为稳定性，OT slope 的几何（C、π）不反传，g 会参与反传。
+        仅使用你已有的工具/模型，构造每样本损失:
+        - 函数内 per_sample_loss 定义为：越大=越想忘
+        - 末尾统一返回其相反数（配合你外层的最小化）
         """
         loss_name = self.geometric_config.loss
-        if loss_name == "simnpo":
-            forget_loss, _ = compute_batch_nll(model, forget_inputs)
-            forget_labels = forget_inputs["labels"]
-            loss_mask = forget_labels != -100
-            per_sample_loss = F.logsigmoid(
-                self.simnpo_config.beta * (forget_loss / loss_mask.sum(-1) - self.simnpo_config.delta)
-            ) * 2 / self.simnpo_config.beta
 
-        elif loss_name == "npo":
-            forget_loss, _ = compute_batch_nll(model, forget_inputs)
+        # ---- 常用辅助 ----
+        def _valid_mask(labels_shifted):
+            return (labels_shifted != -100)
+
+        def _seq_avg_from_token_values(tok_vals, labels_shifted):
+            valid = _valid_mask(labels_shifted)
+            return (tok_vals * valid).sum(-1) / valid.sum(-1).clamp_min(1)
+
+        # 统一对齐：shift one token（和 compute_batch_nll/CE 一致）
+        logits = f_out.logits
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = forget_inputs["labels"][..., 1:].contiguous()
+
+        # ---------- 1) 纯 CE ----------
+        if loss_name == "ce":
+            # token-CE（reduction='none'）后按样本平均
+            ce_tok = F.cross_entropy(
+                shift_logits.permute(0, 2, 1),  # [B,V,S-1]
+                shift_labels,
+                reduction="none",
+                ignore_index=-100
+            )  # [B, S-1]
+            per_sample_loss = _seq_avg_from_token_values(ce_tok, shift_labels)
+
+        # ---------- 2) CEU（排除真标签的软目标；仅用已有 logits 构造） ----------
+        elif loss_name == "ceu":
+            # 可选忽略前 n 个答案 token（和你 pipeline 对齐）
+            n = getattr(self.geometric_config, "ignore_first_n_answer_tokens", 1)
+            labels = forget_inputs["labels"].clone()
+            if n and n > 0:
+                valid = (labels != -100)
+                head_mask = (valid.cumsum(dim=-1) <= n) & valid
+                labels[head_mask] = -100
+            shift_labels = labels[..., 1:].contiguous()
+            valid = _valid_mask(shift_labels)
+
+            # soft 目标：把真标签 logit = -inf，softmax 得到“排除真标签”的均匀分布
             with torch.no_grad():
-                ref_forget_loss, _ = compute_batch_nll(self.ref_model, forget_inputs)
-            log_ratio = -(forget_loss - ref_forget_loss)
-            per_sample_loss = F.logsigmoid(self.npo_config.beta * log_ratio) * 2 / self.npo_config.beta
+                target_logits = shift_logits.detach().clone()
+                target_logits.scatter_(dim=-1, index=shift_labels.unsqueeze(-1), value=float("-inf"))
+                q = F.softmax(target_logits, dim=-1)  # [B,S-1,V]
 
+            log_p = F.log_softmax(shift_logits, dim=-1)
+            soft_ce_tok = -(q * log_p).sum(-1)  # [B,S-1]
+            per_sample_loss = _seq_avg_from_token_values(soft_ce_tok, shift_labels)
+
+        # ---------- 3) SimNPO（只用 compute_batch_nll） ----------
+        elif loss_name == "simnpo":
+            ce_sum, _ = compute_batch_nll(model, forget_inputs)  # [B] 为 sum over (S-1)
+            denom = _valid_mask(shift_labels).sum(-1).clamp_min(1)
+            ce_avg = ce_sum / denom
+            per_sample_loss = F.logsigmoid(self.simnpo_config.beta * (ce_avg - self.simnpo_config.delta)) * (2.0 / self.simnpo_config.beta)
+
+        # ---------- 4) NPO（CE - CE_ref；只用 compute_batch_nll） ----------
+        elif loss_name == "npo":
+            ce_m, _ = compute_batch_nll(model, forget_inputs)      # [B]
+            with torch.no_grad():
+                ce_r, _ = compute_batch_nll(self.ref_model, forget_inputs)  # [B]
+            # 注意方向：用 (CE - CE_ref)
+            per_sample_loss = F.logsigmoid(self.npo_config.beta * (ce_m - ce_r)) * (2.0 / self.npo_config.beta)
+
+        # ---------- 5) DPO（win/lose 的 log 比率；只用 compute_batch_nll） ----------
         elif loss_name == "dpo":
             original_inputs = forget_inputs["original"]
             alternate_inputs = forget_inputs["alternate"]
-            win_loss, _ = compute_batch_nll(model, alternate_inputs)
-            lose_loss, _ = compute_batch_nll(model, original_inputs)
+            # NLL（sum over (S-1)）
+            lose_m, _ = compute_batch_nll(model, original_inputs)
+            win_m,  _ = compute_batch_nll(model, alternate_inputs)
             with torch.no_grad():
-                ref_win_loss, _ = compute_batch_nll(self.ref_model, alternate_inputs)
-                ref_lose_loss, _ = compute_batch_nll(self.ref_model, original_inputs)
-            win_log_ratio = -(win_loss - ref_win_loss)
-            lose_log_ratio = -(lose_loss - ref_lose_loss)
-            per_sample_loss = F.logsigmoid(
-                self.dpo_config.beta * (win_log_ratio - lose_log_ratio)
-            ) * 2 / self.dpo_config.beta
+                lose_r, _ = compute_batch_nll(self.ref_model, original_inputs)
+                win_r,  _ = compute_batch_nll(self.ref_model, alternate_inputs)
+            # log 比率（注意这里是 -NLL 的差）
+            win_log_ratio  = -(win_m  - win_r)
+            lose_log_ratio = -(lose_m - lose_r)
+            per_sample_loss = F.logsigmoid(self.dpo_config.beta * (win_log_ratio - lose_log_ratio)) * (2.0 / self.dpo_config.beta)
 
+        # ---------- 6) UNDIAL（教师分布来自 ref logits − β·onehot(y)） ----------
         elif loss_name == "undial":
-            logits = f_out.logits
             with torch.no_grad():
                 ref_logits = self.ref_model(**forget_inputs).logits
-            shift_labels = forget_inputs["labels"][..., 1:].contiguous()
-            shift_logits = logits[..., :-1, :].contiguous()
             shift_ref_logits = ref_logits[..., :-1, :].contiguous()
 
-            mask = torch.zeros_like(shift_ref_logits)
-            batch_idx = torch.arange(mask.shape[0]).view(-1, 1, 1)
-            seq_idx = torch.arange(mask.shape[1]).view(1, -1, 1)
-            mask[batch_idx, seq_idx, shift_labels.unsqueeze(-1)] = 1.0
+            # 构造教师 q
+            with torch.no_grad():
+                mask = torch.zeros_like(shift_ref_logits)
+                b = torch.arange(mask.size(0), device=mask.device).view(-1,1,1)
+                t = torch.arange(mask.size(1), device=mask.device).view(1,-1,1)
+                mask[b, t, shift_labels.unsqueeze(-1)] = 1.0
+                teacher = F.softmax(shift_ref_logits - self.undial_config.beta * mask, dim=-1)  # [B,S-1,V]
 
-            pre_softmax = shift_ref_logits - mask * self.undial_config.beta
-            soft_label = F.softmax(pre_softmax, dim=-1)
+            log_p = F.log_softmax(shift_logits, dim=-1)
+            tok_kl = F.kl_div(log_p, teacher, reduction="none", log_target=False).sum(-1)  # [B,S-1]
+            per_sample_loss = _seq_avg_from_token_values(tok_kl, shift_labels)
 
-            loss_fct = nn.CrossEntropyLoss(reduction="none")
-            per_sample_loss = loss_fct(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                soft_label.view(-1, soft_label.size(-1)),
-            ).view(shift_logits.size(0), -1).mean(dim=1)
+        # ---------- 7) WGA（仅用现有 logits + ref logits 的“指导式 KL” proxy） ----------
+        elif loss_name == "wga":
+            # 若 compute_wga_loss 只返回 batch 标量，这里给 per-sample 等价式（无需改 wga.py）
+            with torch.no_grad():
+                ref_logits = self.ref_model(**forget_inputs).logits
+            # 令教师分布为带温度/偏置的 ref 分布（温度/偏置用已有 beta）
+            teacher = F.softmax(ref_logits[..., :-1, :].contiguous() / max(self.wga_config.beta, 1e-6), dim=-1)
+            log_p = F.log_softmax(shift_logits, dim=-1)
+            tok_kl = F.kl_div(log_p, teacher, reduction="none", log_target=False).sum(-1)
+            per_sample_loss = _seq_avg_from_token_values(tok_kl, shift_labels)
 
-        elif loss_name in ["ce", "ceu"]:
-            # 对 CE/CEU：取 token-CE 的句子平均
-            logits = f_out.logits
-            ce_tok = F.cross_entropy(
-                logits.permute(0, 2, 1), forget_inputs["labels"], reduction="none", ignore_index=-100
-            )
-            mask = (forget_inputs["labels"] != -100)
-            denom = mask.sum(dim=1).clamp_min(1)
-            per_sample_loss = (ce_tok * mask).sum(dim=1) / denom
+        # ---------- 8) SATIMP（偏好式 proxy：只用现有 compute_batch_nll 取对的 margin） ----------
+        elif loss_name == "satimp":
+            # SATIMP 通常是“偏好对”的稳定版；如果 batch 里给了 original/alternate，就按 DPO 的 margin 近似 per-sample
+            if isinstance(forget_inputs, dict) and "original" in forget_inputs and "alternate" in forget_inputs:
+                lose_m, _ = compute_batch_nll(model, forget_inputs["original"])
+                win_m,  _ = compute_batch_nll(model, forget_inputs["alternate"])
+                margin = (lose_m - win_m)  # 越大说明更偏向“选错”
+                # 两个 beta 控制斜率/边界，既然 compute_satimp_loss 已在外汇总，这里只做可导的 margin surrogate
+                per_sample_loss = F.relu(self.satimp.beta1 * margin - self.satimp.beta2)
+            else:
+                # 若不是成对样本，就退化为“把置信度压散”的 KL proxy
+                log_p = F.log_softmax(shift_logits, dim=-1)
+                uni = torch.full_like(log_p, 1.0 / log_p.size(-1))
+                tok_kl = F.kl_div(log_p, uni, reduction="none", log_target=False).sum(-1)
+                per_sample_loss = _seq_avg_from_token_values(tok_kl, shift_labels)
+
+        # ---------- 9) RMU 风格（仅用现有 hidden_states + ref 做 forget 子项的逐样本距离） ----------
+        elif loss_name == "rmu":
+            # φ 取你已经算过的最后层隐藏状态在答案 token 的均值（E），只用 forget 项 per-sample
+            if not hasattr(f_out, "hidden_states") or f_out.hidden_states is None:
+                with torch.no_grad():
+                    f_out = model(**forget_inputs)
+            H = f_out.hidden_states[-1]                    # [B,S,D]
+            valid = (forget_inputs["labels"] != -100).unsqueeze(-1)
+            E = (H * valid).sum(1) / valid.sum(1).clamp_min(1)  # [B,D]
+
+            # 用 ref 的同构表示作为“目标”（无需其它锚）
+            with torch.no_grad():
+                r_out = self.ref_model(**forget_inputs)
+                Hr = r_out.hidden_states[-1]
+                Er = (Hr * valid).sum(1) / valid.sum(1).clamp_min(1)
+
+            per_sample_loss = (E - Er).pow(2).sum(-1).sqrt()  # L2，越大越“记住旧表示”
 
         else:
-            # fallback：直接用 f_out.loss（若为标量则 broadcast）
+            # 回退：用 f_out.loss 广播
             psl = f_out.loss
             per_sample_loss = psl if psl.ndim > 0 else psl.repeat(forget_inputs["input_ids"].size(0))
 
-        return per_sample_loss
+        # 统一返回“要最小化”的量
+        return -per_sample_loss
+
 
     # -------- main loss --------
     def compute_loss(self, model, inputs, return_outputs=False):
@@ -474,8 +533,8 @@ class GeometricUnlearn(GradDiff):
             forget_labels = forget_inputs["labels"]
             loss_mask = forget_labels != -100
             forget_loss, f_out = compute_batch_nll(model, forget_inputs)
-            forget_loss = forget_loss / loss_mask.sum(-1) - self.npo_config.delta
-            forget_loss = -F.logsigmoid(self.npo_config.beta * forget_loss).mean() * 2 / self.npo_config.beta
+            forget_loss = forget_loss / loss_mask.sum(-1) - self.simnpo_config.delta
+            forget_loss = -F.logsigmoid(self.simnpo_config.beta * forget_loss).mean() * 2 / self.simnpo_config.beta
         elif self.geometric_config.loss == 'ceu':
             forget_loss, f_out = compute_batch_ceu(
                 model, forget_inputs, ignore_first_n_answer_tokens=1,
@@ -492,9 +551,11 @@ class GeometricUnlearn(GradDiff):
         else:
             f_out = model(**forget_inputs)
             forget_loss = -f_out.loss
+        #f_out = model(**forget_inputs)  # 先前向一次以拿 hidden_states
 
         # (B) 用 retain 小 batch 更新切向基（可降频）
         if retain_inputs is not None:
+            self._last_retain_inputs = retain_inputs
             with torch.enable_grad():
                 with torch.no_grad():
                     ref_logits = self.ref_model(**retain_inputs).logits
@@ -507,7 +568,6 @@ class GeometricUnlearn(GradDiff):
                 self.null_proj.update_basis_with_retain(retain_kl)
 
         # (C) 计算 retain 锚 + 表示侧几何（仅在启用 OT slope 时执行）
-        ot_pen = torch.zeros((), device=forget_loss.device)
         if getattr(self.geometric_config, "use_ot_slope", True):
             # 取 forget 的隐藏表示
             with torch.no_grad():
@@ -518,67 +578,116 @@ class GeometricUnlearn(GradDiff):
                 else:
                     E_f_raw = self._hidden_embed(f_out, forget_inputs["labels"])
 
-            # 更新 whitener 与 anchor
-            if retain_inputs is not None:
-                with torch.no_grad():
-                    r_out = model(**retain_inputs)
-                    E_r_raw = self._hidden_embed(r_out, retain_inputs["labels"])
-                    self.fastdist.update_whitener(torch.cat([E_f_raw, E_r_raw], dim=0))
-                    E_r_white = self.fastdist.whiten(E_r_raw)
-                    self.fastdist.update_retain_anchor(E_r_white)
-            else:
-                # 无 retain 时，用 ref 在相同输入上构造 teacher anchor
-                with torch.no_grad():
-                    t_out = self.ref_model(**forget_inputs)
-                    E_t_raw = self._hidden_embed(t_out, forget_inputs["labels"])
-                    self.fastdist.update_whitener(torch.cat([E_f_raw, E_t_raw], dim=0))
-                    E_t_white = self.fastdist.whiten(E_t_raw)
-                    self.fastdist.update_retain_anchor(E_t_white)
+                # 更新 whitener 与 anchor
+                r_out = model(**retain_inputs)
+                E_r_raw = self._hidden_embed(r_out, retain_inputs["labels"])
+                self.fastdist.update_whitener(torch.cat([E_f_raw, E_r_raw], dim=0))
+                E_r_white = self.fastdist.whiten(E_r_raw)
+                self.fastdist.update_retain_anchor(E_r_white)
 
             # 白化并得到距离/代价
             E_f_white = self.fastdist.whiten(E_f_raw)  # [B, D]
-            # 用一个简洁稳定的 CE per-sample 近似做 μ 自适应（仅用于 μ 估计，不反传）
+
+            # # 构造 OT slope 用的 per-sample g（可选是否加入 μ·d）
+            g_i = self._per_sample_loss(model, inputs["forget"], f_out)
+            # d_hat, C, mu_eff = self._cal_distance_n_cost(g_base, E_f_white)
+
+            # 1) 交叉代价: forget×retain（cosine cost，median 归一 + detach 稳定）
+            X = F.normalize(E_f_white, dim=1)                       # [n, D]
+            Y = F.normalize(E_r_white, dim=1)                       # [m, D]
+            C_fr = (1 - X @ Y.T).clamp(min=0)                       # [n, m]
             with torch.no_grad():
-                logits_ps = f_out.logits
-                ce_tok = F.cross_entropy(
-                    logits_ps.permute(0, 2, 1), forget_inputs["labels"],
-                    reduction="none", ignore_index=-100
-                )
-                mask = (forget_inputs["labels"] != -100)
-                denom = mask.sum(dim=1).clamp_min(1)
-                per_sample_ce = (ce_tok * mask).sum(dim=1) / denom
+                pos = C_fr[C_fr > 0]
+                med = pos.median() if pos.numel() > 0 else torch.tensor(1.0, device=C_fr.device, dtype=C_fr.dtype)
+            C_fr = (C_fr / med.clamp_min(1e-6)).detach()
 
-            d_hat, C, mu_eff = self._cal_distance_n_cost(per_sample_ce, E_f_white)
+            # 3) 一维对偶 λ 的几步更新，使平均运输成本≈ε
+            eps = getattr(self.geometric_config, "wasserstein_epsilon", 0.5)
+            eta = getattr(self.geometric_config, "ot_smoothing_eta", 0.2)
+            lam = torch.tensor(getattr(self.geometric_config, "ot_lambda_init", 1.0),
+                            device=g_i.device, dtype=g_i.dtype)
 
-            # 构造 OT slope 用的 per-sample g（可选是否加入 μ·d）
-            g_base = self._per_sample_loss(model, inputs["forget"], f_out)
-            if getattr(self.geometric_config, "gp_include_d", True):
-                g_for_grad = g_base + mu_eff.detach() * d_hat.detach()
-            else:
-                g_for_grad = g_base
+            for _ in range(getattr(self.geometric_config, "ot_lambda_iters", 5)):
+                scores = (g_i[:, None] - lam * C_fr) / max(eta, 1e-6)   # [n, m]
+                # 按列 softmax：每个 retain 样本 j 上对 i 归一，得到 π(i|j)
+                pi_cols = torch.softmax(scores, dim=0)                   # [n, m]
+                avg_cost = (pi_cols * C_fr).sum(dim=0).mean()            # 1/m ∑_j ∑_i π_ij C_ij
+                lam = (lam + 0.5 * (avg_cost - eps)).clamp_min(0.0)      # 简单比例步可收敛
 
-            # 计算改进 OT slope 罚项
-            ot_pen = self._ot_penalty(g_for_grad=g_for_grad, C=C)
+            print("lam", lam.item(), "avg_cost", avg_cost.item())
+            # 4) 由对偶产生权重并规范化（等价于对 θ 的梯度加权）
+            scores = (g_i[:, None] - lam * C_fr) / max(eta, 1e-6)
+            pi_cols = torch.softmax(scores, dim=0)                       # [n, m]
+            w = pi_cols.mean(dim=1)                                      # [n]
+            w = w / w.mean().clamp_min(1e-12)
+            print("w", w)
+
+            # 5) Forget loss
+            # (a) weighted expectation：
+            forget_weighted_mean = (w * g_i).mean()
+            # (b) dual upper bound:
+            # forget_weighted_mean = lam * eps + (eta / C_fr.size(1)) * torch.logsumexp(scores, dim=0).sum()
 
         # (D) 计算 retain anchor 损失与总损失
         retain_loss = self.compute_retain_loss(model, retain_inputs)
-        loss = self.gamma * forget_loss + self.alpha * retain_loss + ot_pen
+        loss = self.gamma * forget_loss + self.alpha * retain_loss
 
         # 记录日志
         log_dict = {
             "train/loss": loss.item(),
-            f"train/{self.geometric_config.loss}": forget_loss.item(),
+            f"train/{self.geometric_config.loss}": forget_weighted_mean.item(),
             "train/retain_loss": retain_loss.item(),
         }
-        if getattr(self.geometric_config, "use_ot_slope", True):
-            log_dict["train/ot_penalty"] = ot_pen.item()
+
         self.log(log_dict)
 
         return (loss, f_out) if return_outputs else loss
 
-    # 在 optimizer_step 前显式投影：
+    # # 在 optimizer_step 前显式投影：
+    # def optimizer_step(self, *args, **kwargs):
+    #     self.null_proj.project_current_grads(
+    #         lambda_align=getattr(self.geometric_config, "lambda_align", 0)
+    #     )
+    #     return super().optimizer_step(*args, **kwargs)
+    
     def optimizer_step(self, *args, **kwargs):
+        # 1) 先把现有 grads 投到法向（忘记项已在 loss.backward 里产生）
         self.null_proj.project_current_grads(
-            lambda_align=getattr(self.geometric_config, "lambda_align", 0.05)
+            mode='perp',
+            lambda_align=getattr(self.geometric_config, "lambda_align", 0.0)
         )
+
+        # 2) 注入切向 KL 梯度（让 KL 起作用，但只在切向）
+        if getattr(self.geometric_config, "inject_retain_tangent", True) and hasattr(self, "_last_retain_inputs"):
+            retain_inputs = self._last_retain_inputs
+            # 关闭现有 grad 的累积影响，仅做 autograd.grad，不改现有 p.grad：
+            params = [p for n,p in self.model.named_parameters() if n in self.null_proj.param_names and p.requires_grad]
+            with torch.enable_grad():
+                with torch.no_grad():
+                    ref_logits = self.ref_model(**retain_inputs).logits
+                logits = self.model(**retain_inputs).logits
+                retain_kl = F.kl_div(
+                    F.log_softmax(logits, dim=-1),
+                    F.softmax(ref_logits, dim=-1),
+                    reduction="batchmean"
+                )
+            gR = torch.autograd.grad(retain_kl, params, retain_graph=False, allow_unused=True)
+
+            # 将 gR 的切向分量加到现有 p.grad 上
+            alpha = getattr(self, "alpha", 1.0)
+            i = 0
+            for name, p in self.model.named_parameters():
+                if name not in self.null_proj.param_names or p.requires_grad is False:
+                    continue
+                gRi = gR[i]; i += 1
+                if gRi is None:
+                    continue
+                U = self.null_proj.basis.get(name, [])
+                if not U:
+                    continue
+                gRi_tan = self.null_proj._project_tensor(gRi, U, mode='tan')
+                if p.grad is None:
+                    p.grad = torch.zeros_like(p)
+                p.grad.add_( alpha * gRi_tan )
+
         return super().optimizer_step(*args, **kwargs)

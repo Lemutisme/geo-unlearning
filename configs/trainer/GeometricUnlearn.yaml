@@ -3,6 +3,10 @@ defaults:
 
 handler: GeometricUnlearn
 
+args: # HuggingFace TrainingArguments
+  learning_rate: 1e-5
+  num_train_epochs: 5
+
 trainer:
   args:
     gradient_checkpointing: true
@@ -15,10 +19,6 @@ method_args:
   retain_loss_type: KL
   geometric_config:
     ema_momentum: 0.99
-    ot_smoothing_eta: 0.02
-    lambda_gp: 0.0
-    gp_target: 1.0
-    gp_topk: 8
     loss: "npo"
     trainable_params_regex: 
       - .* # update all parameters (as done in https://github.com/tmlr-group/G-effect/blob/ef368eea3b2c6dba1e090b9ebb021ac9f047e0ae/dataloader.py#L271)
@@ -28,20 +28,37 @@ method_args:
   simnpo_config:
     delta: 0.0 # gamma in https://github.com/OPTML-Group/Unlearn-Simple/blob/main/TOFU/config/forget.yaml
     beta: 4.5
+    alpha: 1.0
+    gamma: 0.125 # npo_coeff in https://github.com/OPTML-Group/Unlearn-Simple/blob/main/TOFU/config/forget.yaml
+    retain_loss_type: NLL
 
   npo_config:
     beta: 0.1
+    alpha: 1.0
+    gamma: 1.0
+    retain_loss_type: NLL
 
   dpo_config:
     beta: 0.1
+    alpha: 1.0
+    gamma: 1.0
+    retain_loss_type: NLL
 
   undial_config:
+    gamma: 1.0
     alpha: 0.0
     beta: 10.0 # the strength of penalty for memorized tokens
+    retain_loss_type: NLL 
 
   satimp_config:
     beta1: 5.0
     beta2: 1.0
+    alpha: 1.0
+    gamma: 0.1
+    retain_loss_type: NLL
 
   wga_config:
     beta: 1.0
+    alpha: 1.0
+    gamma: 1.0
+    retain_loss_type: NLL
