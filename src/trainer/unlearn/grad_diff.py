@@ -10,6 +10,7 @@ class GradDiff(UnlearnTrainer):
         self.alpha = alpha
         self.retain_loss_type = retain_loss_type
         self.ref_model = None
+        self.null_proj = None
         if retain_loss_type == "KL":
             self.ref_model = self._prepare_ref_model(self.model)
 

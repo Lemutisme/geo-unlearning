@@ -15,15 +15,16 @@ gradient_accumulation_steps=4
 NUM_GPUS=2
 EVAL_GPU=4
 
-EVAL_DIR="saves/exp/Eval_GU_NLL/$(date +%m%d%H%M)"
+EVAL_DIR="saves/exp/Eval_GU_NLL2" #/$(date +%m%d%H%M)"
 # --- 新增：定义要测试的 Geometric Unlearn 内部损失函数 ---
 # 您可以在这里添加或删除损失函数，例如 "ce", "simnpo", "dpo" 等
 LOSS_FUNCTIONS=(
-    "simnpo"
-    "graddiff"
     "ceu"
-    "npo"
     "dpo"
+    "simnpo"
+    "gradascent"
+    "graddiff"
+    "npo"
     "undial"
     "wga"
     "satimp"
@@ -40,9 +41,9 @@ echo "Starting GeometricUnlearn on TOFU Benchmark"
 echo "================================================="
 
 tofu_models=(
+    "Llama-3.1-8B-Instruct"
     "Llama-3.2-1B-Instruct"
     "Llama-3.2-3B-Instruct"
-    "Llama-3.1-8B-Instruct"
 )
 tofu_splits=(
     "forget01 holdout01 retain99"
@@ -78,6 +79,9 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
                 ;;
             "satimp")
                 METHOD_NAME="SatImp"
+                ;;
+            "gradascent")
+                METHOD_NAME="GradAscent"
                 ;;
             *)
                 # 如果有未知的 loss_func，可以设置一个默认名称或报错
@@ -211,8 +215,8 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
             model.model_args.pretrained_model_name_or_path=${model_path} \
             data_split=${data_split} \
             retain_logs_path=saves/eval/muse_${model}_${data_split}_retrain/MUSE_EVAL.json \
-            trainer.args.per_device_train_batch_size=4 \
-            trainer.args.gradient_accumulation_steps=4 \
+            trainer.args.per_device_train_batch_size=2 \
+            trainer.args.gradient_accumulation_steps=8 \
             trainer.args.ddp_find_unused_parameters=true \
             trainer.args.gradient_checkpointing=true \
             trainer.method_args.geometric_config.loss=${loss_func} \
@@ -274,7 +278,6 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
 
     wmdp_data_splits=(
         "cyber"
-        "bio" 
     )
     wmdp_model="zephyr-7b-beta"
 
@@ -293,8 +296,8 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
         task_name=${task_name} \
         model=${wmdp_model} \
         data_split=${data_split} \
-        trainer.args.per_device_train_batch_size=4 \
-        trainer.args.gradient_accumulation_steps=4 \
+        trainer.args.per_device_train_batch_size=2 \
+        trainer.args.gradient_accumulation_steps=8 \
         trainer.args.ddp_find_unused_parameters=true \
         trainer.args.gradient_checkpointing=true \
         trainer.method_args.geometric_config.loss=${loss_func} \

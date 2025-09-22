@@ -72,7 +72,7 @@ def build_last_layers_regex(model, last_k=2, include_lm_head=True, include_final
 
 
 # =========================
-# Retain Null Projector (parameter-space protection)
+# Retain Null Projector
 # =========================
 class RetainNullProjector:
     def __init__(self, model, param_name_regex, k=8, use_adam_diag=True, ema=0.98):
@@ -126,15 +126,10 @@ class RetainNullProjector:
                 U.append(g_tilde / norm)
 
     @torch.no_grad()
-    def _project_tensor(self, g, U, mode='perp', lambda_align=0.0):
+    def _project_tensor(self, g, U, mode='perp'):
         if not U:
             return g
         if mode == 'perp':
-            if lambda_align > 0:
-                for u in U:
-                    u = u.to(g.dtype)
-                    coef = (g * u).sum().div(u.pow(2).sum().clamp_min(1e-12))
-                    g = g - lambda_align * coef * u
             for u in U:
                 u = u.to(g.dtype)
                 coef = (g * u).sum().div(u.pow(2).sum().clamp_min(1e-12))
@@ -151,14 +146,14 @@ class RetainNullProjector:
             raise ValueError(f"Unknown mode={mode}")
 
     @torch.no_grad()
-    def project_current_grads(self, mode='perp', lambda_align=0.0):
+    def project_current_grads(self, mode='perp'):
         for name, p in self.model.named_parameters():
             if name not in self.param_names or p.grad is None:
                 continue
             U = self.basis[name]
             if not U:
                 continue
-            p.grad.copy_( self._project_tensor(p.grad, U, mode=mode, lambda_align=lambda_align) )
+            p.grad.copy_( self._project_tensor(p.grad, U, mode=mode) )
 
 class GeometricUnlearn(GradDiff):
 
@@ -173,37 +168,88 @@ class GeometricUnlearn(GradDiff):
 
         super().__init__(*args, **kwargs)
         print("self.retain_loss_type")
+        if self.geometric_config.loss == "gradascent":
+            self.alpha = 0.0  # no retain loss in GradAscent
+        # Reference model
+        if self.ref_model is None:
+            self.ref_model = self._prepare_ref_model(self.model)
 
+        # Projector
+        self._setup_projector(geometric_config=self.geometric_config)
+
+    def _setup_projector(self, geometric_config):
         # === Automatic extrapolation of the last K layers ===
-        auto_k = getattr(self.geometric_config, "auto_last_k_layers", 5)
-        if auto_k is not None:
-            auto_regex = build_last_layers_regex(
-                self.model,
-                last_k=int(auto_k),
-                include_lm_head=True,
-                include_final_norm=True
-            )
-            self.geometric_config.trainable_params_regex = auto_regex
-            print(f"[GU] auto_last_k_layers={auto_k}, regex={auto_regex}")
-
-        # === (Optional) Freeze non-target parameters, save video memory ===
-        if getattr(self.geometric_config, "freeze_others", False):
-            pats = [re.compile(rx) for rx in self.geometric_config.trainable_params_regex]
-            for n, p in self.model.named_parameters():
-                keep = any(r.fullmatch(n) for r in pats)
-                p.requires_grad_(keep)
+        auto_regex = build_last_layers_regex(
+            self.model,
+            last_k=int(geometric_config.auto_last_k_layers),
+            include_lm_head=True,
+            include_final_norm=True
+        )
+        trainable_params_regex = auto_regex
+        print(f"[GU] auto_last_k_layers={geometric_config.auto_last_k_layers}, regex={auto_regex}")
 
         # Parameter-space projector
         self.null_proj = RetainNullProjector(
             self.model,
-            param_name_regex=self.geometric_config.trainable_params_regex,
-            k=getattr(self.geometric_config, "null_k", 8),
+            param_name_regex=trainable_params_regex,
+            k=geometric_config.null_k,
             use_adam_diag=False, ema=0.98
         )
 
-        # Reference model
-        if self.ref_model is None:
-            self.ref_model = self._prepare_ref_model(self.model)
+    def update_retain_basis(self, model, retain_inputs):
+        if retain_inputs is not None:
+            self._last_retain_inputs = retain_inputs
+            with torch.enable_grad():
+                with torch.no_grad():
+                    ref_logits = self.ref_model(**retain_inputs).logits
+                logits = model(**retain_inputs).logits
+                retain_kl = F.kl_div(
+                    F.log_softmax(logits, dim=-1),
+                    F.softmax(ref_logits, dim=-1),
+                    reduction="batchmean"
+                )
+                self.null_proj.update_basis_with_retain(retain_kl)
+
+    def optimizer_step(self, *args, **kwargs):
+        # 1) First cast existing grads to the normal direction
+        # (forgetting that the term is already generated in loss.backward)
+        self.null_proj.project_current_grads(
+            mode='perp'
+        )
+
+        # 2) Inject tangential KL gradient (let KL work, but only in tangential direction)
+        if self.geometric_config.inject_retain_tangent and hasattr(self, "_last_retain_inputs"):
+            retain_inputs = self._last_retain_inputs
+            # Disable the accumulation effect of existing grads, only do autograd.grad, do not change existing p.grad:
+            params = [p for n,p in self.model.named_parameters() if n in self.null_proj.param_names and p.requires_grad]
+            with torch.enable_grad():
+                with torch.no_grad():
+                    ref_logits = self.ref_model(**retain_inputs).logits
+                logits = self.model(**retain_inputs).logits
+                retain_kl = F.kl_div(
+                    F.log_softmax(logits, dim=-1),
+                    F.softmax(ref_logits, dim=-1),
+                    reduction="batchmean"
+                )
+            gR = torch.autograd.grad(retain_kl, params, retain_graph=False, allow_unused=True)
+
+            # Add the tangential component of gR to the existing p.grad
+            i = 0
+            for name, p in self.model.named_parameters():
+                if name not in self.null_proj.param_names or p.requires_grad is False:
+                    continue
+                gRi = gR[i]; i += 1
+                if gRi is None:
+                    continue
+                U = self.null_proj.basis.get(name, [])
+                if not U:
+                    continue
+                gRi_tan = self.null_proj._project_tensor(gRi, U, mode='tan')
+                if p.grad is None:
+                    p.grad = torch.zeros_like(p)
+                p.grad.add_(self.alpha * gRi_tan)
+
+        return super().optimizer_step(*args, **kwargs)
 
     # -------- main loss --------
     def compute_loss(self, model, inputs, return_outputs=False):
@@ -250,75 +296,15 @@ class GeometricUnlearn(GradDiff):
                 model=model, inputs=forget_inputs,
                 beta1=self.satimp.beta1, beta2=self.satimp.beta2
             )
-        else:
+        else: # default: nll
             f_out = model(**forget_inputs)
             forget_loss = -f_out.loss
 
-        # Update tangent bases with small batch of retain_inputs
-        if retain_inputs is not None:
-            self._last_retain_inputs = retain_inputs
-            with torch.enable_grad():
-                with torch.no_grad():
-                    ref_logits = self.ref_model(**retain_inputs).logits
-                logits = model(**retain_inputs).logits
-                retain_kl = F.kl_div(
-                    F.log_softmax(logits, dim=-1),
-                    F.softmax(ref_logits, dim=-1),
-                    reduction="batchmean"
-                )
-                self.null_proj.update_basis_with_retain(retain_kl)
-
+        # (B) Calculate retain basis and loss
+        retain_inputs = inputs.get("retain")
+        self.update_retain_basis(model, retain_inputs)
         retain_loss = self.compute_retain_loss(model, retain_inputs)
+
         loss = self.gamma * forget_loss + self.alpha * retain_loss
 
-        log_dict = {
-            "train/loss": loss.item(),
-            f"train/{self.geometric_config.loss}": forget_loss.item(),
-            "train/retain_loss": retain_loss.item(),
-        }
-
-        self.log(log_dict)
-
         return (loss, f_out) if return_outputs else loss
-
-    def optimizer_step(self, *args, **kwargs):
-        # 1) 先把现有 grads 投到法向（忘记项已在 loss.backward 里产生）
-        self.null_proj.project_current_grads(
-            mode='perp',
-            lambda_align=getattr(self.geometric_config, "lambda_align", 0.0)
-        )
-
-        # 2) 注入切向 KL 梯度（让 KL 起作用，但只在切向）
-        if getattr(self.geometric_config, "inject_retain_tangent", True) and hasattr(self, "_last_retain_inputs"):
-            retain_inputs = self._last_retain_inputs
-            # 关闭现有 grad 的累积影响，仅做 autograd.grad，不改现有 p.grad：
-            params = [p for n,p in self.model.named_parameters() if n in self.null_proj.param_names and p.requires_grad]
-            with torch.enable_grad():
-                with torch.no_grad():
-                    ref_logits = self.ref_model(**retain_inputs).logits
-                logits = self.model(**retain_inputs).logits
-                retain_kl = F.kl_div(
-                    F.log_softmax(logits, dim=-1),
-                    F.softmax(ref_logits, dim=-1),
-                    reduction="batchmean"
-                )
-            gR = torch.autograd.grad(retain_kl, params, retain_graph=False, allow_unused=True)
-
-            # 将 gR 的切向分量加到现有 p.grad 上
-            alpha = getattr(self, "alpha", 1.0)
-            i = 0
-            for name, p in self.model.named_parameters():
-                if name not in self.null_proj.param_names or p.requires_grad is False:
-                    continue
-                gRi = gR[i]; i += 1
-                if gRi is None:
-                    continue
-                U = self.null_proj.basis.get(name, [])
-                if not U:
-                    continue
-                gRi_tan = self.null_proj._project_tensor(gRi, U, mode='tan')
-                if p.grad is None:
-                    p.grad = torch.zeros_like(p)
-                p.grad.add_( alpha * gRi_tan )
-
-        return super().optimizer_step(*args, **kwargs)
