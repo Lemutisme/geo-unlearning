@@ -3,25 +3,26 @@
 
 # 默认配置继承
 defaults:
+  # 继承用于评估的retain数据集配置
+  - ../../data/datasets@datasets: MUSE_retain_knowmem
   # 继承通用的数据整理器（collator）配置
   - ../../collator@collators: DataCollatorForSupervisedDatasetwithIndex
-  # 定义一个名为 MUSE_retain_verbmem 的新数据集
-  - ../../data/datasets@datasets:
-      - MUSE_retain_verbmem
 
 # 指定处理逻辑的handler
 handler: extraction_strength
+
+# 从全局评估配置中获取batch_size变量
 batch_size: 8
 
 # 数据集特定配置
 datasets:
-  MUSE_retain_verbmem:
+  MUSE_retain_knowmem:
     handler: CompletionDataset # 使用与forget set相同的handler
     args:
       hf_args:
         # 动态引用MUSE评估配置中的data_split变量（例如 'News' 或 'Books'）
         path: muse-bench/MUSE-${eval.muse.data_split}
-        name: "verbmem"
+        name: "knowmem"
         # 将数据集分割指向 'retain'
         split: "retain"
       prefix_key: "prompt"

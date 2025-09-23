@@ -8,6 +8,7 @@ overwrite: false
 # Define evaluation tasks here
 tasks:
   - mmlu
+  - wmdp_cyber
   # - task: gsm8k
   #   dataset_path: gsm8k
   #   # define the entire task config. 

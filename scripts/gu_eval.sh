@@ -7,7 +7,7 @@
 export MASTER_PORT=$(python -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()")
 echo "Master Port: $MASTER_PORT"
 
-export CUDA_VISIBLE_DEVICES=4,5
+export CUDA_VISIBLE_DEVICES=6,7
 
 # --- 可配置参数 ---
 per_device_train_batch_size=4
@@ -15,15 +15,15 @@ gradient_accumulation_steps=4
 NUM_GPUS=2
 EVAL_GPU=4
 
-EVAL_DIR="saves/exp/Eval_GU_NLL2" #/$(date +%m%d%H%M)"
+EVAL_DIR="saves/exp/GU_NLL_gamma15" #test/$(date +%m%d%H%M)"
 # --- 新增：定义要测试的 Geometric Unlearn 内部损失函数 ---
 # 您可以在这里添加或删除损失函数，例如 "ce", "simnpo", "dpo" 等
 LOSS_FUNCTIONS=(
+    "graddiff"
     "ceu"
     "dpo"
     "simnpo"
     "gradascent"
-    "graddiff"
     "npo"
     "undial"
     "wga"

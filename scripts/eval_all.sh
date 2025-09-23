@@ -10,19 +10,19 @@ echo "Master Port: $MASTER_PORT"
 export CUDA_VISIBLE_DEVICES=6,7
 
 # --- Configuration ---
-EVAL_DIR="saves/exp/baseline_2" # $(date +%m%d%H%M)" 
+EVAL_DIR="saves/exp/baseline_wmdp" # $(date +%m%d%H%M)" 
 UNLEARN_METHODS=(
+    "GradAscent"
+    "GradDiff"
+    # "GeometricUnlearn"
+    "NPO"
+    "SimNPO"
+    "RMU"
+    "UNDIAL"
+    "CEU"
+    "SatImp"
+    "WGA"
     "DPO"
-    # "GradAscent"
-    # "GradDiff"
-    # # "GeometricUnlearn"
-    # "NPO"
-    # "SimNPO"
-    # "RMU"
-    # "UNDIAL"
-    # "CEU"
-    # "SatImp"
-    # "WGA"
     "PDU"
 )
 
@@ -105,9 +105,9 @@ mkdir -p ${EVAL_DIR}
 #     done
 # done
 
-# ##################################################################################################
-# # MUSE Benchmark Evaluation
-# ##################################################################################################
+##################################################################################################
+# MUSE Benchmark Evaluation
+##################################################################################################
 # for method in "${UNLEARN_METHODS[@]}"; do
 #     echo "================================================="
 #     echo "Starting ${method} on MUSE Benchmark"
