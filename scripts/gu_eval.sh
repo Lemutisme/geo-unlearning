@@ -9,15 +9,14 @@ echo "Master Port: $MASTER_PORT"
 
 export CUDA_VISIBLE_DEVICES=6,7
 
-# --- 可配置参数 ---
+
 per_device_train_batch_size=4
 gradient_accumulation_steps=4
 NUM_GPUS=2
 EVAL_GPU=4
 
-EVAL_DIR="saves/exp/GU_NLL_gamma15" #test/$(date +%m%d%H%M)"
-# --- 新增：定义要测试的 Geometric Unlearn 内部损失函数 ---
-# 您可以在这里添加或删除损失函数，例如 "ce", "simnpo", "dpo" 等
+EVAL_DIR="saves/exp/GU/$(date +%m%d%H%M)"
+
 LOSS_FUNCTIONS=(
     "graddiff"
     "ceu"
@@ -29,7 +28,6 @@ LOSS_FUNCTIONS=(
     "wga"
     "satimp"
 )
-rt="NLL"  # 可选: "NLL" 或 "KL"
 
 mkdir -p ${EVAL_DIR}
 echo "EVAL SAVED IN ${EVAL_DIR}"
@@ -51,7 +49,6 @@ tofu_splits=(
     "forget10 holdout10 retain90"
 )
 
-# --- 修改：在原有循环内增加对 LOSS_FUNCTIONS 的循环 ---
 for loss_func in "${LOSS_FUNCTIONS[@]}"; do
 
     METHOD_NAME=""
@@ -84,35 +81,29 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
                 METHOD_NAME="GradAscent"
                 ;;
             *)
-                # 如果有未知的 loss_func，可以设置一个默认名称或报错
-                echo "未知的 loss function: $loss_func"
+                echo "unkown loss function: $loss_func"
                 continue
                 ;;
         esac
     for model in "${tofu_models[@]}"; do
         for split in "${tofu_splits[@]}"; do
-        # --- 新增：根据 loss_func 设置对应的任务名称 ---
-            
 
             forget_split=$(echo $split | cut -d' ' -f1)
             holdout_split=$(echo $split | cut -d' ' -f2)
             retain_split=$(echo $split | cut -d' ' -f3)
 
-            # --- 修改：动态构建 task_name，加入损失函数信息 ---
             task_name=tofu_${model}_${forget_split}_GU_${METHOD_NAME}
             model_path=open-unlearning/tofu_${model}_full
 
             echo "--- Running TOFU Task: ${task_name} ---"
             echo "Model: ${model_path}, Forget Split: ${forget_split}, Loss: ${loss_func}"
-            
-            # --- 新增：根据损失类型选择 experiment 配置文件 (处理DPO等特殊情况) ---
+
             if [ "$loss_func" = "dpo" ] || [ "$loss_func" = "altpo" ]; then
                 experiment_config="unlearn/tofu/idk"
             else
                 experiment_config="unlearn/tofu/default"
             fi
 
-            # 步骤 1: 使用您的 GeometricUnlearn 方法进行遗忘训练
             accelerate launch --config_file configs/accelerate/default_config.yaml --main_process_port $MASTER_PORT --num_processes $NUM_GPUS \
             src/train.py --config-name=unlearn.yaml \
             experiment=${experiment_config} \
@@ -131,7 +122,6 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
             trainer.method_args.geometric_config.loss=${loss_func} \
             trainer.method_args.retain_loss_type=${rt}
 
-            # 步骤 2: 评估刚刚经过遗忘训练的模型
             CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \
             experiment=eval/tofu/default.yaml \
             task_name=${task_name} \
@@ -162,7 +152,6 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
         "Books"
     )
 
-    # --- 新增：根据 loss_func 设置对应的任务名称 ---
     METHOD_NAME=""
     case "$loss_func" in
         "graddiff")
@@ -190,8 +179,7 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
             METHOD_NAME="SatImp"
             ;;
         *)
-            # 如果有未知的 loss_func，可以设置一个默认名称或报错
-            echo "未知的 loss function: $loss_func"
+            echo "unkown loss function: $loss_func"
             continue
             ;;
     esac
@@ -205,7 +193,6 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
             echo "--- Running MUSE Task: ${task_name} ---"
             echo "Model: ${model_path}, Data Split: ${data_split}"
 
-            # 步骤 1: 遗忘训练
             accelerate launch --config_file configs/accelerate/default_config.yaml --main_process_port $MASTER_PORT --num_processes $NUM_GPUS \
             src/train.py --config-name=unlearn.yaml \
             experiment=unlearn/muse/default \
@@ -222,7 +209,6 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
             trainer.method_args.geometric_config.loss=${loss_func} \
             trainer.method_args.retain_loss_type=${rt}
 
-            # 步骤 2: 评估
             CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \
             experiment=eval/muse/default.yaml \
             task_name=${task_name} \
@@ -242,7 +228,6 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
     echo "================================================="
     echo "Starting ${method} on WMDP Benchmark"
     echo "================================================="
-    # --- 新增：根据 loss_func 设置对应的任务名称 ---
     METHOD_NAME=""
     case "$loss_func" in
         "graddiff")
@@ -270,8 +255,8 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
             METHOD_NAME="SatImp"
             ;;
         *)
-            # 如果有未知的 loss_func，可以设置一个默认名称或报错
-            echo "未知的 loss function: $loss_func"
+
+            echo "unkown loss function: $loss_func"
             continue
             ;;
     esac
@@ -288,7 +273,7 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
         echo "--- Running WMDP Task: ${task_name} ---"
         echo "Model: ${wmdp_model}, Data Split: ${data_split}"
 
-        # 步骤 1: 遗忘训练
+
         accelerate launch --config_file configs/accelerate/default_config.yaml --main_process_port $MASTER_PORT --num_processes $NUM_GPUS \
         src/train.py --config-name=unlearn.yaml \
         experiment=unlearn/wmdp/default \
@@ -303,7 +288,6 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
         trainer.method_args.geometric_config.loss=${loss_func} \
         trainer.method_args.retain_loss_type=${rt}
 
-        # 步骤 2: 评估
         CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \
         experiment=eval/wmdp/default.yaml \
         task_name=${task_name} \

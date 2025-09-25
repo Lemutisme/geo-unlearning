@@ -83,10 +83,10 @@ class RetainNullProjector:
       - 'tan'  : projection onto U (retain subspace)
     """
     def __init__(self, model, param_name_regex, k=8, use_adam_diag=True, ema=0.98,
-                    use_opt_state=True,  # 优先用优化器 exp_avg_sq，免重复存 v_ema
-                    basis_dtype=torch.float16,  # U 存半精度，计算时上采样到 FP32
-                    basis_update_every=1,      # 基更新频率（步）
-                    residual_keep_thresh=1e-3  # 新向量加入阈值（白化坐标残差范数比）
+                    use_opt_state=True,
+                    basis_dtype=torch.float16, 
+                    basis_update_every=1, 
+                    residual_keep_thresh=1e-3 
                 ):
         self.model = model
         self.k = int(k)
@@ -115,7 +115,6 @@ class RetainNullProjector:
             for p in group['params']:
                 if p is None:
                     continue
-                # 找到该参数的名字
                 for n, pp in name_map.items():
                     if pp is p and n in self.param_names:
                         st = optimizer.state.get(p, {})
@@ -164,7 +163,6 @@ class RetainNullProjector:
 
     @torch.no_grad()
     def maybe_update_basis_with_retain(self, retain_loss):
-        """低频更新 retain 基；用一次 retain-KL 的梯度构造/刷新 U（白化坐标）。"""
         self._step += 1
         if (self._step - 1) % self.basis_update_every != 0:
             return
@@ -178,17 +176,14 @@ class RetainNullProjector:
         ):
             if g is None:
                 continue
-            # 用 local EMA 更新 v（若未绑定优化器）
             g_tilde = self._precond(name, g.detach(), update=True).to(torch.float32)
             # Gram-Schmidt in whitened coords (float32 accumulate for stability)
             U = self.basis[name]
             for u in U:
                 uu = u.to(torch.float32)
                 g_tilde -= (g_tilde * uu).sum().div(uu.pow(2).sum().clamp_min(1e-12)) * uu
-            # 自适应纳入：残差/原范数比值门控 + 限秩
             norm = g_tilde.norm()
             if norm > 1e-12 and len(U) < self.k:
-                # 相对残差阈值（减少近依赖向量）
                 rel = (norm / (g.detach().norm() + 1e-12)).item()
                 if rel >= self.residual_keep_thresh:
                     U.append((g_tilde / norm).to(self.basis_dtype))
@@ -252,20 +247,18 @@ class GeometricUnlearn(GradDiff):
             param_name_regex=list(dict.fromkeys(auto_regex)),
             k=geometric_config.null_k,
             use_adam_diag=True,
-            use_opt_state=True,               # 优先用优化器状态
-            basis_dtype=torch.float16,        # U 半精度存储
+            use_opt_state=True,
+            basis_dtype=torch.float16,
             basis_update_every=getattr(geometric_config, "basis_update_every", 2),
             residual_keep_thresh=getattr(geometric_config, "residual_keep_thresh", 1e-3),
         )
 
     def compute_loss(self, model, inputs, return_outputs=False):
-        # Cache only inputs; 不在这里更新基（避免重复前后向）
         forget_inputs = inputs["forget"] if self.geometric_config.loss != "dpo" else inputs["forget"]["original"]
         self._last_forget_inputs = inputs["forget"] if "forget" in inputs else forget_inputs
         retain_inputs = inputs.get("retain")
         self._last_retain_inputs = retain_inputs
 
-        # ---- forget base loss（与你现有一致）----
         lt = self.geometric_config.loss
         if lt == 'npo':
             forget_loss, f_out = compute_dpo_loss(
@@ -304,7 +297,6 @@ class GeometricUnlearn(GradDiff):
             if lt == 'gradacend':
                 self.alpha = 0.0
 
-        # retain loss（供总 loss 用；基更新挪到 optimizer_step）
         retain_loss = self.compute_retain_loss(model, retain_inputs)
 
         loss = self.gamma * forget_loss + self.alpha * retain_loss
@@ -320,14 +312,12 @@ class GeometricUnlearn(GradDiff):
                 g_r_nor = P_U g_r.
             Overwrite p.grad = γ g_f_sel + α g_r_nor.
         """
-        # 0) 尝试绑定 optimizer，复用 exp_avg_sq
         optimizer = kwargs.get('optimizer', None)
         if optimizer is None and len(args) > 0 and hasattr(args[0], 'state'):
             optimizer = args[0]
         if optimizer is not None and not self.null_proj._opt_bound:
             self.null_proj.bind_optimizer(optimizer)
 
-        # 若无 retain/forget 缓存，退化为简单正交
         if self._last_retain_inputs is None or self._last_forget_inputs is None:
             self.null_proj.project_current_grads(mode='perp')
             return super().optimizer_step(*args, **kwargs)
@@ -335,13 +325,12 @@ class GeometricUnlearn(GradDiff):
         retain_inputs = self._last_retain_inputs
         forget_inputs = self._last_forget_inputs
 
-        # 获取目标参数与 g_tot 快照（避免中途被覆盖）
         named_params = [(n, p) for n, p in self.model.named_parameters()
                         if n in self.null_proj.param_names and p.requires_grad]
         params = [p for _, p in named_params]
         gtot = [ (p.grad.detach().clone() if p.grad is not None else None) for _, p in named_params ]
 
-        # 1) 只计算一次 g_r；同时用它来低频刷新基（减少一次重复前后向）
+
         with torch.enable_grad():
             with torch.no_grad():
                 ref_logits = self.ref_model(**retain_inputs).logits
@@ -351,7 +340,7 @@ class GeometricUnlearn(GradDiff):
                 F.softmax(ref_logits, dim=-1),
                 reduction="batchmean"
             )
-            # 刷新基（白化坐标）——低频
+
             self.null_proj.maybe_update_basis_with_retain(retain_kl)
             gR = torch.autograd.grad(retain_kl, params, retain_graph=False, allow_unused=True)
 
@@ -359,7 +348,6 @@ class GeometricUnlearn(GradDiff):
         alpha = self.alpha
         inv_gamma = (1.0 / gamma) if gamma != 0 else 0.0
 
-        # 2) 逐参数构造最终梯度（流式，避免大临时张量）
         for (name, p), g_tot_i, gRi in zip(named_params, gtot, gR):
             if g_tot_i is None and gRi is None:
                 continue
@@ -374,15 +362,13 @@ class GeometricUnlearn(GradDiff):
                 else:
                     gFi = g_tot_i * inv_gamma
 
-            # whiten
             gF_t = self.null_proj._precond(name, gFi, update=False).to(torch.float32) if gFi is not None else None
             gR_t = self.null_proj._precond(name, gRi, update=False).to(torch.float32) if gRi is not None else None
 
-            # retain 法向
             gR_nor_t = None
             if gR_t is not None:
-                gR_nor_t = self.nullProjProjectTan(name= name, g_t = gR_t, U = U)  # helper 调用见下
-            # forget：正交 +（符号感知）保留反向切向并限幅
+                gR_nor_t = self.nullProjProjectTan(name= name, g_t = gR_t, U = U)  
+
             gF_sel_t = None
             if gF_t is not None:
                 if U:
@@ -413,7 +399,6 @@ class GeometricUnlearn(GradDiff):
                 else:
                     gF_sel_t = gF_t
 
-            # 反白化并写回最终梯度
             new_grad = None
             if gF_sel_t is not None:
                 new_grad = gamma * self.null_proj._deprecond(name, gF_sel_t)
@@ -428,7 +413,6 @@ class GeometricUnlearn(GradDiff):
 
         return super().optimizer_step(*args, **kwargs)
 
-    # 小 helper：tan 投影（用现有 _project_tensor 保持语义清晰）
     @torch.no_grad()
     def nullProjProjectTan(self, name, g_t, U):
         if not U:

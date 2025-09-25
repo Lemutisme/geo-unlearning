@@ -1,22 +1,19 @@
 # @package eval.tofu.metrics.retain_extraction_strength
-# 上述 @package 声明确保此配置在Hydra中被正确加载和组织
 
-# 默认配置继承
+
 defaults:
-  # 继承用于评估的retain数据集配置
+
   - ../../data/datasets@datasets: TOFU_QA_retain_eval
-  # 继承通用的数据整理器（collator）配置
+
   - ../../collator@collators: DataCollatorForSupervisedDatasetwithIndex
 
-# 指定处理逻辑的handler
+
 handler: extraction_strength
 
-# 从全局评估配置中获取batch_size变量
 batch_size: ${eval.tofu.batch_size}
 
-# 数据集特定配置
 datasets:
   TOFU_QA_retain_eval:
     args:
-      # 使用'question'字段作为问题的key
+
       question_key: ${eval.tofu.question_key}
