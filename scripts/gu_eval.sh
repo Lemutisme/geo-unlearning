@@ -113,14 +113,16 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
             model.model_args.pretrained_model_name_or_path=${model_path} \
             forget_split=${forget_split} \
             retain_split=${retain_split} \
-            retain_logs_path=saves/eval/GU/tofu_${model}_${retain_split}/TOFU_EVAL.json \
+            retain_logs_path=saves/eval/tofu_${model}_${retain_split}/TOFU_EVAL.json \
             trainer.args.per_device_train_batch_size=$per_device_train_batch_size \
             trainer.args.gradient_accumulation_steps=$gradient_accumulation_steps \
             trainer.args.ddp_find_unused_parameters=true \
             trainer.args.gradient_checkpointing=true \
             +trainer.args.gradient_checkpointing_kwargs.use_reentrant=false \
-            trainer.method_args.geometric_config.loss=${loss_func} \
-            trainer.method_args.retain_loss_type=${rt}
+            trainer.args.do_eval=false \
+            trainer.args.eval_on_start=false \
+            trainer.args.eval_strategy=no \
+            trainer.method_args.geometric_config.loss=${loss_func}
 
             CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \
             experiment=eval/tofu/default.yaml \
@@ -206,8 +208,10 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
             trainer.args.gradient_accumulation_steps=8 \
             trainer.args.ddp_find_unused_parameters=true \
             trainer.args.gradient_checkpointing=true \
-            trainer.method_args.geometric_config.loss=${loss_func} \
-            trainer.method_args.retain_loss_type=${rt}
+            trainer.args.do_eval=false \
+            trainer.args.eval_on_start=false \
+            trainer.args.eval_strategy=no \
+            trainer.method_args.geometric_config.loss=${loss_func}
 
             CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \
             experiment=eval/muse/default.yaml \
@@ -226,7 +230,7 @@ done
 ###################################################################################################
 for loss_func in "${LOSS_FUNCTIONS[@]}"; do
     echo "================================================="
-    echo "Starting ${method} on WMDP Benchmark"
+    echo "Starting ${loss_func} on WMDP Benchmark"
     echo "================================================="
     METHOD_NAME=""
     case "$loss_func" in
@@ -285,8 +289,10 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
         trainer.args.gradient_accumulation_steps=8 \
         trainer.args.ddp_find_unused_parameters=true \
         trainer.args.gradient_checkpointing=true \
-        trainer.method_args.geometric_config.loss=${loss_func} \
-        trainer.method_args.retain_loss_type=${rt}
+        trainer.args.do_eval=false \
+        trainer.args.eval_on_start=false \
+        trainer.args.eval_strategy=no \
+        trainer.method_args.geometric_config.loss=${loss_func}
 
         CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \
         experiment=eval/wmdp/default.yaml \
