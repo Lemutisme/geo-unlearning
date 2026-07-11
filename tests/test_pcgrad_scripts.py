@@ -1,3 +1,4 @@
+import os
 import subprocess
 from pathlib import Path
 
@@ -15,7 +16,7 @@ def script_text(path):
 def test_arm_launcher_activates_environment_and_disables_all_saves():
     text = script_text(ARM)
 
-    assert 'source "$(conda info --base)/etc/profile.d/conda.sh"' in text
+    assert 'source "${conda_base}/etc/profile.d/conda.sh"' in text
     assert "conda activate unlearning" in text
     assert "save_model_after_train=false" in text
     assert "trainer.args.save_strategy=no" in text
@@ -88,3 +89,20 @@ def test_launchers_have_valid_bash_syntax():
             text=True,
         )
         assert result.returncode == 0, result.stderr
+
+
+def test_arm_bootstraps_conda_without_an_inherited_shell_function(tmp_path):
+    environment = os.environ.copy()
+    environment["PATH"] = "/usr/bin:/bin"
+    environment["CONDA_EXE"] = "/root/miniconda3/bin/conda"
+    result = subprocess.run(
+        [str(ARM), "invalid", "control", "0", "test", "production"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert "Unsupported dataset: invalid" in result.stderr
+    assert "conda: command not found" not in result.stderr

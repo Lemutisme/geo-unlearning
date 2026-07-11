@@ -13,7 +13,19 @@ gpu=$3
 timestamp=$4
 system_mode=$5
 
-source "$(conda info --base)/etc/profile.d/conda.sh"
+conda_exe=${CONDA_EXE:-}
+if [[ -z "${conda_exe}" ]]; then
+    conda_exe=$(command -v conda || true)
+fi
+if [[ -z "${conda_exe}" && -x /root/miniconda3/bin/conda ]]; then
+    conda_exe=/root/miniconda3/bin/conda
+fi
+if [[ -z "${conda_exe}" ]]; then
+    echo "Unable to locate the conda executable." >&2
+    exit 127
+fi
+conda_base=$("${conda_exe}" info --base)
+source "${conda_base}/etc/profile.d/conda.sh"
 conda activate unlearning
 
 export CUDA_VISIBLE_DEVICES="${gpu}"
