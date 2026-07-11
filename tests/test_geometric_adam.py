@@ -477,3 +477,38 @@ def test_geometric_yaml_uses_supported_approximate_adam_contract():
     assert config.method_args.simnpo_config.gamma == 0.125
     assert config.method_args.simnpo_config.retain_loss_type == "NLL"
     assert "null_k" not in config.method_args.geometric_config
+
+
+def test_training_phase_can_skip_all_checkpoint_writes():
+    from train import run_training_phase
+
+    class RecordingTrainer:
+        def __init__(self):
+            self.events = []
+
+        def train(self):
+            self.events.append("train")
+
+        def save_state(self):
+            self.events.append("save_state")
+
+        def save_model(self, output_dir):
+            self.events.append(("save_model", output_dir))
+
+    trainer = RecordingTrainer()
+    args = SimpleNamespace(do_train=True, output_dir="unused")
+
+    run_training_phase(
+        trainer,
+        args,
+        save_model_after_train=False,
+    )
+
+    assert trainer.events == ["train"]
+
+
+def test_unlearn_config_defaults_to_preserving_existing_save_behavior():
+    root = Path(__file__).resolve().parents[1]
+    config = OmegaConf.load(root / "configs/unlearn.yaml")
+
+    assert config.save_model_after_train is True

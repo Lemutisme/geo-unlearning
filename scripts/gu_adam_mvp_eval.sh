@@ -37,7 +37,10 @@ run_arm() {
         model.model_args.torch_dtype=float32 \
         forget_split="${forget_split}" \
         retain_split="${retain_split}" \
+        holdout_split="${holdout_split}" \
         retain_logs_path="${retain_logs_path}" \
+        paths.output_dir="${experiment_dir}/${task_name}" \
+        save_model_after_train=false \
         trainer.args.per_device_train_batch_size=4 \
         trainer.args.gradient_accumulation_steps=8 \
         trainer.args.max_steps=10 \
@@ -53,25 +56,23 @@ run_arm() {
         trainer.args.logging_steps=1 \
         trainer.args.report_to=none \
         trainer.args.save_strategy=no \
-        trainer.args.do_eval=false \
+        trainer.args.do_eval=true \
         trainer.args.eval_on_start=false \
         trainer.args.eval_strategy=no \
         trainer.method_args.geometric_config.loss=simnpo \
         trainer.method_args.geometric_config.gu_enabled="${gu_enabled}"
 
-    CUDA_VISIBLE_DEVICES=0 python src/eval.py \
-        experiment=eval/tofu/default.yaml \
-        task_name="${task_name}" \
-        model="${model_name}" \
-        model.model_args.pretrained_model_name_or_path="saves/unlearn/${task_name}" \
-        model.model_args.attn_implementation=eager \
-        model.model_args.torch_dtype=float32 \
-        forget_split="${forget_split}" \
-        holdout_split="${holdout_split}" \
-        paths.output_dir="${experiment_dir}/${task_name}" \
-        retain_logs_path="${retain_logs_path}"
+    local checkpoint_file
+    checkpoint_file=$(find "${experiment_dir}/${task_name}" -type f \
+        \( -name '*.safetensors' -o -name 'pytorch_model*.bin' \
+        -o -name 'training_args.bin' -o -name 'trainer_state.json' \) \
+        -print -quit)
+    if [[ -n "${checkpoint_file}" ]]; then
+        echo "Unexpected checkpoint file: ${checkpoint_file}" >&2
+        return 1
+    fi
 
-    echo "${arm} summary: ${experiment_dir}/${task_name}/TOFU_SUMMARY.json"
+    echo "${arm} summary: ${experiment_dir}/${task_name}/checkpoint-10/evals/TOFU_SUMMARY.json"
 }
 
 run_arm control false

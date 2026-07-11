@@ -7,6 +7,16 @@ from evals import get_evaluators
 from trainer.utils import seed_everything
 
 
+def run_training_phase(trainer, trainer_args, save_model_after_train=True):
+    if not trainer_args.do_train:
+        return
+
+    trainer.train()
+    if save_model_after_train:
+        trainer.save_state()
+        trainer.save_model(trainer_args.output_dir)
+
+
 @hydra.main(version_base=None, config_path="../configs", config_name="train.yaml")
 def main(cfg: DictConfig):
     """Entry point of the code to train models
@@ -56,10 +66,11 @@ def main(cfg: DictConfig):
         template_args=template_args,
     )
 
-    if trainer_args.do_train:
-        trainer.train()
-        trainer.save_state()
-        trainer.save_model(trainer_args.output_dir)
+    run_training_phase(
+        trainer,
+        trainer_args,
+        save_model_after_train=cfg.get("save_model_after_train", True),
+    )
 
     if trainer_args.do_eval:
         trainer.evaluate(metric_key_prefix="eval")
