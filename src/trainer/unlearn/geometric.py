@@ -251,91 +251,107 @@ class GeometricUnlearn(GradDiff):
         return projected, coefficient
 
     def __init__(self, *args, **kwargs):
-        self.geometric_config = kwargs.pop('geometric_config')
-        self.simnpo_config = kwargs.pop("simnpo_config")
-        self.npo_config = kwargs.pop("npo_config")
+        self.geometric_config = kwargs.pop("geometric_config")
+        self.simnpo_config = kwargs.pop("simnpo_config", None)
+        self.npo_config = kwargs.pop("npo_config", None)
         self.dpo_config = kwargs.pop("dpo_config", None)
         self.undial_config = kwargs.pop("undial_config", None)
         self.wga_config = kwargs.pop("wga_config", None)
-        self.satimp = kwargs.pop("satimp_config", None)
+        self.satimp_config = kwargs.pop("satimp_config", None)
+
+        self.loss_name = str(self.geometric_config.loss).lower()
+        config_map = {
+            "npo": self.npo_config,
+            "simnpo": self.simnpo_config,
+            "dpo": self.dpo_config,
+            "undial": self.undial_config,
+            "wga": self.wga_config,
+            "satimp": self.satimp_config,
+        }
+        method_config = config_map.get(self.loss_name)
+        if method_config is not None:
+            kwargs["gamma"] = float(method_config.gamma)
+            kwargs["alpha"] = float(method_config.alpha)
+            kwargs["retain_loss_type"] = str(method_config.retain_loss_type)
+
         super().__init__(*args, **kwargs)
 
-        if self.ref_model is None:
+        if self.gamma <= 0:
+            raise ValueError("GU requires gamma > 0.")
+        if self.alpha < 0:
+            raise ValueError("GU requires alpha >= 0.")
+
+        if self.ref_model is None and self.loss_name in {"npo", "dpo", "undial"}:
             self.ref_model = self._prepare_ref_model(self.model)
 
-        self._setup_projector(geometric_config=self.geometric_config)
-
-        self._last_forget_inputs = None
-        self._last_retain_inputs = None
-
-        # sign-aware selective projection
-        self.sign_selective = getattr(self.geometric_config, "sign_selective", True)
-        self.sign_tau = float(getattr(self.geometric_config, "sign_tau", 0.0))
-        self.sign_cap_ratio = float(getattr(self.geometric_config, "sign_cap_ratio", 0.5))
-
-    def _setup_projector(self, geometric_config):
-        auto_regex = build_last_layers_regex(
-            self.model,
-            last_k=int(geometric_config.auto_last_k_layers),
-            include_lm_head=True,
-            include_final_norm=True
-        )
-        self.null_proj = RetainNullProjector(
-            self.model,
-            param_name_regex=list(dict.fromkeys(auto_regex)),
-            k=geometric_config.null_k,
-            use_adam_diag=True,
-            use_opt_state=True,
-            basis_dtype=torch.float16,
-            basis_update_every=getattr(geometric_config, "basis_update_every", 2),
-            residual_keep_thresh=getattr(geometric_config, "residual_keep_thresh", 1e-3),
-        )
-
-    def compute_loss(self, model, inputs, return_outputs=False):
-        forget_inputs = inputs["forget"] if self.geometric_config.loss != "dpo" else inputs["forget"]["original"]
-        self._last_forget_inputs = inputs["forget"] if "forget" in inputs else forget_inputs
-        retain_inputs = inputs.get("retain")
-        self._last_retain_inputs = retain_inputs
-
-        lt = self.geometric_config.loss
-        if lt == 'npo':
-            forget_loss, f_out = compute_dpo_loss(
-                model=model, ref_model=self.ref_model,
-                win_inputs=None, lose_inputs=forget_inputs,
+    def compute_forget_loss(self, model, forget_inputs):
+        if self.loss_name == "npo":
+            return compute_dpo_loss(
+                model=model,
+                ref_model=self.ref_model,
+                win_inputs=None,
+                lose_inputs=forget_inputs,
                 beta=self.npo_config.beta,
             )
-        elif lt == 'dpo':
-            original_inputs = forget_inputs['original'] if isinstance(forget_inputs, dict) and "original" in forget_inputs else inputs["forget"]["original"]
-            alternate_inputs = inputs["forget"]["alternate"]
-            forget_loss, f_out = compute_dpo_loss(
-                model=model, ref_model=self.ref_model,
-                win_inputs=alternate_inputs, lose_inputs=original_inputs,
+        if self.loss_name == "dpo":
+            return compute_dpo_loss(
+                model=model,
+                ref_model=self.ref_model,
+                win_inputs=forget_inputs["alternate"],
+                lose_inputs=forget_inputs["original"],
                 beta=self.dpo_config.beta,
             )
-        elif lt == 'undial':
-            forget_loss, f_out = compute_undial_loss(model, self.ref_model, forget_inputs, self.undial_config.beta)
-        elif lt == 'simnpo':
+        if self.loss_name == "undial":
+            return compute_undial_loss(
+                model,
+                self.ref_model,
+                forget_inputs,
+                self.undial_config.beta,
+            )
+        if self.loss_name == "simnpo":
             forget_labels = forget_inputs["labels"]
             loss_mask = forget_labels != -100
-            forget_loss, f_out = compute_batch_nll(model, forget_inputs)
+            forget_loss, forget_outputs = compute_batch_nll(model, forget_inputs)
             forget_loss = forget_loss / loss_mask.sum(-1) - self.simnpo_config.delta
-            forget_loss = -F.logsigmoid(self.simnpo_config.beta * forget_loss).mean() * 2 / self.simnpo_config.beta
-            self.gamma = self.simnpo_config.gamma
-        elif lt == 'ceu':
-            forget_loss, f_out = compute_batch_ceu(model, forget_inputs, ignore_first_n_answer_tokens=1)
-            self.alpha = 0.0
-        elif lt == 'wga':
-            forget_loss, f_out = compute_wga_loss(model=model, inputs=forget_inputs, beta=self.wga_config.beta)
-        elif lt == 'satimp':
-            forget_loss, f_out = compute_satimp_loss(model=model, inputs=forget_inputs, beta1=self.satimp.beta1, beta2=self.satimp.beta2)
-            self.gamma = self.satimp.gamma
-        else:
-            f_out = model(**forget_inputs)
-            forget_loss = -f_out.loss
-            if lt == 'gradacend':
-                self.alpha = 0.0
+            beta = self.simnpo_config.beta
+            forget_loss = -F.logsigmoid(beta * forget_loss).mean() * 2 / beta
+            return forget_loss, forget_outputs
+        if self.loss_name == "ceu":
+            return compute_batch_ceu(
+                model,
+                forget_inputs,
+                ignore_first_n_answer_tokens=1,
+            )
+        if self.loss_name == "wga":
+            return compute_wga_loss(
+                model=model,
+                inputs=forget_inputs,
+                beta=self.wga_config.beta,
+            )
+        if self.loss_name == "satimp":
+            return compute_satimp_loss(
+                model=model,
+                inputs=forget_inputs,
+                beta1=self.satimp_config.beta1,
+                beta2=self.satimp_config.beta2,
+            )
 
-        retain_loss = self.compute_retain_loss(model, retain_inputs)
+        forget_outputs = model(**forget_inputs)
+        return -forget_outputs.loss, forget_outputs
+
+    def compute_component_losses(self, model, inputs):
+        forget_loss, forget_outputs = self.compute_forget_loss(
+            model,
+            inputs["forget"],
+        )
+        retain_loss = self.compute_retain_loss(model, inputs["retain"])
+        return forget_loss, retain_loss, forget_outputs
+
+    def compute_loss(self, model, inputs, return_outputs=False):
+        forget_loss, retain_loss, forget_outputs = self.compute_component_losses(
+            model,
+            inputs,
+        )
 
         loss = self.gamma * forget_loss + self.alpha * retain_loss
-        return (loss, f_out) if return_outputs else loss
+        return (loss, forget_outputs) if return_outputs else loss

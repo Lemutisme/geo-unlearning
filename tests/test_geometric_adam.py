@@ -1,8 +1,69 @@
+from types import SimpleNamespace
+
 import pytest
 import torch
+from transformers import TrainingArguments
 
 from trainer.unlearn.geometric import GeometricUnlearn
-from tests.helpers import make_unlearn_batch
+from tests.helpers import TinyCausalLM, make_unlearn_batch
+
+
+def make_geometric_trainer(
+    tmp_path,
+    *,
+    model=None,
+    gu_enabled=True,
+    gamma=0.125,
+    alpha=1.0,
+):
+    model = TinyCausalLM() if model is None else model
+    geometric_config = SimpleNamespace(
+        loss="simnpo",
+        gu_enabled=gu_enabled,
+        projection_eps=1e-12,
+        trainable_params_regex=[".*"],
+        auto_last_k_layers=1,
+        null_k=1,
+    )
+    simnpo_config = SimpleNamespace(
+        delta=0.0,
+        beta=4.5,
+        alpha=alpha,
+        gamma=gamma,
+        retain_loss_type="NLL",
+    )
+    args = TrainingArguments(
+        output_dir=str(tmp_path),
+        use_cpu=True,
+        report_to=[],
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=1,
+        optim="adamw_torch",
+        adam_beta1=0.0,
+        weight_decay=0.0,
+        remove_unused_columns=False,
+        disable_tqdm=True,
+    )
+    trainer = GeometricUnlearn(
+        model=model,
+        args=args,
+        gamma=9.0,
+        alpha=7.0,
+        retain_loss_type="NLL",
+        geometric_config=geometric_config,
+        simnpo_config=simnpo_config,
+        npo_config=SimpleNamespace(
+            beta=0.1,
+            alpha=1.0,
+            gamma=1.0,
+            retain_loss_type="NLL",
+        ),
+        dpo_config=None,
+        undial_config=None,
+        wga_config=None,
+        satimp_config=None,
+    )
+    return trainer, model, simnpo_config
 
 
 def test_unlearn_batch_has_forget_and_retain_components():
@@ -108,3 +169,46 @@ def test_zero_retain_gradient_leaves_forget_gradient_unchanged():
 
 def test_unused_optimizer_step_hook_is_removed():
     assert "optimizer_step" not in GeometricUnlearn.__dict__
+
+
+def test_simnpo_components_are_separate_and_weights_resolve_once(tmp_path):
+    trainer, model, simnpo_config = make_geometric_trainer(tmp_path)
+    batch = make_unlearn_batch(batch_size=2, sequence_length=6)
+
+    assert trainer.gamma == 0.125
+    assert trainer.alpha == 1.0
+    assert trainer.retain_loss_type == "NLL"
+
+    forget_loss, retain_loss, outputs = trainer.compute_component_losses(
+        model,
+        batch,
+    )
+    total = trainer.compute_loss(model, batch)
+
+    torch.testing.assert_close(total, 0.125 * forget_loss + retain_loss)
+    assert outputs.logits.shape[:2] == batch["forget"]["labels"].shape
+
+    simnpo_config.gamma = 4.0
+    trainer.compute_loss(model, batch)
+    assert trainer.gamma == 0.125
+
+
+@pytest.mark.parametrize(
+    ("gamma", "alpha", "message"),
+    [
+        (0.0, 1.0, "gamma > 0"),
+        (0.125, -1.0, "alpha >= 0"),
+    ],
+)
+def test_invalid_gu_coefficients_fail_during_initialization(
+    tmp_path,
+    gamma,
+    alpha,
+    message,
+):
+    with pytest.raises(ValueError, match=message):
+        make_geometric_trainer(
+            tmp_path,
+            gamma=gamma,
+            alpha=alpha,
+        )
