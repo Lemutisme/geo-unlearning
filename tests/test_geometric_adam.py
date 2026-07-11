@@ -294,6 +294,23 @@ def test_training_projects_once_per_optimizer_update(tmp_path):
     assert trainer.last_gu_diagnostics["mode"] == "approximate_adam_stage_a"
 
 
+def test_short_final_accumulation_window_is_projected(tmp_path):
+    dataset = unbatch(make_unlearn_batch(batch_size=2, sequence_length=6))
+    trainer, _, _ = make_geometric_trainer(
+        tmp_path,
+        train_dataset=dataset,
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=4,
+        max_steps=1,
+    )
+
+    trainer.train()
+
+    assert trainer.gu_projection_calls == trainer.state.global_step == 1
+    assert trainer._gu_forget_buffer == {}
+    assert trainer._gu_retain_buffer == {}
+
+
 def test_gradient_accumulation_matches_full_effective_batch(tmp_path):
     torch.manual_seed(123)
     full_batch_model = TinyCausalLM()

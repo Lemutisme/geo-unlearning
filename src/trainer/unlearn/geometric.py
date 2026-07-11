@@ -1,4 +1,5 @@
 import logging
+import math
 import re
 
 import torch
@@ -151,6 +152,20 @@ class GeometricUnlearn(GradDiff):
     def _clear_gu_buffers(self):
         self._gu_forget_buffer.clear()
         self._gu_retain_buffer.clear()
+
+    def _is_short_final_accumulation_step(self):
+        if not self.accelerator.gradient_state.end_of_dataloader:
+            return False
+        if not hasattr(self.train_dataset, "__len__"):
+            return False
+
+        dataset_length = len(self.train_dataset)
+        batch_size = self._train_batch_size
+        if self.args.dataloader_drop_last:
+            steps_in_epoch = dataset_length // batch_size
+        else:
+            steps_in_epoch = math.ceil(dataset_length / batch_size)
+        return steps_in_epoch <= self.args.gradient_accumulation_steps
 
     def _unwrap_optimizer(self):
         optimizer = self.optimizer
@@ -426,7 +441,7 @@ class GeometricUnlearn(GradDiff):
         )
 
         self.accelerator.backward(total_loss)
-        if self.accelerator.sync_gradients:
+        if self.accelerator.sync_gradients or self._is_short_final_accumulation_step():
             self._finalize_gu_gradients(named_params)
 
         return total_loss.detach() * scale
