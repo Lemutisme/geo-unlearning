@@ -87,6 +87,13 @@ def test_matrix_schedules_fifteen_algorithm_arms_and_two_system_arms():
     assert "failure=1" in text
 
 
+def test_arm_overrides_accelerate_config_with_the_assigned_physical_gpu():
+    text = script_text(ARM)
+
+    assert "--gpu_ids" in text
+    assert '"${gpu}"' in text
+
+
 def test_launchers_have_valid_bash_syntax():
     for path in (ARM, MATRIX):
         result = subprocess.run(

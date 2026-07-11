@@ -186,6 +186,7 @@ fi
 command=(
     accelerate launch
     --config_file configs/accelerate/gu_single_gpu.yaml
+    --gpu_ids "${gpu}"
     src/train.py
     --config-name=unlearn.yaml
     "experiment=${experiment}"
