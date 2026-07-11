@@ -16,7 +16,6 @@ defaults:
     - mia_zlib
     - mia_gradnorm
     - forget_gibberish
-    - retain_extraction_strength
 
 handler: MUSEEvaluator
 output_dir: ${paths.output_dir} # set to default eval directory
