@@ -212,6 +212,44 @@ class RetainNullProjector:
 
 class GeometricUnlearn(GradDiff):
 
+    @staticmethod
+    def _global_dot(left, right):
+        result = None
+        for name in left.keys() & right.keys():
+            value = (left[name].float() * right[name].float()).sum()
+            result = value if result is None else result + value
+
+        if result is None:
+            raise RuntimeError("No common tensors for global dot product.")
+
+        return result
+
+    @staticmethod
+    def _to_adam_coordinates(gradient, sqrt_h):
+        if sqrt_h is None:
+            return gradient.float()
+        return gradient.float() / sqrt_h
+
+    @staticmethod
+    def _from_adam_coordinates(vector, sqrt_h):
+        if sqrt_h is None:
+            return vector.float()
+        return vector.float() * sqrt_h
+
+    @classmethod
+    def _project_rank_one(cls, forget, retain, eps):
+        denominator = cls._global_dot(retain, retain).clamp_min(eps)
+        coefficient = cls._global_dot(forget, retain) / denominator
+        projected = {
+            name: (
+                tensor.float() - coefficient * retain[name].float()
+                if name in retain
+                else tensor.float().clone()
+            )
+            for name, tensor in forget.items()
+        }
+        return projected, coefficient
+
     def __init__(self, *args, **kwargs):
         self.geometric_config = kwargs.pop('geometric_config')
         self.simnpo_config = kwargs.pop("simnpo_config")
@@ -301,120 +339,3 @@ class GeometricUnlearn(GradDiff):
 
         loss = self.gamma * forget_loss + self.alpha * retain_loss
         return (loss, f_out) if return_outputs else loss
-
-    def optimizer_step(self, *args, **kwargs):
-        """
-        Memory-optimized final grad:
-            Let g_tot = p.grad = γ g_f + α g_r (from previous backward).
-            Compute g_r once; recover g_f = (g_tot - α g_r) / γ.
-            In whitened coords:
-                g_f_sel = P_⊥ g_f + (sign-aware capped) P_U g_f,
-                g_r_nor = P_U g_r.
-            Overwrite p.grad = γ g_f_sel + α g_r_nor.
-        """
-        optimizer = kwargs.get('optimizer', None)
-        if optimizer is None and len(args) > 0 and hasattr(args[0], 'state'):
-            optimizer = args[0]
-        if optimizer is not None and not self.null_proj._opt_bound:
-            self.null_proj.bind_optimizer(optimizer)
-
-        if self._last_retain_inputs is None or self._last_forget_inputs is None:
-            self.null_proj.project_current_grads(mode='perp')
-            return super().optimizer_step(*args, **kwargs)
-
-        retain_inputs = self._last_retain_inputs
-        forget_inputs = self._last_forget_inputs
-
-        named_params = [(n, p) for n, p in self.model.named_parameters()
-                        if n in self.null_proj.param_names and p.requires_grad]
-        params = [p for _, p in named_params]
-        gtot = [ (p.grad.detach().clone() if p.grad is not None else None) for _, p in named_params ]
-
-
-        with torch.enable_grad():
-            with torch.no_grad():
-                ref_logits = self.ref_model(**retain_inputs).logits
-            logits_r = self.model(**retain_inputs).logits
-            retain_kl = F.kl_div(
-                F.log_softmax(logits_r, dim=-1),
-                F.softmax(ref_logits, dim=-1),
-                reduction="batchmean"
-            )
-
-            self.null_proj.maybe_update_basis_with_retain(retain_kl)
-            gR = torch.autograd.grad(retain_kl, params, retain_graph=False, allow_unused=True)
-
-        gamma = self.gamma
-        alpha = self.alpha
-        inv_gamma = (1.0 / gamma) if gamma != 0 else 0.0
-
-        for (name, p), g_tot_i, gRi in zip(named_params, gtot, gR):
-            if g_tot_i is None and gRi is None:
-                continue
-
-            U = self.null_proj.basis.get(name, [])
-
-            # recover g_f = (g_tot - α g_r) / γ
-            gFi = None
-            if g_tot_i is not None:
-                if gRi is not None:
-                    gFi = (g_tot_i - alpha * gRi) * inv_gamma
-                else:
-                    gFi = g_tot_i * inv_gamma
-
-            gF_t = self.null_proj._precond(name, gFi, update=False).to(torch.float32) if gFi is not None else None
-            gR_t = self.null_proj._precond(name, gRi, update=False).to(torch.float32) if gRi is not None else None
-
-            gR_nor_t = None
-            if gR_t is not None:
-                gR_nor_t = self.nullProjProjectTan(name= name, g_t = gR_t, U = U)  
-
-            gF_sel_t = None
-            if gF_t is not None:
-                if U:
-                    # perp
-                    gF_perp_t = self.null_proj._project_tensor(gF_t, U, mode='perp')
-                    if self.sign_selective and (gR_t is not None):
-                        a_list, b_list = [], []
-                        for u in U:
-                            uu = u.to(torch.float32)
-                            a_list.append((gF_t * uu).sum())
-                            b_list.append((gR_t * uu).sum())
-                        a = torch.stack(a_list)
-                        b = torch.stack(b_list)
-                        keep = (a * b) < (-self.sign_tau)
-                        gF_tan_keep_t = torch.zeros_like(gF_t)
-                        if keep.any():
-                            idx = torch.nonzero(keep, as_tuple=False).flatten()
-                            for j in idx.tolist():
-                                gF_tan_keep_t = gF_tan_keep_t + a[j] * U[j].to(torch.float32)
-                        # cap
-                        perp_norm = gF_perp_t.norm().clamp_min(1e-12)
-                        tan_norm = gF_tan_keep_t.norm()
-                        if tan_norm > self.sign_cap_ratio * perp_norm:
-                            gF_tan_keep_t = gF_tan_keep_t * (self.sign_cap_ratio * perp_norm / tan_norm)
-                        gF_sel_t = gF_perp_t + gF_tan_keep_t
-                    else:
-                        gF_sel_t = gF_perp_t
-                else:
-                    gF_sel_t = gF_t
-
-            new_grad = None
-            if gF_sel_t is not None:
-                new_grad = gamma * self.null_proj._deprecond(name, gF_sel_t)
-            if gR_nor_t is not None:
-                add = alpha * self.null_proj._deprecond(name, gR_nor_t)
-                new_grad = add if new_grad is None else (new_grad + add)
-
-            if new_grad is not None:
-                if p.grad is None or p.grad.shape != new_grad.shape:
-                    p.grad = torch.zeros_like(p)
-                p.grad.copy_(new_grad)
-
-        return super().optimizer_step(*args, **kwargs)
-
-    @torch.no_grad()
-    def nullProjProjectTan(self, name, g_t, U):
-        if not U:
-            return g_t
-        return self.null_proj._project_tensor(g_t, U, mode='tan')
