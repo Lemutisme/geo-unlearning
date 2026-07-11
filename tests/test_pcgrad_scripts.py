@@ -1,6 +1,11 @@
+import inspect
 import os
 import subprocess
 from pathlib import Path
+
+from hydra import compose, initialize_config_dir
+
+from data.pretraining import CompletionDataset
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,6 +70,26 @@ def test_muse_uses_cpu_buffers_and_all_checkpoint_payloads_are_audited():
         "*.ckpt",
     ):
         assert payload in text
+
+
+def test_muse_retain_extraction_dataset_only_passes_completion_arguments():
+    with initialize_config_dir(version_base=None, config_dir=str(ROOT / "configs")):
+        config = compose(
+            config_name="unlearn.yaml",
+            overrides=[
+                "experiment=unlearn/muse/default",
+                "task_name=pcgrad_muse_config_test",
+            ],
+        )
+
+    dataset = config.eval.muse.metrics.retain_extraction_strength.datasets
+    assert len(dataset) == 1
+    dataset_config = next(iter(dataset.values()))
+    assert dataset_config.handler == "CompletionDataset"
+
+    accepted = set(inspect.signature(CompletionDataset.__init__).parameters)
+    unexpected = set(dataset_config.args) - accepted
+    assert not unexpected, f"Unexpected CompletionDataset arguments: {unexpected}"
 
 
 def test_arm_launcher_has_all_dataset_method_and_system_modes():

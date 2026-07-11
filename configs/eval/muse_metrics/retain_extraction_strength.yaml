@@ -3,8 +3,8 @@
 
 # 默认配置继承
 defaults:
-  # 继承用于评估的retain数据集配置
-  - ../../data/datasets@datasets: MUSE_retain_knowmem
+  # 继承 CompletionDataset 参数结构，再覆盖为 retain knowmem 数据
+  - ../../data/datasets@datasets: MUSE_forget_verbmem
   # 继承通用的数据整理器（collator）配置
   - ../../collator@collators: DataCollatorForSupervisedDatasetwithIndex
 
@@ -16,7 +16,7 @@ batch_size: 8
 
 # 数据集特定配置
 datasets:
-  MUSE_retain_knowmem:
+  MUSE_forget_verbmem:
     handler: CompletionDataset # 使用与forget set相同的handler
     args:
       hf_args:
