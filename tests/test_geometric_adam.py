@@ -1,3 +1,4 @@
+import copy
 from types import SimpleNamespace
 
 import pytest
@@ -5,7 +6,7 @@ import torch
 from transformers import TrainingArguments
 
 from trainer.unlearn.geometric import GeometricUnlearn
-from tests.helpers import TinyCausalLM, make_unlearn_batch
+from tests.helpers import TinyCausalLM, make_unlearn_batch, nested_collator
 
 
 def make_geometric_trainer(
@@ -15,6 +16,10 @@ def make_geometric_trainer(
     gu_enabled=True,
     gamma=0.125,
     alpha=1.0,
+    train_dataset=None,
+    per_device_train_batch_size=2,
+    gradient_accumulation_steps=1,
+    max_steps=-1,
 ):
     model = TinyCausalLM() if model is None else model
     geometric_config = SimpleNamespace(
@@ -36,8 +41,10 @@ def make_geometric_trainer(
         output_dir=str(tmp_path),
         use_cpu=True,
         report_to=[],
-        per_device_train_batch_size=2,
-        gradient_accumulation_steps=1,
+        per_device_train_batch_size=per_device_train_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        max_steps=max_steps,
+        learning_rate=1e-3,
         optim="adamw_torch",
         adam_beta1=0.0,
         weight_decay=0.0,
@@ -47,6 +54,8 @@ def make_geometric_trainer(
     trainer = GeometricUnlearn(
         model=model,
         args=args,
+        train_dataset=train_dataset,
+        data_collator=nested_collator if train_dataset is not None else None,
         gamma=9.0,
         alpha=7.0,
         retain_loss_type="NLL",
@@ -64,6 +73,20 @@ def make_geometric_trainer(
         satimp_config=None,
     )
     return trainer, model, simnpo_config
+
+
+def unbatch(batch):
+    batch_size = batch["forget"]["input_ids"].shape[0]
+    return [
+        {
+            component: {
+                key: tensor[index]
+                for key, tensor in component_batch.items()
+            }
+            for component, component_batch in batch.items()
+        }
+        for index in range(batch_size)
+    ]
 
 
 def test_unlearn_batch_has_forget_and_retain_components():
@@ -211,4 +234,102 @@ def test_invalid_gu_coefficients_fail_during_initialization(
             tmp_path,
             gamma=gamma,
             alpha=alpha,
+        )
+
+
+def test_component_gradient_buffers_accumulate_in_fp32_and_clear(tmp_path):
+    trainer, model, _ = make_geometric_trainer(tmp_path)
+    named_parameters = list(model.named_parameters())
+    forget_grads = [torch.ones_like(parameter) for _, parameter in named_parameters]
+    retain_grads = [
+        torch.full_like(parameter, 2.0) for _, parameter in named_parameters
+    ]
+
+    trainer._accumulate_component_grads(
+        named_parameters,
+        forget_grads,
+        retain_grads,
+    )
+    trainer._accumulate_component_grads(
+        named_parameters,
+        forget_grads,
+        retain_grads,
+    )
+
+    for name, _ in named_parameters:
+        assert trainer._gu_forget_buffer[name].dtype == torch.float32
+        assert trainer._gu_retain_buffer[name].dtype == torch.float32
+        torch.testing.assert_close(
+            trainer._gu_forget_buffer[name],
+            torch.full_like(trainer._gu_forget_buffer[name], 2.0),
+        )
+        torch.testing.assert_close(
+            trainer._gu_retain_buffer[name],
+            torch.full_like(trainer._gu_retain_buffer[name], 4.0),
+        )
+
+    trainer._clear_gu_buffers()
+    assert trainer._gu_forget_buffer == {}
+    assert trainer._gu_retain_buffer == {}
+
+
+def test_training_projects_once_per_optimizer_update(tmp_path):
+    dataset = unbatch(make_unlearn_batch(batch_size=4, sequence_length=6))
+    trainer, _, _ = make_geometric_trainer(
+        tmp_path,
+        train_dataset=dataset,
+        per_device_train_batch_size=2,
+        max_steps=2,
+    )
+
+    trainer.train()
+
+    assert trainer.gu_projection_calls == trainer.state.global_step == 2
+    assert trainer._gu_forget_buffer == {}
+    assert trainer._gu_retain_buffer == {}
+    assert trainer.last_gu_diagnostics["mode"] == "approximate_adam_stage_a"
+
+
+def test_gradient_accumulation_matches_full_effective_batch(tmp_path):
+    torch.manual_seed(123)
+    full_batch_model = TinyCausalLM()
+    accumulated_model = copy.deepcopy(full_batch_model)
+    dataset = unbatch(make_unlearn_batch(batch_size=8, sequence_length=6, seed=9))
+
+    full_batch_trainer, _, _ = make_geometric_trainer(
+        tmp_path / "full",
+        model=full_batch_model,
+        train_dataset=dataset,
+        per_device_train_batch_size=8,
+        gradient_accumulation_steps=1,
+        max_steps=1,
+    )
+    full_batch_trainer.train()
+
+    accumulated_trainer, _, _ = make_geometric_trainer(
+        tmp_path / "accumulated",
+        model=accumulated_model,
+        train_dataset=dataset,
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=4,
+        max_steps=1,
+    )
+    accumulated_trainer.train()
+
+    assert full_batch_trainer.last_gu_diagnostics[
+        "coefficient"
+    ] == pytest.approx(
+        accumulated_trainer.last_gu_diagnostics["coefficient"],
+        rel=1e-5,
+        abs=1e-6,
+    )
+    for full_parameter, accumulated_parameter in zip(
+        full_batch_model.parameters(),
+        accumulated_model.parameters(),
+    ):
+        torch.testing.assert_close(
+            full_parameter,
+            accumulated_parameter,
+            rtol=1e-5,
+            atol=1e-6,
         )
