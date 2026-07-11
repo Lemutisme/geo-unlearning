@@ -43,6 +43,10 @@ def test_arm_forces_model_and_dataset_cache_off_the_workspace_fuse_mount():
     text = script_text(ARM)
 
     assert 'export HF_HOME=${PCGRAD_HF_HOME:-/root/.cache/huggingface}' in text
+    assert 'local_root=${PCGRAD_LOCAL_ROOT:-/tmp/pcgrad_smoke}' in text
+    assert '"paths.output_dir=${local_arm_dir}"' in text
+    assert "persist_artifacts" in text
+    assert 'cp "${summary_path}" "${persistent_summary}"' in text
 
 
 def test_muse_uses_cpu_buffers_and_all_checkpoint_payloads_are_audited():

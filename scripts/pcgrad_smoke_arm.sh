@@ -167,13 +167,15 @@ esac
 matrix_root="saves/exp/PCGRAD_SMOKE/${timestamp}"
 arm_name="${dataset}_${method}_${system_mode}"
 arm_dir="${matrix_root}/${arm_name}"
+local_root=${PCGRAD_LOCAL_ROOT:-/tmp/pcgrad_smoke}
+local_arm_dir="${local_root}/${timestamp}/${arm_name}"
 task_name="pcgrad_smoke_${arm_name}_${timestamp}"
-mkdir -p "${arm_dir}"
+mkdir -p "${arm_dir}" "${local_arm_dir}"
 
 diagnostics_path=null
 actual_delta_mode=off
 if [[ "${gu_enabled}" == true ]]; then
-    diagnostics_path="${arm_dir}/gu_diagnostics.jsonl"
+    diagnostics_path="${local_arm_dir}/gu_diagnostics.jsonl"
 fi
 if [[ "${dataset}" == muse_news || "${dataset}" == muse_books ]]; then
     if [[ "${gu_enabled}" == true ]]; then
@@ -197,7 +199,7 @@ command=(
     "model.model_args.attn_implementation=${attention_implementation}"
     "model.model_args.torch_dtype=${torch_dtype}"
     "retain_logs_path=${retain_logs_path}"
-    "paths.output_dir=${arm_dir}"
+    "paths.output_dir=${local_arm_dir}"
     save_model_after_train=false
     "trainer.args.per_device_train_batch_size=${per_device_batch_size}"
     "trainer.args.gradient_accumulation_steps=${gradient_accumulation_steps}"
@@ -233,13 +235,33 @@ command=(
 
 printf 'Launching %q ' "${command[@]}"
 printf '\n'
-"${command[@]}" 2>&1 | tee "${arm_dir}/run.log"
+"${command[@]}" 2>&1 | tee "${local_arm_dir}/run.log"
 
-audit_checkpoint_payloads "${arm_dir}"
+audit_checkpoint_payloads "${local_arm_dir}"
 
-summary_path=$(find "${arm_dir}" -type f -name "${summary_name}" -print -quit)
+summary_path=$(find "${local_arm_dir}" -type f -name "${summary_name}" -print -quit)
 if [[ -z "${summary_path}" ]]; then
-    echo "Missing ${summary_name} under ${arm_dir}." >&2
+    echo "Missing ${summary_name} under ${local_arm_dir}." >&2
     exit 1
 fi
-echo "Completed ${arm_name}: ${summary_path}"
+
+persist_artifacts() {
+    local persistent_summary="${arm_dir}/checkpoint-10/evals/${summary_name}"
+    mkdir -p "${arm_dir}/checkpoint-10/evals" "${arm_dir}/.hydra"
+    cp "${summary_path}" "${persistent_summary}"
+    cp "${local_arm_dir}/.hydra/config.yaml" "${arm_dir}/.hydra/config.yaml"
+    for artifact in \
+        run.log \
+        GeometricUnlearn.log \
+        gu_diagnostics.jsonl \
+        gu_diagnostics.summary.json; do
+        if [[ -f "${local_arm_dir}/${artifact}" ]]; then
+            cp "${local_arm_dir}/${artifact}" "${arm_dir}/${artifact}"
+        fi
+    done
+    audit_checkpoint_payloads "${arm_dir}"
+    echo "${persistent_summary}"
+}
+
+persistent_summary=$(persist_artifacts)
+echo "Completed ${arm_name}: ${persistent_summary}"
