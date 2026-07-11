@@ -39,6 +39,12 @@ def test_production_arm_contract_is_paged_bf16_flash_and_nonreentrant():
     assert "trainer.args.gradient_checkpointing_kwargs.use_reentrant=false" in text
 
 
+def test_arm_forces_model_and_dataset_cache_off_the_workspace_fuse_mount():
+    text = script_text(ARM)
+
+    assert 'export HF_HOME=${PCGRAD_HF_HOME:-/root/.cache/huggingface}' in text
+
+
 def test_muse_uses_cpu_buffers_and_all_checkpoint_payloads_are_audited():
     text = script_text(ARM)
 

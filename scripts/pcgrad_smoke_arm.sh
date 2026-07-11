@@ -29,7 +29,7 @@ source "${conda_base}/etc/profile.d/conda.sh"
 conda activate unlearning
 
 export CUDA_VISIBLE_DEVICES="${gpu}"
-export HF_HOME=${HF_HOME:-/root/.cache/huggingface}
+export HF_HOME=${PCGRAD_HF_HOME:-/root/.cache/huggingface}
 export TOKENIZERS_PARALLELISM=false
 
 case "${method}" in
