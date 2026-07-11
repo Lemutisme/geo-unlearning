@@ -2,6 +2,30 @@
 
 set -euo pipefail
 
+audit_checkpoint_payloads() {
+    local audit_root=$1
+    local checkpoint_file
+    checkpoint_file=$(find "${audit_root}" -type f \( \
+        -name '*.safetensors' -o \
+        -name 'pytorch_model*.bin' -o \
+        -name 'training_args.bin' -o \
+        -name 'trainer_state.json' -o \
+        -name 'optimizer.pt' -o \
+        -name 'scheduler.pt' -o \
+        -name 'rng_state.pth' -o \
+        -name '*.ckpt' \
+    \) -print -quit)
+    if [[ -n "${checkpoint_file}" ]]; then
+        echo "Unexpected checkpoint payload: ${checkpoint_file}" >&2
+        return 1
+    fi
+}
+
+if [[ $# -eq 2 && $1 == --audit-only ]]; then
+    audit_checkpoint_payloads "$2"
+    exit $?
+fi
+
 if [[ $# -ne 5 ]]; then
     echo "Usage: $0 <dataset> <method> <gpu> <timestamp> <system_mode>" >&2
     exit 2
@@ -210,20 +234,7 @@ printf 'Launching %q ' "${command[@]}"
 printf '\n'
 "${command[@]}" 2>&1 | tee "${arm_dir}/run.log"
 
-checkpoint_file=$(find "${arm_dir}" -type f \(
-    -name '*.safetensors' -o
-    -name 'pytorch_model*.bin' -o
-    -name 'training_args.bin' -o
-    -name 'trainer_state.json' -o
-    -name 'optimizer.pt' -o
-    -name 'scheduler.pt' -o
-    -name 'rng_state.pth' -o
-    -name '*.ckpt'
-\) -print -quit)
-if [[ -n "${checkpoint_file}" ]]; then
-    echo "Unexpected checkpoint payload: ${checkpoint_file}" >&2
-    exit 1
-fi
+audit_checkpoint_payloads "${arm_dir}"
 
 summary_path=$(find "${arm_dir}" -type f -name "${summary_name}" -print -quit)
 if [[ -z "${summary_path}" ]]; then

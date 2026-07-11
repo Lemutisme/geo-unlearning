@@ -112,3 +112,28 @@ def test_arm_bootstraps_conda_without_an_inherited_shell_function(tmp_path):
     assert result.returncode == 2
     assert "Unsupported dataset: invalid" in result.stderr
     assert "conda: command not found" not in result.stderr
+
+
+def test_checkpoint_audit_expression_executes_and_detects_payloads(tmp_path):
+    clean = tmp_path / "clean"
+    dirty = tmp_path / "dirty"
+    clean.mkdir()
+    dirty.mkdir()
+
+    clean_result = subprocess.run(
+        [str(ARM), "--audit-only", str(clean)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert clean_result.returncode == 0, clean_result.stderr
+
+    (dirty / "optimizer.pt").write_bytes(b"checkpoint")
+    dirty_result = subprocess.run(
+        [str(ARM), "--audit-only", str(dirty)],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert dirty_result.returncode == 1
+    assert "Unexpected checkpoint payload" in dirty_result.stderr
