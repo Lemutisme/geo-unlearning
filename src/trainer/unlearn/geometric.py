@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 
 
 class GeometricUnlearn(GradDiff):
-
     @staticmethod
     def _global_dot(left, right):
         result = None
@@ -111,8 +110,7 @@ class GeometricUnlearn(GradDiff):
             for name, parameter in model.named_parameters()
             if parameter.requires_grad
             and any(
-                re.fullmatch(pattern, name)
-                for pattern in self.trainable_params_regex
+                re.fullmatch(pattern, name) for pattern in self.trainable_params_regex
             )
         ]
 
@@ -167,15 +165,11 @@ class GeometricUnlearn(GradDiff):
             return
 
         if self.is_deepspeed_enabled:
-            raise NotImplementedError(
-                "Approximate Adam GU does not support DeepSpeed."
-            )
+            raise NotImplementedError("Approximate Adam GU does not support DeepSpeed.")
         if self.is_fsdp_enabled:
             raise NotImplementedError("Approximate Adam GU does not support FSDP.")
         if self.args.fp16:
-            raise NotImplementedError(
-                "Approximate Adam GU supports BF16/FP32 only."
-            )
+            raise NotImplementedError("Approximate Adam GU supports BF16/FP32 only.")
         if self.use_apex:
             raise NotImplementedError("Approximate Adam GU does not support Apex.")
         if self.args.world_size != 1 or self.args.n_gpu > 1:
@@ -219,9 +213,7 @@ class GeometricUnlearn(GradDiff):
         for group in optimizer.param_groups:
             beta1 = float(group["betas"][0])
             if beta1 != 0.0:
-                raise NotImplementedError(
-                    "Approximate Adam GU requires beta1=0."
-                )
+                raise NotImplementedError("Approximate Adam GU requires beta1=0.")
             if float(group.get("weight_decay", 0.0)) != 0.0:
                 raise NotImplementedError(
                     "Approximate Adam GU requires weight_decay=0."
@@ -374,12 +366,8 @@ class GeometricUnlearn(GradDiff):
             "retain_norm": float(retain_norm.item()),
             "dot_before": float(dot_before.item()),
             "dot_after": float(dot_after.item()),
-            "relative_orthogonality_residual": float(
-                relative_residual.item()
-            ),
-            "identity_fallback_parameters": len(
-                forget_fallbacks | retain_fallbacks
-            ),
+            "relative_orthogonality_residual": float(relative_residual.item()),
+            "identity_fallback_parameters": len(forget_fallbacks | retain_fallbacks),
         }
         logger.info(
             "GU projection step=%d mode=%s coefficient=%.8e residual=%.8e "

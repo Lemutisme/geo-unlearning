@@ -83,10 +83,7 @@ def unbatch(batch):
     batch_size = batch["forget"]["input_ids"].shape[0]
     return [
         {
-            component: {
-                key: tensor[index]
-                for key, tensor in component_batch.items()
-            }
+            component: {key: tensor[index] for key, tensor in component_batch.items()}
             for component, component_batch in batch.items()
         }
         for index in range(batch_size)
@@ -166,8 +163,7 @@ def test_frozen_preconditioner_forget_update_is_retain_orthogonal():
         for name, tensor in projected.items()
     }
     delta = {
-        name: -raw_projected[name] / sqrt_h[name].square()
-        for name in raw_projected
+        name: -raw_projected[name] / sqrt_h[name].square() for name in raw_projected
     }
     derivative = GeometricUnlearn._global_dot(raw_retain, delta).abs()
     relative = derivative / (
@@ -324,9 +320,7 @@ def test_gradient_accumulation_matches_full_effective_batch(tmp_path):
     )
     accumulated_trainer.train()
 
-    assert full_batch_trainer.last_gu_diagnostics[
-        "coefficient"
-    ] == pytest.approx(
+    assert full_batch_trainer.last_gu_diagnostics["coefficient"] == pytest.approx(
         accumulated_trainer.last_gu_diagnostics["coefficient"],
         rel=1e-5,
         abs=1e-6,
