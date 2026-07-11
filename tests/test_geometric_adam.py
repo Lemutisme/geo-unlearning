@@ -311,21 +311,22 @@ def test_component_gradient_buffers_accumulate_in_fp32_and_clear(tmp_path):
         retain_grads,
     )
 
-    for name, _ in named_parameters:
-        assert trainer._gu_forget_buffer[name].dtype == torch.float32
-        assert trainer._gu_retain_buffer[name].dtype == torch.float32
+    for name, parameter in named_parameters:
+        forget = trainer.component_buffers.tensor("forget", name, parameter.device)
+        retain = trainer.component_buffers.tensor("retain", name, parameter.device)
+        assert forget.dtype == torch.float32
+        assert retain.dtype == torch.float32
         torch.testing.assert_close(
-            trainer._gu_forget_buffer[name],
-            torch.full_like(trainer._gu_forget_buffer[name], 2.0),
+            forget,
+            torch.full_like(forget, 2.0),
         )
         torch.testing.assert_close(
-            trainer._gu_retain_buffer[name],
-            torch.full_like(trainer._gu_retain_buffer[name], 4.0),
+            retain,
+            torch.full_like(retain, 4.0),
         )
 
     trainer._clear_gu_buffers()
-    assert trainer._gu_forget_buffer == {}
-    assert trainer._gu_retain_buffer == {}
+    assert trainer.component_buffers.empty
 
 
 def test_training_projects_once_per_optimizer_update(tmp_path):
@@ -340,8 +341,7 @@ def test_training_projects_once_per_optimizer_update(tmp_path):
     trainer.train()
 
     assert trainer.gu_projection_calls == trainer.state.global_step == 2
-    assert trainer._gu_forget_buffer == {}
-    assert trainer._gu_retain_buffer == {}
+    assert trainer.component_buffers.empty
     assert trainer.last_gu_diagnostics["mode"] == "approximate_adam_stage_a"
 
 
@@ -358,8 +358,7 @@ def test_short_final_accumulation_window_is_projected(tmp_path):
     trainer.train()
 
     assert trainer.gu_projection_calls == trainer.state.global_step == 1
-    assert trainer._gu_forget_buffer == {}
-    assert trainer._gu_retain_buffer == {}
+    assert trainer.component_buffers.empty
 
 
 def test_gradient_accumulation_matches_full_effective_batch(tmp_path):

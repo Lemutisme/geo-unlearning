@@ -5,6 +5,7 @@ import re
 import torch
 import torch.nn.functional as F
 
+from trainer.unlearn.component_buffers import ComponentGradientBuffers
 from trainer.unlearn.ceu import compute_batch_ceu
 from trainer.unlearn.grad_diff import GradDiff
 from trainer.unlearn.optimizer_geometry import make_optimizer_geometry_adapter
@@ -100,7 +101,13 @@ class GeometricUnlearn(GradDiff):
         self.trainable_params_regex = list(
             getattr(self.geometric_config, "trainable_params_regex", [".*"])
         )
-        self._init_gu_buffers()
+        self.component_buffer_device = str(
+            getattr(self.geometric_config, "component_buffer_device", "parameter")
+        )
+        self.component_buffers = ComponentGradientBuffers(
+            self.component_buffer_device,
+            pin_memory=True,
+        )
         self.gu_projection_calls = 0
         self.last_gu_diagnostics = {}
         self._gu_runtime_validated = False
@@ -117,10 +124,6 @@ class GeometricUnlearn(GradDiff):
             )
         ]
 
-    def _init_gu_buffers(self):
-        self._gu_forget_buffer = {}
-        self._gu_retain_buffer = {}
-
     @torch.no_grad()
     def _accumulate_component_grads(
         self,
@@ -128,32 +131,11 @@ class GeometricUnlearn(GradDiff):
         forget_grads,
         retain_grads,
     ):
-        for (name, _), forget_grad, retain_grad in zip(
-            named_params,
-            forget_grads,
-            retain_grads,
-        ):
-            if forget_grad is not None:
-                forget_grad = forget_grad.detach().float()
-                if name not in self._gu_forget_buffer:
-                    self._gu_forget_buffer[name] = torch.zeros_like(
-                        forget_grad,
-                        dtype=torch.float32,
-                    )
-                self._gu_forget_buffer[name].add_(forget_grad)
-
-            if retain_grad is not None:
-                retain_grad = retain_grad.detach().float()
-                if name not in self._gu_retain_buffer:
-                    self._gu_retain_buffer[name] = torch.zeros_like(
-                        retain_grad,
-                        dtype=torch.float32,
-                    )
-                self._gu_retain_buffer[name].add_(retain_grad)
+        self.component_buffers.add("forget", named_params, forget_grads)
+        self.component_buffers.add("retain", named_params, retain_grads)
 
     def _clear_gu_buffers(self):
-        self._gu_forget_buffer.clear()
-        self._gu_retain_buffer.clear()
+        self.component_buffers.clear()
 
     def _is_short_final_accumulation_step(self):
         if not self.accelerator.gradient_state.end_of_dataloader:
@@ -196,6 +178,10 @@ class GeometricUnlearn(GradDiff):
         named_params = self._selected_named_parameters()
         if not named_params:
             raise ValueError("GU requires at least one selected trainable parameter.")
+        if self.component_buffer_device == "cpu":
+            ComponentGradientBuffers.validate_host_memory(
+                sum(parameter.numel() for _, parameter in named_params)
+            )
 
         adapter = make_optimizer_geometry_adapter(self.optimizer)
         adapter.validate(named_params)
@@ -205,7 +191,7 @@ class GeometricUnlearn(GradDiff):
 
     def _to_frozen_adam_coordinates(
         self,
-        buffer,
+        component,
         named_params,
         adapter,
         groups_by_parameter,
@@ -213,9 +199,14 @@ class GeometricUnlearn(GradDiff):
         transformed = {}
         identity_fallback_names = set()
         for name, parameter in named_params:
-            tensor = buffer.get(name)
+            tensor = self.component_buffers.tensor(
+                component,
+                name,
+                parameter.device,
+            )
             if tensor is None:
                 continue
+            tensor = tensor.float().clone()
             sqrt_h = adapter.sqrt_denominator(
                 parameter, groups_by_parameter[id(parameter)]
             )
@@ -230,9 +221,9 @@ class GeometricUnlearn(GradDiff):
 
     @torch.no_grad()
     def _finalize_gu_gradients(self, named_params):
-        if not self._gu_forget_buffer:
+        if not self.component_buffers.has_component("forget"):
             raise RuntimeError("Forget gradient buffer is empty.")
-        if not self._gu_retain_buffer:
+        if not self.component_buffers.has_component("retain"):
             raise RuntimeError("Retain gradient buffer is empty.")
 
         adapter = self._optimizer_geometry_adapter
@@ -242,13 +233,13 @@ class GeometricUnlearn(GradDiff):
             self._optimizer_geometry_adapter = adapter
         groups_by_parameter = adapter.groups_by_parameter()
         transformed_forget, forget_fallbacks = self._to_frozen_adam_coordinates(
-            self._gu_forget_buffer,
+            "forget",
             named_params,
             adapter,
             groups_by_parameter,
         )
         transformed_retain, retain_fallbacks = self._to_frozen_adam_coordinates(
-            self._gu_retain_buffer,
+            "retain",
             named_params,
             adapter,
             groups_by_parameter,
@@ -363,6 +354,9 @@ class GeometricUnlearn(GradDiff):
             create_graph=False,
             allow_unused=True,
         )
+        self.component_buffers.add("forget", named_params, forget_grads)
+        del forget_grads
+
         retain_grads = torch.autograd.grad(
             retain_loss * scale,
             params,
@@ -370,12 +364,8 @@ class GeometricUnlearn(GradDiff):
             create_graph=False,
             allow_unused=True,
         )
-        self._accumulate_component_grads(
-            named_params,
-            forget_grads,
-            retain_grads,
-        )
-        del forget_grads, retain_grads
+        self.component_buffers.add("retain", named_params, retain_grads)
+        del retain_grads
 
         self.accelerator.backward(total_loss)
         if self.accelerator.sync_gradients or self._is_short_final_accumulation_step():
