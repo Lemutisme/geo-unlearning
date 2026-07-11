@@ -22,6 +22,7 @@ setup(
         ],  # Install using `pip install .[lm-eval]`
         "dev": [
             "pre-commit==4.0.1",
+            "pytest==8.3.5",
             "ruff==0.6.9",
         ],  # Install using `pip install .[dev]`
     },
