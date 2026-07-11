@@ -469,6 +469,7 @@ def test_geometric_yaml_uses_supported_approximate_adam_contract():
     assert config.args.adam_beta1 == 0.0
     assert config.args.weight_decay == 0.0
     assert config.args.fp16 is False
+    assert config.args.max_steps == -1
     assert config.args.gradient_checkpointing_kwargs.use_reentrant is False
     assert config.method_args.geometric_config.gu_enabled is True
     assert config.method_args.geometric_config.sign_selective is False

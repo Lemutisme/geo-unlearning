@@ -6,6 +6,7 @@ handler: GeometricUnlearn
 args: # HuggingFace TrainingArguments
   learning_rate: 1e-5
   num_train_epochs: 5
+  max_steps: -1
   optim: adamw_torch
   adam_beta1: 0.0
   weight_decay: 0.0

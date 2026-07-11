@@ -23,7 +23,7 @@ class GeometricUnlearn(GradDiff):
     @staticmethod
     def _global_dot(left, right):
         result = None
-        for name in left.keys() & right.keys():
+        for name in sorted(left.keys() & right.keys()):
             value = (left[name].float() * right[name].float()).sum()
             result = value if result is None else result + value
 
@@ -289,9 +289,13 @@ class GeometricUnlearn(GradDiff):
                 parameter,
                 groups_by_parameter[id(parameter)],
             )
+            if tensor.dtype != torch.float32:
+                raise RuntimeError("GU component buffers must use FP32.")
             if sqrt_h is None:
                 identity_fallback_names.add(name)
-            transformed[name] = self._to_adam_coordinates(tensor, sqrt_h)
+            if sqrt_h is not None:
+                tensor.div_(sqrt_h)
+            transformed[name] = tensor
         return transformed, identity_fallback_names
 
     @torch.no_grad()
@@ -439,6 +443,7 @@ class GeometricUnlearn(GradDiff):
             forget_grads,
             retain_grads,
         )
+        del forget_grads, retain_grads
 
         self.accelerator.backward(total_loss)
         if self.accelerator.sync_gradients or self._is_short_final_accumulation_step():
