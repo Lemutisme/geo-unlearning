@@ -7,6 +7,7 @@ import torch.nn.functional as F
 
 from trainer.unlearn.ceu import compute_batch_ceu
 from trainer.unlearn.grad_diff import GradDiff
+from trainer.unlearn.optimizer_geometry import make_optimizer_geometry_adapter
 from trainer.utils import (
     compute_batch_nll,
     compute_dpo_loss,
@@ -103,6 +104,7 @@ class GeometricUnlearn(GradDiff):
         self.gu_projection_calls = 0
         self.last_gu_diagnostics = {}
         self._gu_runtime_validated = False
+        self._optimizer_geometry_adapter = None
 
     def _selected_named_parameters(self, model=None):
         model = self.model if model is None else model
@@ -167,14 +169,6 @@ class GeometricUnlearn(GradDiff):
             steps_in_epoch = math.ceil(dataset_length / batch_size)
         return steps_in_epoch <= self.args.gradient_accumulation_steps
 
-    def _unwrap_optimizer(self):
-        optimizer = self.optimizer
-        visited = set()
-        while hasattr(optimizer, "optimizer") and id(optimizer) not in visited:
-            visited.add(id(optimizer))
-            optimizer = optimizer.optimizer
-        return optimizer
-
     def _validate_gu_runtime(self):
         if self._gu_runtime_validated:
             return
@@ -203,91 +197,17 @@ class GeometricUnlearn(GradDiff):
         if not named_params:
             raise ValueError("GU requires at least one selected trainable parameter.")
 
-        optimizer = self._unwrap_optimizer()
-        if not isinstance(optimizer, (torch.optim.Adam, torch.optim.AdamW)):
-            raise NotImplementedError(
-                "Approximate Adam GU requires torch.optim.Adam or AdamW."
-            )
-
-        optimizer_parameter_ids = {
-            id(parameter)
-            for group in optimizer.param_groups
-            for parameter in group["params"]
-        }
-        missing = [
-            name
-            for name, parameter in named_params
-            if id(parameter) not in optimizer_parameter_ids
-        ]
-        if missing:
-            raise ValueError(
-                "Selected parameters are absent from the optimizer: "
-                + ", ".join(missing[:3])
-            )
-
-        for group in optimizer.param_groups:
-            beta1 = float(group["betas"][0])
-            if beta1 != 0.0:
-                raise NotImplementedError("Approximate Adam GU requires beta1=0.")
-            if float(group.get("weight_decay", 0.0)) != 0.0:
-                raise NotImplementedError(
-                    "Approximate Adam GU requires weight_decay=0."
-                )
-            if bool(group.get("amsgrad", False)):
-                raise NotImplementedError(
-                    "Approximate Adam GU does not support AMSGrad."
-                )
+        adapter = make_optimizer_geometry_adapter(self.optimizer)
+        adapter.validate(named_params)
+        self._optimizer_geometry_adapter = adapter
 
         self._gu_runtime_validated = True
-
-    @staticmethod
-    def _optimizer_groups_by_parameter(optimizer):
-        return {
-            id(parameter): group
-            for group in optimizer.param_groups
-            for parameter in group["params"]
-        }
-
-    @staticmethod
-    def _optimizer_step_value(step):
-        if isinstance(step, torch.Tensor):
-            return int(step.item())
-        return int(step)
-
-    def _frozen_sqrt_denominator(self, optimizer, parameter, group):
-        state = optimizer.state.get(parameter, {})
-        if not state:
-            return None
-        if "step" not in state:
-            raise RuntimeError("Initialized Adam state is missing step.")
-
-        exp_avg_sq = state.get("exp_avg_sq")
-        step = self._optimizer_step_value(state["step"])
-        if exp_avg_sq is None:
-            raise RuntimeError("Initialized Adam state is missing exp_avg_sq.")
-        if step <= 0:
-            raise RuntimeError("Initialized Adam state has a non-positive step.")
-
-        if exp_avg_sq.shape != parameter.shape:
-            raise RuntimeError("Adam exp_avg_sq shape does not match parameter.")
-        if not torch.isfinite(exp_avg_sq).all():
-            raise RuntimeError("Adam exp_avg_sq contains non-finite values.")
-        if (exp_avg_sq < 0).any():
-            raise RuntimeError("Adam exp_avg_sq contains negative values.")
-
-        beta2 = float(group["betas"][1])
-        bias_correction = 1.0 - beta2**step
-        v_hat = exp_avg_sq.float() / bias_correction
-        sqrt_h = (v_hat.sqrt() + float(group["eps"])).sqrt()
-        if not torch.isfinite(sqrt_h).all():
-            raise RuntimeError("Adam square-root denominator is non-finite.")
-        return sqrt_h
 
     def _to_frozen_adam_coordinates(
         self,
         buffer,
         named_params,
-        optimizer,
+        adapter,
         groups_by_parameter,
     ):
         transformed = {}
@@ -296,10 +216,8 @@ class GeometricUnlearn(GradDiff):
             tensor = buffer.get(name)
             if tensor is None:
                 continue
-            sqrt_h = self._frozen_sqrt_denominator(
-                optimizer,
-                parameter,
-                groups_by_parameter[id(parameter)],
+            sqrt_h = adapter.sqrt_denominator(
+                parameter, groups_by_parameter[id(parameter)]
             )
             if tensor.dtype != torch.float32:
                 raise RuntimeError("GU component buffers must use FP32.")
@@ -317,18 +235,22 @@ class GeometricUnlearn(GradDiff):
         if not self._gu_retain_buffer:
             raise RuntimeError("Retain gradient buffer is empty.")
 
-        optimizer = self._unwrap_optimizer()
-        groups_by_parameter = self._optimizer_groups_by_parameter(optimizer)
+        adapter = self._optimizer_geometry_adapter
+        if adapter is None:
+            adapter = make_optimizer_geometry_adapter(self.optimizer)
+            adapter.validate(named_params)
+            self._optimizer_geometry_adapter = adapter
+        groups_by_parameter = adapter.groups_by_parameter()
         transformed_forget, forget_fallbacks = self._to_frozen_adam_coordinates(
             self._gu_forget_buffer,
             named_params,
-            optimizer,
+            adapter,
             groups_by_parameter,
         )
         transformed_retain, retain_fallbacks = self._to_frozen_adam_coordinates(
             self._gu_retain_buffer,
             named_params,
-            optimizer,
+            adapter,
             groups_by_parameter,
         )
         dot_before = self._global_dot(transformed_forget, transformed_retain)
@@ -367,10 +289,8 @@ class GeometricUnlearn(GradDiff):
             if final_coordinates is None:
                 continue
 
-            sqrt_h = self._frozen_sqrt_denominator(
-                optimizer,
-                parameter,
-                groups_by_parameter[id(parameter)],
+            sqrt_h = adapter.sqrt_denominator(
+                parameter, groups_by_parameter[id(parameter)]
             )
             final_gradient = self._from_adam_coordinates(
                 final_coordinates,

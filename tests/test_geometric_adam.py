@@ -9,6 +9,10 @@ from transformers import TrainingArguments
 
 import trainer.unlearn.geometric as geometric_module
 from trainer.unlearn.geometric import GeometricUnlearn
+from trainer.unlearn.optimizer_geometry import (
+    make_optimizer_geometry_adapter,
+    unwrap_optimizer,
+)
 from trainer.unlearn.simnpo import SimNPO
 from tests.helpers import TinyCausalLM, make_unlearn_batch, nested_collator
 
@@ -92,7 +96,7 @@ def unbatch(batch):
 
 def seed_nonuniform_adam_state(trainer):
     trainer.create_optimizer()
-    optimizer = trainer._unwrap_optimizer()
+    optimizer = unwrap_optimizer(trainer.optimizer)
     for parameter_index, group in enumerate(optimizer.param_groups, start=1):
         for parameter in group["params"]:
             state = optimizer.state[parameter]
@@ -222,9 +226,10 @@ def test_malformed_initialized_adam_state_fails_closed(
 ):
     trainer, model, _ = make_geometric_trainer(tmp_path)
     trainer.create_optimizer()
-    optimizer = trainer._unwrap_optimizer()
+    optimizer = unwrap_optimizer(trainer.optimizer)
+    adapter = make_optimizer_geometry_adapter(optimizer)
     parameter = next(model.parameters())
-    group = trainer._optimizer_groups_by_parameter(optimizer)[id(parameter)]
+    group = adapter.groups_by_parameter()[id(parameter)]
     state = optimizer.state[parameter]
     state["exp_avg"] = torch.zeros_like(parameter)
     if state_case != "partial_unstepped_state":
@@ -233,7 +238,7 @@ def test_malformed_initialized_adam_state_fails_closed(
         state["exp_avg_sq"] = -torch.ones_like(parameter)
 
     with pytest.raises(RuntimeError, match=message):
-        trainer._frozen_sqrt_denominator(optimizer, parameter, group)
+        adapter.sqrt_denominator(parameter, group)
 
 
 def test_unused_optimizer_step_hook_is_removed():
@@ -410,7 +415,7 @@ def test_gradient_accumulation_matches_full_effective_batch(tmp_path):
         ("momentum", "beta1=0"),
         ("weight_decay", "weight_decay=0"),
         ("amsgrad", "AMSGrad"),
-        ("sgd", "Adam or AdamW"),
+        ("sgd", "SGD"),
         ("reentrant", "use_reentrant=false"),
         ("fp16", "BF16/FP32"),
         ("apex", "Apex"),
