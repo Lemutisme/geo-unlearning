@@ -1,8 +1,10 @@
 import copy
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
+from omegaconf import OmegaConf
 from transformers import TrainingArguments
 
 import trainer.unlearn.geometric as geometric_module
@@ -446,3 +448,20 @@ def test_geometry_disabled_recovers_native_simnpo_update(tmp_path):
             rtol=1e-7,
             atol=1e-8,
         )
+
+
+def test_geometric_yaml_uses_supported_approximate_adam_contract():
+    root = Path(__file__).resolve().parents[1]
+    config = OmegaConf.load(root / "configs/trainer/GeometricUnlearn.yaml")
+
+    assert config.args.optim == "adamw_torch"
+    assert config.args.adam_beta1 == 0.0
+    assert config.args.weight_decay == 0.0
+    assert config.args.fp16 is False
+    assert config.args.gradient_checkpointing_kwargs.use_reentrant is False
+    assert config.method_args.geometric_config.gu_enabled is True
+    assert config.method_args.geometric_config.sign_selective is False
+    assert config.method_args.geometric_config.trainable_params_regex == [".*"]
+    assert config.method_args.simnpo_config.gamma == 0.125
+    assert config.method_args.simnpo_config.retain_loss_type == "NLL"
+    assert "null_k" not in config.method_args.geometric_config
