@@ -5,7 +5,9 @@ import pytest
 import torch
 from transformers import TrainingArguments
 
+import trainer.unlearn.geometric as geometric_module
 from trainer.unlearn.geometric import GeometricUnlearn
+from trainer.unlearn.simnpo import SimNPO
 from tests.helpers import TinyCausalLM, make_unlearn_batch, nested_collator
 
 
@@ -194,6 +196,10 @@ def test_unused_optimizer_step_hook_is_removed():
     assert "optimizer_step" not in GeometricUnlearn.__dict__
 
 
+def test_obsolete_per_parameter_projector_is_removed():
+    assert not hasattr(geometric_module, "RetainNullProjector")
+
+
 def test_simnpo_components_are_separate_and_weights_resolve_once(tmp_path):
     trainer, model, simnpo_config = make_geometric_trainer(tmp_path)
     batch = make_unlearn_batch(batch_size=2, sequence_length=6)
@@ -332,4 +338,111 @@ def test_gradient_accumulation_matches_full_effective_batch(tmp_path):
             accumulated_parameter,
             rtol=1e-5,
             atol=1e-6,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("momentum", "beta1=0"),
+        ("weight_decay", "weight_decay=0"),
+        ("amsgrad", "AMSGrad"),
+        ("sgd", "Adam or AdamW"),
+        ("reentrant", "use_reentrant=false"),
+        ("fp16", "BF16/FP32"),
+        ("deepspeed", "DeepSpeed"),
+        ("fsdp", "FSDP"),
+        ("empty_selection", "selected trainable parameter"),
+    ],
+)
+def test_unsupported_runtime_modes_fail_closed(
+    tmp_path,
+    mutation,
+    message,
+):
+    trainer, model, _ = make_geometric_trainer(tmp_path)
+    trainer.create_optimizer()
+    group = trainer.optimizer.param_groups[0]
+
+    if mutation == "momentum":
+        group["betas"] = (0.9, group["betas"][1])
+    elif mutation == "weight_decay":
+        group["weight_decay"] = 0.01
+    elif mutation == "amsgrad":
+        group["amsgrad"] = True
+    elif mutation == "sgd":
+        trainer.optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
+    elif mutation == "reentrant":
+        trainer.args.gradient_checkpointing = True
+        trainer.args.gradient_checkpointing_kwargs = {}
+    elif mutation == "fp16":
+        trainer.args.fp16 = True
+    elif mutation == "deepspeed":
+        trainer.is_deepspeed_enabled = True
+    elif mutation == "fsdp":
+        trainer.is_fsdp_enabled = True
+    elif mutation == "empty_selection":
+        trainer.trainable_params_regex = ["does-not-match"]
+
+    with pytest.raises((NotImplementedError, ValueError), match=message):
+        trainer._validate_gu_runtime()
+
+
+def test_geometry_disabled_recovers_native_simnpo_update(tmp_path):
+    torch.manual_seed(456)
+    native_model = TinyCausalLM()
+    geometric_model = copy.deepcopy(native_model)
+    dataset = unbatch(make_unlearn_batch(batch_size=4, sequence_length=6, seed=17))
+    batch = make_unlearn_batch(batch_size=2, sequence_length=6, seed=23)
+    native_args = TrainingArguments(
+        output_dir=str(tmp_path / "native"),
+        use_cpu=True,
+        report_to=[],
+        per_device_train_batch_size=4,
+        max_steps=1,
+        learning_rate=1e-3,
+        optim="adamw_torch",
+        adam_beta1=0.0,
+        weight_decay=0.0,
+        remove_unused_columns=False,
+        disable_tqdm=True,
+    )
+    native_trainer = SimNPO(
+        model=native_model,
+        args=native_args,
+        train_dataset=dataset,
+        data_collator=nested_collator,
+        gamma=0.125,
+        alpha=1.0,
+        retain_loss_type="NLL",
+        delta=0.0,
+        beta=4.5,
+    )
+    native_loss = native_trainer.compute_loss(native_model, batch).detach()
+    native_trainer.train()
+
+    geometric_trainer, _, _ = make_geometric_trainer(
+        tmp_path / "geometric",
+        model=geometric_model,
+        gu_enabled=False,
+        train_dataset=dataset,
+        per_device_train_batch_size=4,
+        max_steps=1,
+    )
+    geometric_loss = geometric_trainer.compute_loss(
+        geometric_model,
+        batch,
+    ).detach()
+    geometric_trainer.train()
+
+    torch.testing.assert_close(native_loss, geometric_loss, rtol=0, atol=0)
+    for native_parameter, geometric_parameter in zip(
+        native_model.parameters(),
+        geometric_model.parameters(),
+    ):
+        torch.testing.assert_close(
+            native_parameter,
+            geometric_parameter,
+            rtol=1e-7,
+            atol=1e-8,
         )

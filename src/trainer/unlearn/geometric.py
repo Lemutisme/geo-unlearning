@@ -18,203 +18,6 @@ from trainer.utils import (
 logger = logging.getLogger(__name__)
 
 
-# =========================
-# Utils: auto-select last K trainable layers
-# =========================
-def build_last_layers_regex(model, last_k=2, include_lm_head=True, include_final_norm=True):
-    names = [n for n, _ in model.named_parameters()]
-
-    # Collect all possible "layer index" naming
-    idxs = []
-    for n in names:
-        for pat in [
-            r"\.(?:layers|h|blocks)\.(\d+)\.",      # .layers.XX. / .h.XX. / .blocks.XX.
-            r"\.decoder\.layers\.(\d+)\.",          # .decoder.layers.XX.
-        ]:
-            m = re.search(pat, n)
-            if m:
-                idxs.append(int(m.group(1)))
-                break
-
-    if not idxs:
-        # If no hierarchy is recognized (e.g. only lm_head), only head is returned (if needed).
-        regex = []
-        if include_lm_head and any(n.startswith("lm_head.") for n in names):
-            regex.append(r"lm_head\..*")
-        # Compatible with common head names
-        for head in ("embed_out", "output_projection"):
-            if include_lm_head and any(n.startswith(head + ".") for n in names):
-                regex.append(fr"{head}\..*")
-        return regex
-
-    max_idx = max(idxs)
-    chosen = list(range(max(0, max_idx - last_k + 1), max_idx + 1))
-
-    # Generate a fullmatch regular that "matches all strings"
-    # (note the . * to accommodate different prefixes)
-    regex = [rf".*\.(?:layers|h|blocks)\.{i}\..*" for i in chosen]
-    if any("decoder.layers" in n for n in names):
-        regex += [rf".*\.decoder\.layers\.{i}\..*" for i in chosen]
-
-    # Optional: include final layer norm (different models have different names, 
-    # so include a few common ones)
-    if include_final_norm:
-        regex += [r".*\.ln_f\..*", r".*\.final_layernorm\..*", r".*\.norm\..*"]
-
-    # lm_head / Compatible with other head names
-    if include_lm_head:
-        if any(n.startswith("lm_head.") for n in names):
-            regex.append(r"lm_head\..*")
-        else:
-            for head in ("embed_out", "output_projection"):
-                if any(n.startswith(head + ".") for n in names):
-                    regex.append(fr"{head}\..*")
-                    break
-
-    # de-emphasize
-    regex = list(dict.fromkeys(regex))
-    return regex
-
-
-# =========================
-# Retain Null Projector
-# =========================
-class RetainNullProjector:
-    """
-    Retain subspace per-parameter under Adam metric H=W^T W, memory-optimized.
-
-    mode:
-      - 'perp' : H-orthogonal complement (retain-orthogonal)
-      - 'tan'  : projection onto U (retain subspace)
-    """
-    def __init__(self, model, param_name_regex, k=8, use_adam_diag=True, ema=0.98,
-                    use_opt_state=True,
-                    basis_dtype=torch.float16, 
-                    basis_update_every=1, 
-                    residual_keep_thresh=1e-3 
-                ):
-        self.model = model
-        self.k = int(k)
-        self.use_adam_diag = use_adam_diag
-        self.ema = ema
-        self.use_opt_state = use_opt_state
-        self.basis_dtype = basis_dtype
-        self.basis_update_every = int(basis_update_every)
-        self.residual_keep_thresh = float(residual_keep_thresh)
-
-        self.param_names = [
-            n for n, p in model.named_parameters()
-            if any(re.fullmatch(rx, n) for rx in param_name_regex)
-        ]
-        self.basis = {n: [] for n in self.param_names}  # list[Tensor(basis_dtype)] per param
-        self.v_ema = {n: None for n in self.param_names}  # fallback when optimizer state not bound
-        self._opt_bound = False
-        self._exp_avg_sq = {}  # name -> Tensor, from optimizer state
-        self._step = 0
-
-    def bind_optimizer(self, optimizer):
-        """Try to bind Adam exp_avg_sq to avoid duplicating second-moment memory."""
-        name_map = dict(self.model.named_parameters())
-        found = 0
-        for group in optimizer.param_groups:
-            for p in group['params']:
-                if p is None:
-                    continue
-                for n, pp in name_map.items():
-                    if pp is p and n in self.param_names:
-                        st = optimizer.state.get(p, {})
-                        v = st.get('exp_avg_sq', None)
-                        if v is not None:
-                            self._exp_avg_sq[n] = v
-                            found += 1
-                        break
-        self._opt_bound = (found > 0)
-
-    @torch.no_grad()
-    def _get_v(self, name, g=None, update=False):
-        """Return second moment v for whitening: prefer optimizer exp_avg_sq; else local EMA."""
-        if self.use_opt_state and self._opt_bound and (name in self._exp_avg_sq):
-            return self._exp_avg_sq[name]
-        if not self.use_adam_diag:
-            return None
-        # fallback: local EMA
-        if update:
-            v = self.v_ema[name]
-            v = g.pow(2) if v is None else self.ema * v + (1 - self.ema) * g.pow(2)
-            self.v_ema[name] = v
-            return v
-        else:
-            return self.v_ema[name]
-
-    @torch.no_grad()
-    def _precond(self, name, g, update=False):
-        """Whiten: g~ = W g with W = 1/sqrt(v+eps)."""
-        if not self.use_adam_diag:
-            return g
-        v = self._get_v(name, g=g, update=update)
-        if v is None:
-            return g
-        return g / (v.sqrt() + 1e-8)
-
-    @torch.no_grad()
-    def _deprecond(self, name, g_tilde):
-        """Map back: g = W^{-1} g~."""
-        if not self.use_adam_diag:
-            return g_tilde
-        v = self._get_v(name, update=False)
-        if v is None:
-            return g_tilde
-        return g_tilde * (v.sqrt() + 1e-8)
-
-    @torch.no_grad()
-    def maybe_update_basis_with_retain(self, retain_loss):
-        self._step += 1
-        if (self._step - 1) % self.basis_update_every != 0:
-            return
-        params = [
-            p for n, p in self.model.named_parameters()
-            if n in self.param_names and p.requires_grad
-        ]
-        grads = torch.autograd.grad(retain_loss, params, retain_graph=False, allow_unused=True)
-        for (name, p), g in zip(
-            [(n, p) for n, p in self.model.named_parameters() if n in self.param_names], grads
-        ):
-            if g is None:
-                continue
-            g_tilde = self._precond(name, g.detach(), update=True).to(torch.float32)
-            # Gram-Schmidt in whitened coords (float32 accumulate for stability)
-            U = self.basis[name]
-            for u in U:
-                uu = u.to(torch.float32)
-                g_tilde -= (g_tilde * uu).sum().div(uu.pow(2).sum().clamp_min(1e-12)) * uu
-            norm = g_tilde.norm()
-            if norm > 1e-12 and len(U) < self.k:
-                rel = (norm / (g.detach().norm() + 1e-12)).item()
-                if rel >= self.residual_keep_thresh:
-                    U.append((g_tilde / norm).to(self.basis_dtype))
-
-    @torch.no_grad()
-    def _project_tensor(self, g_tilde, U, mode='perp'):
-        """Input/output: whitened coords; U stored in basis_dtype, upcast to float32 for math."""
-        if not U:
-            return g_tilde
-        if mode == 'perp':
-            for u in U:
-                uu = u.to(torch.float32)
-                coef = (g_tilde * uu).sum().div(uu.pow(2).sum().clamp_min(1e-12))
-                g_tilde = g_tilde - coef * uu
-            return g_tilde
-        elif mode == 'tan':
-            g_tan = torch.zeros_like(g_tilde, dtype=torch.float32)
-            for u in U:
-                uu = u.to(torch.float32)
-                coef = (g_tilde * uu).sum().div(uu.pow(2).sum().clamp_min(1e-12))
-                g_tan = g_tan + coef * uu
-            return g_tan
-        else:
-            raise ValueError(f"Unknown mode={mode}")
-
-
 class GeometricUnlearn(GradDiff):
 
     @staticmethod
@@ -299,6 +102,7 @@ class GeometricUnlearn(GradDiff):
         self._init_gu_buffers()
         self.gu_projection_calls = 0
         self.last_gu_diagnostics = {}
+        self._gu_runtime_validated = False
 
     def _selected_named_parameters(self, model=None):
         model = self.model if model is None else model
@@ -358,6 +162,77 @@ class GeometricUnlearn(GradDiff):
             optimizer = optimizer.optimizer
         return optimizer
 
+    def _validate_gu_runtime(self):
+        if self._gu_runtime_validated:
+            return
+
+        if self.is_deepspeed_enabled:
+            raise NotImplementedError(
+                "Approximate Adam GU does not support DeepSpeed."
+            )
+        if self.is_fsdp_enabled:
+            raise NotImplementedError("Approximate Adam GU does not support FSDP.")
+        if self.args.fp16:
+            raise NotImplementedError(
+                "Approximate Adam GU supports BF16/FP32 only."
+            )
+        if self.use_apex:
+            raise NotImplementedError("Approximate Adam GU does not support Apex.")
+        if self.args.world_size != 1 or self.args.n_gpu > 1:
+            raise NotImplementedError(
+                "Approximate Adam GU supports one process and one GPU only."
+            )
+
+        if self.args.gradient_checkpointing:
+            checkpointing_kwargs = self.args.gradient_checkpointing_kwargs or {}
+            if checkpointing_kwargs.get("use_reentrant", True):
+                raise NotImplementedError(
+                    "Approximate Adam GU requires use_reentrant=false."
+                )
+
+        named_params = self._selected_named_parameters()
+        if not named_params:
+            raise ValueError("GU requires at least one selected trainable parameter.")
+
+        optimizer = self._unwrap_optimizer()
+        if not isinstance(optimizer, (torch.optim.Adam, torch.optim.AdamW)):
+            raise NotImplementedError(
+                "Approximate Adam GU requires torch.optim.Adam or AdamW."
+            )
+
+        optimizer_parameter_ids = {
+            id(parameter)
+            for group in optimizer.param_groups
+            for parameter in group["params"]
+        }
+        missing = [
+            name
+            for name, parameter in named_params
+            if id(parameter) not in optimizer_parameter_ids
+        ]
+        if missing:
+            raise ValueError(
+                "Selected parameters are absent from the optimizer: "
+                + ", ".join(missing[:3])
+            )
+
+        for group in optimizer.param_groups:
+            beta1 = float(group["betas"][0])
+            if beta1 != 0.0:
+                raise NotImplementedError(
+                    "Approximate Adam GU requires beta1=0."
+                )
+            if float(group.get("weight_decay", 0.0)) != 0.0:
+                raise NotImplementedError(
+                    "Approximate Adam GU requires weight_decay=0."
+                )
+            if bool(group.get("amsgrad", False)):
+                raise NotImplementedError(
+                    "Approximate Adam GU does not support AMSGrad."
+                )
+
+        self._gu_runtime_validated = True
+
     @staticmethod
     def _optimizer_groups_by_parameter(optimizer):
         return {
@@ -378,6 +253,11 @@ class GeometricUnlearn(GradDiff):
         step = self._optimizer_step_value(state.get("step", 0))
         if exp_avg_sq is None or step <= 0:
             return None
+
+        if exp_avg_sq.shape != parameter.shape:
+            raise RuntimeError("Adam exp_avg_sq shape does not match parameter.")
+        if not torch.isfinite(exp_avg_sq).all():
+            raise RuntimeError("Adam exp_avg_sq contains non-finite values.")
 
         beta2 = float(group["betas"][1])
         bias_correction = 1.0 - beta2**step
@@ -516,6 +396,7 @@ class GeometricUnlearn(GradDiff):
         if not self.gu_enabled:
             return super().training_step(model, inputs)
 
+        self._validate_gu_runtime()
         model.train()
         if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
             self.optimizer.train()
