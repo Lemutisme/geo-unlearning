@@ -12,6 +12,10 @@ from trainer.unlearn.gradient_surgery import (
     apply_surgery_tensor,
     decide_global_surgery,
 )
+from trainer.unlearn.gu_diagnostics import (
+    ActualDeltaCallback,
+    SurgeryDiagnosticsWriter,
+)
 from trainer.unlearn.optimizer_geometry import make_optimizer_geometry_adapter
 from trainer.utils import (
     compute_batch_nll,
@@ -121,6 +125,35 @@ class GeometricUnlearn(GradDiff):
         self.last_surgery_diagnostics = {}
         self._gu_runtime_validated = False
         self._optimizer_geometry_adapter = None
+        diagnostics_path = getattr(
+            self.geometric_config,
+            "diagnostics_path",
+            None,
+        )
+        self.diagnostics_writer = (
+            SurgeryDiagnosticsWriter(diagnostics_path)
+            if diagnostics_path
+            else None
+        )
+        actual_delta_mode = str(
+            getattr(self.geometric_config, "actual_delta_mode", "off")
+        ).lower()
+        self.actual_delta_callback = ActualDeltaCallback(
+            mode=actual_delta_mode,
+            steps=list(
+                getattr(self.geometric_config, "actual_delta_steps", [1, 10])
+            ),
+            sample_elements=int(
+                getattr(
+                    self.geometric_config,
+                    "actual_delta_sample_elements",
+                    1_000_000,
+                )
+            ),
+            writer=self.diagnostics_writer,
+        )
+        if self.diagnostics_writer is not None or actual_delta_mode != "off":
+            self.add_callback(self.actual_delta_callback)
 
     def _selected_named_parameters(self, model=None):
         model = self.model if model is None else model
@@ -366,6 +399,8 @@ class GeometricUnlearn(GradDiff):
         self.surgery_calls += 1
         self.gu_projection_calls = self.surgery_calls
         diagnostics = {
+            "record_type": "geometry",
+            "update_step": self.surgery_calls,
             "mode": self.gradient_surgery,
             "projection_calls": self.surgery_calls,
             "surgery_calls": self.surgery_calls,
@@ -397,6 +432,13 @@ class GeometricUnlearn(GradDiff):
         }
         self.last_surgery_diagnostics = diagnostics
         self.last_gu_diagnostics = diagnostics
+        if self.diagnostics_writer is not None:
+            self.diagnostics_writer.write_step(diagnostics)
+        self.actual_delta_callback.prepare_step(
+            self.surgery_calls,
+            named_params,
+            self.component_buffers,
+        )
         logger.info(
             "Gradient surgery step=%d mode=%s coefficient=%.8e residual=%.8e "
             "identity_fallback_parameters=%d",

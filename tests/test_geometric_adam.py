@@ -28,6 +28,7 @@ def make_geometric_trainer(
     per_device_train_batch_size=2,
     gradient_accumulation_steps=1,
     max_steps=-1,
+    geometric_overrides=None,
 ):
     model = TinyCausalLM() if model is None else model
     geometric_config = SimpleNamespace(
@@ -38,6 +39,8 @@ def make_geometric_trainer(
         auto_last_k_layers=1,
         null_k=1,
     )
+    for key, value in (geometric_overrides or {}).items():
+        setattr(geometric_config, key, value)
     simnpo_config = SimpleNamespace(
         delta=0.0,
         beta=4.5,
@@ -58,6 +61,7 @@ def make_geometric_trainer(
         weight_decay=0.0,
         remove_unused_columns=False,
         disable_tqdm=True,
+        save_strategy="no",
     )
     trainer = GeometricUnlearn(
         model=model,
