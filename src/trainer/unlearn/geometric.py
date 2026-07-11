@@ -8,6 +8,10 @@ import torch.nn.functional as F
 from trainer.unlearn.component_buffers import ComponentGradientBuffers
 from trainer.unlearn.ceu import compute_batch_ceu
 from trainer.unlearn.grad_diff import GradDiff
+from trainer.unlearn.gradient_surgery import (
+    apply_surgery_tensor,
+    decide_global_surgery,
+)
 from trainer.unlearn.optimizer_geometry import make_optimizer_geometry_adapter
 from trainer.utils import (
     compute_batch_nll,
@@ -95,6 +99,9 @@ class GeometricUnlearn(GradDiff):
             self.ref_model = self._prepare_ref_model(self.model)
 
         self.gu_enabled = bool(getattr(self.geometric_config, "gu_enabled", True))
+        self.gradient_surgery = str(
+            getattr(self.geometric_config, "gradient_surgery", "gu")
+        ).lower()
         self.projection_eps = float(
             getattr(self.geometric_config, "projection_eps", 1e-12)
         )
@@ -110,6 +117,8 @@ class GeometricUnlearn(GradDiff):
         )
         self.gu_projection_calls = 0
         self.last_gu_diagnostics = {}
+        self.surgery_calls = 0
+        self.last_surgery_diagnostics = {}
         self._gu_runtime_validated = False
         self._optimizer_geometry_adapter = None
 
@@ -178,6 +187,10 @@ class GeometricUnlearn(GradDiff):
         named_params = self._selected_named_parameters()
         if not named_params:
             raise ValueError("GU requires at least one selected trainable parameter.")
+        if self.gradient_surgery not in {"gu", "pcgrad"}:
+            raise ValueError(
+                f"Unsupported gradient surgery mode: {self.gradient_surgery}"
+            )
         if self.component_buffer_device == "cpu":
             ComponentGradientBuffers.validate_host_memory(
                 sum(parameter.numel() for _, parameter in named_params)
@@ -189,35 +202,26 @@ class GeometricUnlearn(GradDiff):
 
         self._gu_runtime_validated = True
 
-    def _to_frozen_adam_coordinates(
+    def _component_in_frozen_coordinates(
         self,
         component,
-        named_params,
-        adapter,
-        groups_by_parameter,
+        name,
+        parameter,
+        sqrt_denominator,
     ):
-        transformed = {}
-        identity_fallback_names = set()
-        for name, parameter in named_params:
-            tensor = self.component_buffers.tensor(
-                component,
-                name,
-                parameter.device,
-            )
-            if tensor is None:
-                continue
-            tensor = tensor.float().clone()
-            sqrt_h = adapter.sqrt_denominator(
-                parameter, groups_by_parameter[id(parameter)]
-            )
-            if tensor.dtype != torch.float32:
-                raise RuntimeError("GU component buffers must use FP32.")
-            if sqrt_h is None:
-                identity_fallback_names.add(name)
-            if sqrt_h is not None:
-                tensor.div_(sqrt_h)
-            transformed[name] = tensor
-        return transformed, identity_fallback_names
+        tensor = self.component_buffers.tensor(
+            component,
+            name,
+            parameter.device,
+        )
+        if tensor is None:
+            return None
+        if tensor.dtype != torch.float32:
+            raise RuntimeError("GU component buffers must use FP32.")
+        tensor = tensor.float()
+        if sqrt_denominator is not None:
+            tensor = tensor / sqrt_denominator
+        return tensor
 
     @torch.no_grad()
     def _finalize_gu_gradients(self, named_params):
@@ -232,60 +236,102 @@ class GeometricUnlearn(GradDiff):
             adapter.validate(named_params)
             self._optimizer_geometry_adapter = adapter
         groups_by_parameter = adapter.groups_by_parameter()
-        transformed_forget, forget_fallbacks = self._to_frozen_adam_coordinates(
-            "forget",
-            named_params,
-            adapter,
-            groups_by_parameter,
-        )
-        transformed_retain, retain_fallbacks = self._to_frozen_adam_coordinates(
-            "retain",
-            named_params,
-            adapter,
-            groups_by_parameter,
-        )
-        dot_before = self._global_dot(transformed_forget, transformed_retain)
-        projected_forget, coefficient = self._project_rank_one(
-            transformed_forget,
-            transformed_retain,
+        scalar_device = named_params[0][1].device
+        dot_before = torch.zeros((), dtype=torch.float32, device=scalar_device)
+        forget_sq = torch.zeros_like(dot_before)
+        retain_sq = torch.zeros_like(dot_before)
+        identity_fallback_names = set()
+
+        # Pass one computes the single global decision without materializing
+        # transformed full-model gradient dictionaries.
+        for name, parameter in named_params:
+            group = groups_by_parameter[id(parameter)]
+            sqrt_denominator = adapter.sqrt_denominator(parameter, group)
+            forget = self._component_in_frozen_coordinates(
+                "forget", name, parameter, sqrt_denominator
+            )
+            retain = self._component_in_frozen_coordinates(
+                "retain", name, parameter, sqrt_denominator
+            )
+            if forget is None and retain is None:
+                continue
+            if sqrt_denominator is None:
+                identity_fallback_names.add(name)
+            if forget is not None:
+                forget_sq.add_(forget.square().sum())
+            if retain is not None:
+                retain_sq.add_(retain.square().sum())
+            if forget is not None and retain is not None:
+                dot_before.add_((forget * retain).sum())
+
+        decision = decide_global_surgery(
+            self.gradient_surgery,
+            dot_before,
+            retain_sq,
             self.projection_eps,
         )
-        dot_after = self._global_dot(projected_forget, transformed_retain)
-        forget_norm = self._global_dot(
-            transformed_forget,
-            transformed_forget,
-        ).sqrt()
-        retain_norm = self._global_dot(
-            transformed_retain,
-            transformed_retain,
-        ).sqrt()
-        projected_norm = self._global_dot(
-            projected_forget,
-            projected_forget,
-        ).sqrt()
+        gu_decision = decide_global_surgery(
+            "gu",
+            dot_before,
+            retain_sq,
+            self.projection_eps,
+        )
+        dot_after = dot_before - decision.coefficient * retain_sq
+        projected_sq = (
+            forget_sq
+            - 2.0 * decision.coefficient * dot_before
+            + decision.coefficient.square() * retain_sq
+        ).clamp_min(0.0)
+        forget_norm = forget_sq.sqrt()
+        retain_norm = retain_sq.sqrt()
+        projected_norm = projected_sq.sqrt()
+        final_sq = torch.zeros_like(dot_before)
+        pcgrad_gu_difference_sq = torch.zeros_like(dot_before)
+        gu_final_sq = torch.zeros_like(dot_before)
+        forget_final_dot = torch.zeros_like(dot_before)
+        retain_final_dot = torch.zeros_like(dot_before)
 
+        # Pass two reconstructs one parameter block at a time, writes the
+        # final raw gradient, then releases the transient coordinate tensors.
         for name, parameter in named_params:
-            forget_component = projected_forget.get(name)
-            retain_component = transformed_retain.get(name)
-            final_coordinates = None
-            if forget_component is not None:
-                final_coordinates = self.gamma * forget_component
-            if retain_component is not None and self.alpha != 0:
-                retain_term = self.alpha * retain_component
-                final_coordinates = (
-                    retain_term
-                    if final_coordinates is None
-                    else final_coordinates + retain_term
-                )
-            if final_coordinates is None:
-                continue
-
-            sqrt_h = adapter.sqrt_denominator(
-                parameter, groups_by_parameter[id(parameter)]
+            group = groups_by_parameter[id(parameter)]
+            sqrt_denominator = adapter.sqrt_denominator(parameter, group)
+            forget = self._component_in_frozen_coordinates(
+                "forget", name, parameter, sqrt_denominator
             )
+            retain = self._component_in_frozen_coordinates(
+                "retain", name, parameter, sqrt_denominator
+            )
+            if forget is None and retain is None:
+                continue
+            if forget is None:
+                forget = torch.zeros_like(retain)
+            if retain is None:
+                retain = torch.zeros_like(forget)
+
+            projected_forget = apply_surgery_tensor(forget, retain, decision)
+            gu_projected_forget = apply_surgery_tensor(
+                forget,
+                retain,
+                gu_decision,
+            )
+            final_coordinates = (
+                self.gamma * projected_forget + self.alpha * retain
+            )
+            gu_final_coordinates = (
+                self.gamma * gu_projected_forget + self.alpha * retain
+            )
+            final_sq.add_(final_coordinates.square().sum())
+            gu_final_sq.add_(gu_final_coordinates.square().sum())
+            pcgrad_gu_difference_sq.add_(
+                (final_coordinates - gu_final_coordinates).square().sum()
+            )
+            forget_final_dot.add_((forget * final_coordinates).sum())
+            retain_final_dot.add_((retain * final_coordinates).sum())
+
             final_gradient = self._from_adam_coordinates(
                 final_coordinates,
-                sqrt_h,
+                sqrt_denominator,
             )
             if parameter.grad is None:
                 parameter.grad = torch.zeros_like(parameter)
@@ -299,26 +345,66 @@ class GeometricUnlearn(GradDiff):
         relative_residual = dot_after.abs() / (
             projected_norm * retain_norm + self.projection_eps
         )
-        self.gu_projection_calls += 1
-        self.last_gu_diagnostics = {
-            "mode": "approximate_adam_stage_a",
-            "projection_calls": self.gu_projection_calls,
-            "coefficient": float(coefficient.item()),
+        cosine_before = dot_before / (
+            forget_norm * retain_norm + self.projection_eps
+        )
+        cosine_after = dot_after / (
+            projected_norm * retain_norm + self.projection_eps
+        )
+        relative_surgery_magnitude = (
+            decision.coefficient.abs() * retain_norm
+        ) / (forget_norm + self.projection_eps)
+        relative_pcgrad_gu_distance = None
+        if self.gradient_surgery == "pcgrad":
+            relative_pcgrad_gu_distance = float(
+                (
+                    pcgrad_gu_difference_sq.sqrt()
+                    / (gu_final_sq.sqrt() + self.projection_eps)
+                ).item()
+            )
+
+        self.surgery_calls += 1
+        self.gu_projection_calls = self.surgery_calls
+        diagnostics = {
+            "mode": self.gradient_surgery,
+            "projection_calls": self.surgery_calls,
+            "surgery_calls": self.surgery_calls,
+            "optimizer_geometry": adapter.name,
+            "component_buffer_device": self.component_buffer_device,
+            "conflict": decision.conflict,
+            "coefficient": float(decision.coefficient.item()),
+            "raw_coefficient": float(decision.raw_coefficient.item()),
             "forget_norm": float(forget_norm.item()),
             "retain_norm": float(retain_norm.item()),
+            "projected_forget_norm": float(projected_norm.item()),
+            "final_coordinate_norm": float(final_sq.sqrt().item()),
             "dot_before": float(dot_before.item()),
             "dot_after": float(dot_after.item()),
+            "cosine_before": float(cosine_before.item()),
+            "cosine_after": float(cosine_after.item()),
             "relative_orthogonality_residual": float(relative_residual.item()),
-            "identity_fallback_parameters": len(forget_fallbacks | retain_fallbacks),
+            "relative_surgery_magnitude": float(
+                relative_surgery_magnitude.item()
+            ),
+            "relative_pcgrad_gu_distance": relative_pcgrad_gu_distance,
+            "predicted_forget_directional_derivative": float(
+                (-forget_final_dot).item()
+            ),
+            "predicted_retain_directional_derivative": float(
+                (-retain_final_dot).item()
+            ),
+            "identity_fallback_parameters": len(identity_fallback_names),
         }
+        self.last_surgery_diagnostics = diagnostics
+        self.last_gu_diagnostics = diagnostics
         logger.info(
-            "GU projection step=%d mode=%s coefficient=%.8e residual=%.8e "
+            "Gradient surgery step=%d mode=%s coefficient=%.8e residual=%.8e "
             "identity_fallback_parameters=%d",
-            self.gu_projection_calls,
-            self.last_gu_diagnostics["mode"],
-            self.last_gu_diagnostics["coefficient"],
-            self.last_gu_diagnostics["relative_orthogonality_residual"],
-            self.last_gu_diagnostics["identity_fallback_parameters"],
+            self.surgery_calls,
+            diagnostics["mode"],
+            diagnostics["coefficient"],
+            diagnostics["relative_orthogonality_residual"],
+            diagnostics["identity_fallback_parameters"],
         )
         self._clear_gu_buffers()
 

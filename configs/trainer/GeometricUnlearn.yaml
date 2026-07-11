@@ -24,8 +24,14 @@ method_args:
   geometric_config:
     loss: "simnpo"
     gu_enabled: true
+    gradient_surgery: gu
     projection_eps: 1.0e-12
     sign_selective: false
+    component_buffer_device: parameter
+    diagnostics_path: null
+    actual_delta_mode: "off"
+    actual_delta_steps: [1, 10]
+    actual_delta_sample_elements: 1000000
     trainable_params_regex: 
       - ".*"
 

@@ -342,7 +342,7 @@ def test_training_projects_once_per_optimizer_update(tmp_path):
 
     assert trainer.gu_projection_calls == trainer.state.global_step == 2
     assert trainer.component_buffers.empty
-    assert trainer.last_gu_diagnostics["mode"] == "approximate_adam_stage_a"
+    assert trainer.last_gu_diagnostics["mode"] == "gu"
 
 
 def test_short_final_accumulation_window_is_projected(tmp_path):
