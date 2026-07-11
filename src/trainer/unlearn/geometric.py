@@ -256,20 +256,32 @@ class GeometricUnlearn(GradDiff):
 
     def _frozen_sqrt_denominator(self, optimizer, parameter, group):
         state = optimizer.state.get(parameter, {})
-        exp_avg_sq = state.get("exp_avg_sq")
-        step = self._optimizer_step_value(state.get("step", 0))
-        if exp_avg_sq is None or step <= 0:
+        if not state:
             return None
+        if "step" not in state:
+            raise RuntimeError("Initialized Adam state is missing step.")
+
+        exp_avg_sq = state.get("exp_avg_sq")
+        step = self._optimizer_step_value(state["step"])
+        if exp_avg_sq is None:
+            raise RuntimeError("Initialized Adam state is missing exp_avg_sq.")
+        if step <= 0:
+            raise RuntimeError("Initialized Adam state has a non-positive step.")
 
         if exp_avg_sq.shape != parameter.shape:
             raise RuntimeError("Adam exp_avg_sq shape does not match parameter.")
         if not torch.isfinite(exp_avg_sq).all():
             raise RuntimeError("Adam exp_avg_sq contains non-finite values.")
+        if (exp_avg_sq < 0).any():
+            raise RuntimeError("Adam exp_avg_sq contains negative values.")
 
         beta2 = float(group["betas"][1])
         bias_correction = 1.0 - beta2**step
         v_hat = exp_avg_sq.float() / bias_correction
-        return (v_hat.sqrt() + float(group["eps"])).sqrt()
+        sqrt_h = (v_hat.sqrt() + float(group["eps"])).sqrt()
+        if not torch.isfinite(sqrt_h).all():
+            raise RuntimeError("Adam square-root denominator is non-finite.")
+        return sqrt_h
 
     def _to_frozen_adam_coordinates(
         self,

@@ -90,6 +90,23 @@ def unbatch(batch):
     ]
 
 
+def seed_nonuniform_adam_state(trainer):
+    trainer.create_optimizer()
+    optimizer = trainer._unwrap_optimizer()
+    for parameter_index, group in enumerate(optimizer.param_groups, start=1):
+        for parameter in group["params"]:
+            state = optimizer.state[parameter]
+            state["step"] = torch.tensor(3.0)
+            state["exp_avg"] = torch.zeros_like(parameter)
+            values = torch.arange(
+                1,
+                parameter.numel() + 1,
+                device=parameter.device,
+                dtype=torch.float32,
+            ).reshape_as(parameter)
+            state["exp_avg_sq"] = values.mul(1e-4 * parameter_index).to(parameter.dtype)
+
+
 def test_unlearn_batch_has_forget_and_retain_components():
     batch = make_unlearn_batch(batch_size=2, sequence_length=6)
     assert set(batch) == {"forget", "retain"}
@@ -188,6 +205,35 @@ def test_zero_retain_gradient_leaves_forget_gradient_unchanged():
     torch.testing.assert_close(projected["weight"], forget["weight"])
     assert coefficient.item() == 0.0
     assert torch.isfinite(projected["weight"]).all()
+
+
+@pytest.mark.parametrize(
+    ("state_case", "message"),
+    [
+        ("partial_unstepped_state", "missing step"),
+        ("missing_second_moment", "missing exp_avg_sq"),
+        ("negative_second_moment", "negative values"),
+    ],
+)
+def test_malformed_initialized_adam_state_fails_closed(
+    tmp_path,
+    state_case,
+    message,
+):
+    trainer, model, _ = make_geometric_trainer(tmp_path)
+    trainer.create_optimizer()
+    optimizer = trainer._unwrap_optimizer()
+    parameter = next(model.parameters())
+    group = trainer._optimizer_groups_by_parameter(optimizer)[id(parameter)]
+    state = optimizer.state[parameter]
+    state["exp_avg"] = torch.zeros_like(parameter)
+    if state_case != "partial_unstepped_state":
+        state["step"] = torch.tensor(1.0)
+    if state_case == "negative_second_moment":
+        state["exp_avg_sq"] = -torch.ones_like(parameter)
+
+    with pytest.raises(RuntimeError, match=message):
+        trainer._frozen_sqrt_denominator(optimizer, parameter, group)
 
 
 def test_unused_optimizer_step_hook_is_removed():
@@ -325,6 +371,7 @@ def test_gradient_accumulation_matches_full_effective_batch(tmp_path):
         gradient_accumulation_steps=1,
         max_steps=1,
     )
+    seed_nonuniform_adam_state(full_batch_trainer)
     full_batch_trainer.train()
 
     accumulated_trainer, _, _ = make_geometric_trainer(
@@ -335,8 +382,11 @@ def test_gradient_accumulation_matches_full_effective_batch(tmp_path):
         gradient_accumulation_steps=4,
         max_steps=1,
     )
+    seed_nonuniform_adam_state(accumulated_trainer)
     accumulated_trainer.train()
 
+    assert full_batch_trainer.last_gu_diagnostics["identity_fallback_parameters"] == 0
+    assert accumulated_trainer.last_gu_diagnostics["identity_fallback_parameters"] == 0
     assert full_batch_trainer.last_gu_diagnostics["coefficient"] == pytest.approx(
         accumulated_trainer.last_gu_diagnostics["coefficient"],
         rel=1e-5,
@@ -363,6 +413,9 @@ def test_gradient_accumulation_matches_full_effective_batch(tmp_path):
         ("sgd", "Adam or AdamW"),
         ("reentrant", "use_reentrant=false"),
         ("fp16", "BF16/FP32"),
+        ("apex", "Apex"),
+        ("world_size", "one process and one GPU"),
+        ("multi_gpu", "one process and one GPU"),
         ("deepspeed", "DeepSpeed"),
         ("fsdp", "FSDP"),
         ("empty_selection", "selected trainable parameter"),
@@ -390,6 +443,12 @@ def test_unsupported_runtime_modes_fail_closed(
         trainer.args.gradient_checkpointing_kwargs = {}
     elif mutation == "fp16":
         trainer.args.fp16 = True
+    elif mutation == "apex":
+        trainer.use_apex = True
+    elif mutation == "world_size":
+        trainer.args.distributed_state = SimpleNamespace(num_processes=2)
+    elif mutation == "multi_gpu":
+        trainer.args._n_gpu = 2
     elif mutation == "deepspeed":
         trainer.is_deepspeed_enabled = True
     elif mutation == "fsdp":
@@ -399,6 +458,18 @@ def test_unsupported_runtime_modes_fail_closed(
 
     with pytest.raises((NotImplementedError, ValueError), match=message):
         trainer._validate_gu_runtime()
+
+
+def test_standard_torch_adam_runtime_is_supported(tmp_path):
+    trainer, model, _ = make_geometric_trainer(tmp_path)
+    trainer.optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=1e-3,
+        betas=(0.0, 0.999),
+        weight_decay=0.0,
+    )
+
+    trainer._validate_gu_runtime()
 
 
 def test_geometry_disabled_recovers_native_simnpo_update(tmp_path):
