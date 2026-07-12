@@ -182,6 +182,45 @@ def test_body_and_restoration_failures_are_both_preserved():
     assert context.originals == {}
 
 
+def test_enter_and_restoration_failures_are_both_preserved():
+    class CorruptingRestorePerturbation(TemporaryParameterPerturbation):
+        def _restore_originals(self):
+            if self._mutated_names:
+                first_mutated = self._mutated_names[0]
+                original = self.originals[first_mutated]
+                self.originals[first_mutated] = torch.zeros(
+                    original.numel() + 1,
+                    dtype=original.dtype,
+                    device=original.device,
+                )
+            return super()._restore_originals()
+
+    first = torch.nn.Parameter(torch.tensor([1.0]))
+    second = torch.nn.Parameter(torch.tensor([torch.finfo(torch.float32).max]))
+    context = CorruptingRestorePerturbation(
+        [("first", first), ("second", second)],
+        {
+            "first": torch.tensor([1.0]),
+            "second": torch.tensor([torch.finfo(torch.float32).max]),
+        },
+    )
+
+    with pytest.raises(ExceptionGroup, match="perturbation.*restoration") as caught:
+        context.__enter__()
+
+    assert len(caught.value.exceptions) == 2
+    enter_error, restoration_error = caught.value.exceptions
+    assert isinstance(enter_error, RuntimeError)
+    assert "second" in str(enter_error)
+    assert "non-finite" in str(enter_error)
+    assert isinstance(restoration_error, RuntimeError)
+    assert "restore parameter" in str(restoration_error)
+    assert restoration_error.__cause__ is not None
+    assert "shape" in str(restoration_error.__cause__).lower()
+    assert context.originals == {}
+    assert context._requested == {}
+
+
 def test_bfloat16_representable_perturbation_reports_effective_ratio():
     module = TwoParameterModule(dtype=torch.bfloat16)
     named_params = list(module.named_parameters())
