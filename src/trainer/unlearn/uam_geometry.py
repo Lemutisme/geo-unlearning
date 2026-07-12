@@ -4,9 +4,15 @@ from dataclasses import dataclass
 import torch
 
 
+def _require_finite_tensor(name: str, value: torch.Tensor) -> None:
+    if not torch.isfinite(value).all().item():
+        raise ValueError(f"{name} must be a finite tensor")
+
+
 def _require_finite_tensor_scalar(name: str, value: torch.Tensor) -> None:
-    if value.numel() != 1 or not torch.isfinite(value).item():
+    if value.numel() != 1:
         raise ValueError(f"{name} must be a finite tensor scalar")
+    _require_finite_tensor(name, value)
 
 
 def _require_finite_float(name: str, value: float) -> None:
@@ -77,7 +83,11 @@ def apply_uam_tensor(
     forget: torch.Tensor,
     decision: UAMDecision,
 ) -> torch.Tensor:
-    return perturbed_retain.float() - decision.coefficient.float() * forget.float()
+    _require_finite_tensor("perturbed_retain", perturbed_retain)
+    _require_finite_tensor("forget", forget)
+    applied = perturbed_retain.float() - decision.coefficient.float() * forget.float()
+    _require_finite_tensor("applied UAM tensor", applied)
+    return applied
 
 
 @dataclass(frozen=True)
@@ -128,11 +138,17 @@ def apply_residual_gu_tensor(
     retain: torch.Tensor,
     decision: ResidualGUDecision,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    _require_finite_tensor("uam", uam)
+    _require_finite_tensor("retain", retain)
     retain_fp32 = retain.float()
     residual = uam.float() - retain_fp32
+    _require_finite_tensor("Residual-GU-UAM residual", residual)
     normal = residual - decision.projection_coefficient.float() * retain_fp32
+    _require_finite_tensor("Residual-GU-UAM normal", normal)
     correction = (
         decision.residual_lambda * normal if decision.keep else torch.zeros_like(normal)
     )
+    _require_finite_tensor("Residual-GU-UAM correction", correction)
     final = retain_fp32 + correction
+    _require_finite_tensor("final Residual-GU-UAM tensor", final)
     return final, normal

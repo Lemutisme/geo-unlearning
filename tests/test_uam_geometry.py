@@ -320,3 +320,69 @@ def test_residual_gu_non_finite_geometry_fails_closed(field, non_finite):
 
     with pytest.raises((ValueError, RuntimeError), match="finite"):
         decide_residual_gu(**values)
+
+
+@pytest.mark.parametrize("non_finite", [float("nan"), float("inf")])
+@pytest.mark.parametrize("field", ["perturbed_retain", "forget"])
+def test_apply_uam_non_finite_inputs_fail_closed(field, non_finite):
+    tensors = {
+        "perturbed_retain": torch.tensor([1.0, 2.0]),
+        "forget": torch.tensor([3.0, 4.0]),
+    }
+    tensors[field] = torch.tensor([non_finite, 1.0])
+    decision = UAMDecision(coefficient=torch.tensor(0.5))
+
+    with pytest.raises((ValueError, RuntimeError), match="finite"):
+        apply_uam_tensor(**tensors, decision=decision)
+
+
+def test_apply_uam_non_finite_derived_tensor_fails_closed():
+    decision = UAMDecision(coefficient=torch.tensor(1.0))
+
+    with pytest.raises((ValueError, RuntimeError), match="finite"):
+        apply_uam_tensor(
+            torch.tensor([3e38]),
+            torch.tensor([-3e38]),
+            decision,
+        )
+
+
+@pytest.mark.parametrize("keep", [True, False])
+@pytest.mark.parametrize("non_finite", [float("nan"), float("inf")])
+@pytest.mark.parametrize("field", ["uam", "retain"])
+def test_apply_residual_gu_non_finite_inputs_fail_closed(
+    field,
+    non_finite,
+    keep,
+):
+    tensors = {
+        "uam": torch.tensor([1.0, 2.0]),
+        "retain": torch.tensor([3.0, 4.0]),
+    }
+    tensors[field] = torch.tensor([non_finite, 1.0])
+    decision = ResidualGUDecision(
+        projection_coefficient=torch.tensor(0.5),
+        residual_lambda=0.5,
+        gate_dot=torch.tensor(-1.0 if keep else 1.0),
+        keep=keep,
+    )
+
+    with pytest.raises((ValueError, RuntimeError), match="finite"):
+        apply_residual_gu_tensor(**tensors, decision=decision)
+
+
+@pytest.mark.parametrize("keep", [True, False])
+def test_apply_residual_gu_non_finite_derived_tensor_fails_closed(keep):
+    decision = ResidualGUDecision(
+        projection_coefficient=torch.tensor(0.0),
+        residual_lambda=0.5,
+        gate_dot=torch.tensor(-1.0 if keep else 1.0),
+        keep=keep,
+    )
+
+    with pytest.raises((ValueError, RuntimeError), match="finite"):
+        apply_residual_gu_tensor(
+            torch.tensor([3e38]),
+            torch.tensor([-3e38]),
+            decision,
+        )
