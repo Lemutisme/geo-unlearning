@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -32,6 +33,7 @@ def make_orthograd_trainer(tmp_path, **overrides):
         actual_delta_mode="off",
         actual_delta_steps=[1, 2],
         actual_delta_sample_elements=1000,
+        resource_profile_path=overrides.pop("resource_profile_path", None),
     )
     orthograd_config = SimpleNamespace(
         forget_weight=overrides.pop("forget_weight", 0.125),
@@ -296,3 +298,24 @@ def test_diagnostics_failure_clears_written_gradients_and_transient_state(tmp_pa
     assert trainer.orthograd_calls == 0
     assert trainer.retain_basis.empty
     assert trainer.component_buffers.empty
+
+
+def test_orthograd_resource_profile_records_per_sample_phases(tmp_path):
+    profile_path = tmp_path / "orthograd_resource.json"
+    dataset = unbatch(make_unlearn_batch(batch_size=2, sequence_length=6, seed=43))
+    trainer, _ = make_orthograd_trainer(
+        tmp_path,
+        train_dataset=dataset,
+        per_device_train_batch_size=2,
+        max_steps=1,
+        resource_profile_path=str(profile_path),
+    )
+
+    trainer.train()
+
+    profile = json.loads(profile_path.read_text())
+    assert profile["update_count"] == 1
+    assert profile["phase_counts"]["forget_gradient"] == 1
+    assert profile["phase_counts"]["per_sample_retain_gradients"] == 2
+    assert profile["phase_counts"]["orthonormalization"] == 2
+    assert profile["phase_counts"]["projection_writeback"] == 1

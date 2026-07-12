@@ -1,4 +1,5 @@
 import copy
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -154,6 +155,81 @@ def test_global_projection_differs_from_blockwise_projection():
 
     assert projected["a"].item() == pytest.approx(1.5)
     assert projected["b"].item() == pytest.approx(-0.5)
+
+
+def test_geometric_yaml_defaults_to_adam_optimizer_geometry():
+    config = OmegaConf.load("configs/trainer/GeometricUnlearn.yaml")
+
+    assert config.method_args.geometric_config.optimizer_geometry == "adam"
+
+
+def test_euclidean_optimizer_geometry_projects_raw_gradients(tmp_path):
+    trainer, _, _ = make_geometric_trainer(
+        tmp_path,
+        geometric_overrides={"optimizer_geometry": "euclidean"},
+    )
+    trainer.create_optimizer()
+    seed_nonuniform_adam_state(trainer)
+    trainer._validate_gu_runtime()
+    named_params = trainer._selected_named_parameters()
+    forget = [torch.zeros_like(parameter) for _, parameter in named_params]
+    retain = [torch.zeros_like(parameter) for _, parameter in named_params]
+    forget[0].reshape(-1)[:3] = torch.tensor([2.0, -1.0, 3.0])
+    retain[0].reshape(-1)[:3] = torch.tensor([1.0, 4.0, -2.0])
+    trainer.component_buffers.add("forget", named_params, forget)
+    trainer.component_buffers.add("retain", named_params, retain)
+    forget_by_name = {
+        name: gradient.float() for (name, _), gradient in zip(named_params, forget)
+    }
+    retain_by_name = {
+        name: gradient.float() for (name, _), gradient in zip(named_params, retain)
+    }
+    projected, _ = GeometricUnlearn._project_rank_one(
+        forget_by_name,
+        retain_by_name,
+        trainer.projection_eps,
+    )
+    expected = {
+        name: trainer.gamma * projected[name] + trainer.alpha * retain_by_name[name]
+        for name, _ in named_params
+    }
+
+    trainer._finalize_gu_gradients(named_params)
+
+    for name, parameter in named_params:
+        torch.testing.assert_close(parameter.grad, expected[name])
+    assert trainer.last_surgery_diagnostics["optimizer_geometry"] == "euclidean"
+
+
+def test_unknown_optimizer_geometry_fails_closed(tmp_path):
+    trainer, _, _ = make_geometric_trainer(
+        tmp_path,
+        geometric_overrides={"optimizer_geometry": "unknown"},
+    )
+    trainer.create_optimizer()
+
+    with pytest.raises(ValueError, match="optimizer geometry"):
+        trainer._validate_gu_runtime()
+
+
+def test_gu_resource_profile_records_update_and_phase_times(tmp_path):
+    profile_path = tmp_path / "gu_resource.json"
+    dataset = unbatch(make_unlearn_batch(batch_size=2, sequence_length=6, seed=41))
+    trainer, _, _ = make_geometric_trainer(
+        tmp_path,
+        train_dataset=dataset,
+        per_device_train_batch_size=2,
+        max_steps=1,
+        geometric_overrides={"resource_profile_path": str(profile_path)},
+    )
+
+    trainer.train()
+
+    profile = json.loads(profile_path.read_text())
+    assert profile["update_count"] == 1
+    assert profile["first_update_ms"] > 0.0
+    assert profile["phase_counts"]["component_gradients"] == 1
+    assert profile["phase_counts"]["projection_writeback"] == 1
 
 
 def test_frozen_preconditioner_forget_update_is_retain_orthogonal():

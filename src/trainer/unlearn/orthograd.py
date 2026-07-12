@@ -106,31 +106,34 @@ class OrthogradUnlearn(GeometricUnlearn):
 
         try:
             for sample in self._iter_batch_samples(retain_inputs):
-                sequence_nll, _ = compute_batch_nll(model, sample)
-                sample_loss = sequence_nll.sum() * (
-                    float(batch_size) / float(total_answer_tokens)
-                )
-                gradients = torch.autograd.grad(
-                    sample_loss,
-                    params,
-                    retain_graph=False,
-                    create_graph=False,
-                    allow_unused=True,
-                )
-                scaled_gradients = tuple(
-                    None if gradient is None else gradient / batch_size
-                    for gradient in gradients
-                )
-                self.component_buffers.add(
-                    "retain",
-                    named_params,
-                    scaled_gradients,
-                )
-                self.retain_basis.add(self._basis_vector(named_params, gradients))
+                with self._profile_phase("per_sample_retain_gradients"):
+                    sequence_nll, _ = compute_batch_nll(model, sample)
+                    sample_loss = sequence_nll.sum() * (
+                        float(batch_size) / float(total_answer_tokens)
+                    )
+                    gradients = torch.autograd.grad(
+                        sample_loss,
+                        params,
+                        retain_graph=False,
+                        create_graph=False,
+                        allow_unused=True,
+                    )
+                    scaled_gradients = tuple(
+                        None if gradient is None else gradient / batch_size
+                        for gradient in gradients
+                    )
+                    self.component_buffers.add(
+                        "retain",
+                        named_params,
+                        scaled_gradients,
+                    )
+                    basis_vector = self._basis_vector(named_params, gradients)
+                with self._profile_phase("orthonormalization"):
+                    self.retain_basis.add(basis_vector)
                 reconstructed_loss = (
                     reconstructed_loss + sample_loss.detach() / batch_size
                 )
-                del gradients, scaled_gradients
+                del gradients, scaled_gradients, basis_vector
         except Exception:
             self._clear_orthograd_state()
             raise
@@ -229,24 +232,26 @@ class OrthogradUnlearn(GeometricUnlearn):
         named_params = self._selected_named_parameters(model)
         params = [parameter for _, parameter in named_params]
         try:
-            with self.compute_loss_context_manager():
-                forget_loss, _ = self.compute_forget_loss(model, inputs["forget"])
-            forget_gradients = torch.autograd.grad(
-                forget_loss,
-                params,
-                retain_graph=False,
-                create_graph=False,
-                allow_unused=True,
-            )
-            self.component_buffers.add("forget", named_params, forget_gradients)
-            del forget_gradients
+            with self._profile_phase("forget_gradient"):
+                with self.compute_loss_context_manager():
+                    forget_loss, _ = self.compute_forget_loss(model, inputs["forget"])
+                forget_gradients = torch.autograd.grad(
+                    forget_loss,
+                    params,
+                    retain_graph=False,
+                    create_graph=False,
+                    allow_unused=True,
+                )
+                self.component_buffers.add("forget", named_params, forget_gradients)
+                del forget_gradients
 
             retain_loss, _ = self._collect_retain_gradients(
                 model,
                 inputs["retain"],
                 named_params,
             )
-            self._finalize_orthograd_gradients(named_params)
+            with self._profile_phase("projection_writeback"):
+                self._finalize_orthograd_gradients(named_params)
         except Exception:
             self._clear_parameter_grads(named_params)
             self._clear_orthograd_state()

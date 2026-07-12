@@ -5,6 +5,7 @@ import re
 import torch
 import torch.nn.functional as F
 
+from trainer.resource_profiler import ResourceProfileCallback
 from trainer.unlearn.component_buffers import ComponentGradientBuffers
 from trainer.unlearn.ceu import compute_batch_ceu
 from trainer.unlearn.grad_diff import GradDiff
@@ -106,6 +107,9 @@ class GeometricUnlearn(GradDiff):
         self.gradient_surgery = str(
             getattr(self.geometric_config, "gradient_surgery", "gu")
         ).lower()
+        self.optimizer_geometry = str(
+            getattr(self.geometric_config, "optimizer_geometry", "adam")
+        ).lower()
         self.projection_eps = float(
             getattr(self.geometric_config, "projection_eps", 1e-12)
         )
@@ -150,6 +154,17 @@ class GeometricUnlearn(GradDiff):
         )
         if self.diagnostics_writer is not None or actual_delta_mode != "off":
             self.add_callback(self.actual_delta_callback)
+        resource_profile_path = getattr(
+            self.geometric_config,
+            "resource_profile_path",
+            None,
+        )
+        self.resource_profiler = ResourceProfileCallback(resource_profile_path)
+        if self.resource_profiler.enabled:
+            self.add_callback(self.resource_profiler)
+
+    def _profile_phase(self, name):
+        return self.resource_profiler.phase(name)
 
     def _selected_named_parameters(self, model=None):
         model = self.model if model is None else model
@@ -220,6 +235,10 @@ class GeometricUnlearn(GradDiff):
             raise ValueError(
                 f"Unsupported gradient surgery mode: {self.gradient_surgery}"
             )
+        if self.optimizer_geometry not in {"adam", "euclidean"}:
+            raise ValueError(
+                f"Unsupported optimizer geometry: {self.optimizer_geometry}"
+            )
         if self.component_buffer_device == "cpu":
             ComponentGradientBuffers.validate_host_memory(
                 sum(parameter.numel() for _, parameter in named_params)
@@ -230,6 +249,11 @@ class GeometricUnlearn(GradDiff):
         self._optimizer_geometry_adapter = adapter
 
         self._gu_runtime_validated = True
+
+    def _sqrt_denominator(self, adapter, parameter, group):
+        if self.optimizer_geometry == "euclidean":
+            return None
+        return adapter.sqrt_denominator(parameter, group)
 
     def _component_in_frozen_coordinates(
         self,
@@ -275,7 +299,7 @@ class GeometricUnlearn(GradDiff):
         # transformed full-model gradient dictionaries.
         for name, parameter in named_params:
             group = groups_by_parameter[id(parameter)]
-            sqrt_denominator = adapter.sqrt_denominator(parameter, group)
+            sqrt_denominator = self._sqrt_denominator(adapter, parameter, group)
             forget = self._component_in_frozen_coordinates(
                 "forget", name, parameter, sqrt_denominator
             )
@@ -324,7 +348,7 @@ class GeometricUnlearn(GradDiff):
         # final raw gradient, then releases the transient coordinate tensors.
         for name, parameter in named_params:
             group = groups_by_parameter[id(parameter)]
-            sqrt_denominator = adapter.sqrt_denominator(parameter, group)
+            sqrt_denominator = self._sqrt_denominator(adapter, parameter, group)
             forget = self._component_in_frozen_coordinates(
                 "forget", name, parameter, sqrt_denominator
             )
@@ -394,7 +418,9 @@ class GeometricUnlearn(GradDiff):
             "mode": self.gradient_surgery,
             "projection_calls": self.surgery_calls,
             "surgery_calls": self.surgery_calls,
-            "optimizer_geometry": adapter.name,
+            "optimizer_geometry": (
+                "euclidean" if self.optimizer_geometry == "euclidean" else adapter.name
+            ),
             "component_buffer_device": self.component_buffer_device,
             "conflict": decision.conflict,
             "zero_retain_norm": bool(retain_sq.item() == 0.0),
@@ -464,29 +490,31 @@ class GeometricUnlearn(GradDiff):
         named_params = self._selected_named_parameters(model)
         params = [parameter for _, parameter in named_params]
         scale = 1.0 / self.args.gradient_accumulation_steps
-        forget_grads = torch.autograd.grad(
-            forget_loss * scale,
-            params,
-            retain_graph=True,
-            create_graph=False,
-            allow_unused=True,
-        )
-        self.component_buffers.add("forget", named_params, forget_grads)
-        del forget_grads
+        with self._profile_phase("component_gradients"):
+            forget_grads = torch.autograd.grad(
+                forget_loss * scale,
+                params,
+                retain_graph=True,
+                create_graph=False,
+                allow_unused=True,
+            )
+            self.component_buffers.add("forget", named_params, forget_grads)
+            del forget_grads
 
-        retain_grads = torch.autograd.grad(
-            retain_loss * scale,
-            params,
-            retain_graph=True,
-            create_graph=False,
-            allow_unused=True,
-        )
-        self.component_buffers.add("retain", named_params, retain_grads)
-        del retain_grads
+            retain_grads = torch.autograd.grad(
+                retain_loss * scale,
+                params,
+                retain_graph=True,
+                create_graph=False,
+                allow_unused=True,
+            )
+            self.component_buffers.add("retain", named_params, retain_grads)
+            del retain_grads
 
-        self.accelerator.backward(total_loss)
+            self.accelerator.backward(total_loss)
         if self.accelerator.sync_gradients or self._is_short_final_accumulation_step():
-            self._finalize_gu_gradients(named_params)
+            with self._profile_phase("projection_writeback"):
+                self._finalize_gu_gradients(named_params)
 
         return total_loss.detach() * scale
 

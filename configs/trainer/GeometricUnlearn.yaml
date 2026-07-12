@@ -26,6 +26,7 @@ method_args:
     loss: "simnpo"
     gu_enabled: true
     gradient_surgery: gu
+    optimizer_geometry: adam
     projection_eps: 1.0e-12
     sign_selective: false
     component_buffer_device: parameter
@@ -33,6 +34,7 @@ method_args:
     actual_delta_mode: "off"
     actual_delta_steps: [1, 10]
     actual_delta_sample_elements: 1000000
+    resource_profile_path: null
     trainable_params_regex: 
       - ".*"
 
