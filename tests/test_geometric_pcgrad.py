@@ -444,3 +444,86 @@ def test_trainer_persists_geometry_and_post_step_delta_without_checkpoint(tmp_pa
     summary = json.loads(diagnostics_path.with_suffix(".summary.json").read_text())
     assert summary["surgery_count"] == 1
     assert not list(tmp_path.rglob("checkpoint-*"))
+
+
+@pytest.mark.parametrize("failure_site", ["prepare", "writer"])
+def test_gu_diagnostics_failure_is_transaction_atomic(
+    tmp_path,
+    monkeypatch,
+    failure_site,
+):
+    diagnostics_path = tmp_path / failure_site / "steps.jsonl"
+    dataset = unbatch(make_unlearn_batch(batch_size=2, sequence_length=6, seed=51))
+    trainer, model, _ = make_geometric_trainer(
+        tmp_path / failure_site / "trainer",
+        train_dataset=dataset,
+        per_device_train_batch_size=2,
+        max_steps=1,
+        geometric_overrides={
+            "gradient_surgery": "pcgrad",
+            "diagnostics_path": str(diagnostics_path),
+            "actual_delta_mode": "full",
+            "actual_delta_steps": [5],
+        },
+    )
+    trainer.create_optimizer()
+    optimizer_type = type(trainer.optimizer)
+    real_step = optimizer_type.step
+    optimizer_steps = 0
+    initial_parameters = [
+        parameter.detach().clone() for parameter in model.parameters()
+    ]
+    previous_gu = {"mode": "previous-gu", "update_step": 4}
+    previous_surgery = {"mode": "previous-surgery", "update_step": 4}
+    trainer.surgery_calls = 4
+    trainer.gu_projection_calls = 4
+    trainer.last_gu_diagnostics = previous_gu
+    trainer.last_surgery_diagnostics = previous_surgery
+
+    def count_step(optimizer_instance, *args, **kwargs):
+        nonlocal optimizer_steps
+        optimizer_steps += 1
+        return real_step(optimizer_instance, *args, **kwargs)
+
+    monkeypatch.setattr(optimizer_type, "step", count_step)
+    if failure_site == "prepare":
+
+        def fail_preflight(*_args, **_kwargs):
+            raise RuntimeError("forced GU actual-delta preflight failure")
+
+        monkeypatch.setattr(
+            ComponentGradientBuffers,
+            "validate_host_memory",
+            staticmethod(fail_preflight),
+        )
+        expected = "forced GU actual-delta preflight failure"
+    else:
+
+        def fail_fsync(_descriptor):
+            raise OSError("forced GU geometry fsync failure")
+
+        monkeypatch.setattr("trainer.unlearn.gu_diagnostics.os.fsync", fail_fsync)
+        expected = "forced GU geometry fsync failure"
+
+    with pytest.raises((RuntimeError, OSError), match=expected):
+        trainer.train()
+
+    assert optimizer_steps == 0
+    assert trainer.state.global_step == 0
+    assert trainer.surgery_calls == trainer.gu_projection_calls == 4
+    assert trainer.last_gu_diagnostics is previous_gu
+    assert trainer.last_surgery_diagnostics is previous_surgery
+    assert all(
+        torch.equal(before, after)
+        for before, after in zip(initial_parameters, model.parameters(), strict=True)
+    )
+    assert trainer.diagnostics_writer.read_records() == []
+    assert trainer.component_buffers.empty
+    assert all(parameter.grad is None for parameter in model.parameters())
+    assert all(
+        parameter.grad is None
+        for group in trainer.optimizer.param_groups
+        for parameter in group["params"]
+    )
+    assert trainer.actual_delta_callback._active_step is None
+    assert trainer.actual_delta_callback._pending_record is None

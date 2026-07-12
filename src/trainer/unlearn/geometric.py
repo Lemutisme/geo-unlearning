@@ -252,8 +252,49 @@ class GeometricUnlearn(GradDiff):
             tensor = tensor / sqrt_denominator
         return tensor
 
+    def _clear_gu_failure_state(self):
+        self._clear_gu_buffers()
+        for parameter in self.model.parameters():
+            parameter.grad = None
+        optimizer = getattr(self, "optimizer", None)
+        if optimizer is not None:
+            for group in optimizer.param_groups:
+                for parameter in group["params"]:
+                    parameter.grad = None
+
     @torch.no_grad()
     def _finalize_gu_gradients(self, named_params):
+        surgery_calls_at_entry = self.surgery_calls
+        projection_calls_at_entry = self.gu_projection_calls
+        last_gu_diagnostics_at_entry = self.last_gu_diagnostics
+        last_surgery_diagnostics_at_entry = self.last_surgery_diagnostics
+        update_step = surgery_calls_at_entry + 1
+        try:
+            diagnostics = self._finalize_gu_gradients_transaction(
+                named_params,
+                update_step,
+            )
+        except BaseException:
+            self.actual_delta_callback.cancel_step()
+            self.surgery_calls = surgery_calls_at_entry
+            self.gu_projection_calls = projection_calls_at_entry
+            self.last_gu_diagnostics = last_gu_diagnostics_at_entry
+            self.last_surgery_diagnostics = last_surgery_diagnostics_at_entry
+            self._clear_gu_failure_state()
+            raise
+
+        logger.info(
+            "Gradient surgery step=%d mode=%s coefficient=%.8e residual=%.8e "
+            "identity_fallback_parameters=%d",
+            update_step,
+            diagnostics["mode"],
+            diagnostics["coefficient"],
+            diagnostics["relative_orthogonality_residual"],
+            diagnostics["identity_fallback_parameters"],
+        )
+
+    @torch.no_grad()
+    def _finalize_gu_gradients_transaction(self, named_params, update_step):
         if not self.component_buffers.has_component("forget"):
             raise RuntimeError("Forget gradient buffer is empty.")
         if not self.component_buffers.has_component("retain"):
@@ -386,14 +427,12 @@ class GeometricUnlearn(GradDiff):
                 ).item()
             )
 
-        self.surgery_calls += 1
-        self.gu_projection_calls = self.surgery_calls
         diagnostics = {
             "record_type": "geometry",
-            "update_step": self.surgery_calls,
+            "update_step": update_step,
             "mode": self.gradient_surgery,
-            "projection_calls": self.surgery_calls,
-            "surgery_calls": self.surgery_calls,
+            "projection_calls": update_step,
+            "surgery_calls": update_step,
             "optimizer_geometry": adapter.name,
             "component_buffer_device": self.component_buffer_device,
             "conflict": decision.conflict,
@@ -419,25 +458,19 @@ class GeometricUnlearn(GradDiff):
             ),
             "identity_fallback_parameters": len(identity_fallback_names),
         }
+        self.actual_delta_callback.prepare_step(
+            update_step,
+            named_params,
+            self.component_buffers,
+        )
+        self._clear_gu_buffers()
+        self.surgery_calls = update_step
+        self.gu_projection_calls = update_step
         self.last_surgery_diagnostics = diagnostics
         self.last_gu_diagnostics = diagnostics
         if self.diagnostics_writer is not None:
             self.diagnostics_writer.write_step(diagnostics)
-        self.actual_delta_callback.prepare_step(
-            self.surgery_calls,
-            named_params,
-            self.component_buffers,
-        )
-        logger.info(
-            "Gradient surgery step=%d mode=%s coefficient=%.8e residual=%.8e "
-            "identity_fallback_parameters=%d",
-            self.surgery_calls,
-            diagnostics["mode"],
-            diagnostics["coefficient"],
-            diagnostics["relative_orthogonality_residual"],
-            diagnostics["identity_fallback_parameters"],
-        )
-        self._clear_gu_buffers()
+        return diagnostics
 
     def training_step(self, model, inputs):
         if not self.gu_enabled:
