@@ -3,6 +3,7 @@ import math
 from trainer.unlearn.component_buffers import ComponentGradientBuffers
 from trainer.unlearn.geometric import GeometricUnlearn
 from trainer.unlearn.optimizer_geometry import make_optimizer_geometry_adapter
+from trainer.utils import compute_batch_nll
 
 
 class UAMUnlearn(GeometricUnlearn):
@@ -42,6 +43,19 @@ class UAMUnlearn(GeometricUnlearn):
         self._uam_microsteps = 0
         self._retain_replay_batches = []
 
+    def compute_uam_forget_signal(self, model, forget_inputs):
+        if self.forget_signal == "nll":
+            sequence_nll, outputs = compute_batch_nll(model, forget_inputs)
+            answer_counts = forget_inputs["labels"][..., 1:].ne(-100).sum(-1)
+            if (answer_counts == 0).any():
+                raise RuntimeError("UAM NLL forget signal has an empty answer mask.")
+            answer_counts = answer_counts.to(sequence_nll)
+            return (sequence_nll / answer_counts).mean(), outputs
+        if self.forget_signal == "simnpo":
+            simnpo_loss, outputs = self.compute_forget_loss(model, forget_inputs)
+            return -simnpo_loss, outputs
+        raise ValueError(f"Unsupported UAM forget signal: {self.forget_signal}")
+
     def _validate_uam_runtime(self):
         if self._uam_runtime_validated:
             return
@@ -50,6 +64,16 @@ class UAMUnlearn(GeometricUnlearn):
             raise ValueError(f"Unsupported UAM mode: {self.uam_mode}")
         if self.forget_signal not in {"nll", "simnpo"}:
             raise ValueError(f"Unsupported UAM forget signal: {self.forget_signal}")
+        if self.forget_signal == "simnpo":
+            if self.loss_name != "simnpo":
+                raise ValueError(
+                    "UAM SimNPO forget signal requires "
+                    "geometric_config.loss='simnpo'."
+                )
+            if self.simnpo_config is None:
+                raise ValueError(
+                    "UAM SimNPO forget signal requires a non-null simnpo_config."
+                )
         if self.perturbation_normalization not in {"fixed_loss", "metric_trust"}:
             raise ValueError(
                 "Unsupported UAM perturbation normalization: "

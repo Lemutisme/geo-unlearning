@@ -12,6 +12,7 @@ import trainer.unlearn.uam as uam_module
 from trainer.unlearn.component_buffers import ComponentGradientBuffers
 from trainer.unlearn.optimizer_geometry import TorchAdamGeometryAdapter
 from trainer.unlearn.uam import UAMUnlearn
+from trainer.utils import compute_batch_nll
 from tests.helpers import TinyCausalLM, nested_collator
 
 
@@ -96,6 +97,30 @@ def make_uam_trainer(tmp_path, **overrides):
     return trainer, model
 
 
+def make_forget_inputs():
+    input_ids = torch.tensor(
+        [
+            [1, 2, 3, 4, 5, 6],
+            [6, 5, 4, 3, 2, 1],
+        ]
+    )
+    return {
+        "input_ids": input_ids,
+        "attention_mask": torch.tensor(
+            [
+                [1, 1, 1, 1, 1, 0],
+                [1, 1, 1, 1, 1, 1],
+            ]
+        ),
+        "labels": torch.tensor(
+            [
+                [-100, -100, 3, 4, -100, -100],
+                [-100, 5, -100, 3, 2, -100],
+            ]
+        ),
+    }
+
+
 def test_uam_trainer_is_registered():
     assert TRAINER_REGISTRY["UAMUnlearn"] is UAMUnlearn
 
@@ -155,6 +180,215 @@ def test_uam_initialization_resolves_values_and_empty_state(tmp_path):
     assert trainer._uam_runtime_validated is False
     assert trainer._uam_microsteps == 0
     assert trainer._retain_replay_batches == []
+
+
+def test_nll_forget_signal_is_mean_per_sequence_answer_nll(tmp_path):
+    torch.manual_seed(7)
+    trainer, model = make_uam_trainer(tmp_path, forget_signal="nll")
+    forget_inputs = make_forget_inputs()
+
+    sequence_nll, _ = compute_batch_nll(model, forget_inputs)
+    answer_counts = forget_inputs["labels"][..., 1:].ne(-100).sum(-1)
+    expected = (sequence_nll / answer_counts.to(sequence_nll)).mean()
+
+    signal, _ = trainer.compute_uam_forget_signal(model, forget_inputs)
+
+    torch.testing.assert_close(signal, expected)
+
+
+def test_nll_forget_signal_returns_raw_forward_output(tmp_path):
+    trainer, model = make_uam_trainer(tmp_path, forget_signal="nll")
+    forget_inputs = make_forget_inputs()
+    forward_outputs = []
+    hook = model.register_forward_hook(
+        lambda _module, _args, output: forward_outputs.append(output)
+    )
+
+    try:
+        _, outputs = trainer.compute_uam_forget_signal(model, forget_inputs)
+    finally:
+        hook.remove()
+
+    assert outputs is forward_outputs[-1]
+    assert outputs.logits.shape[:2] == forget_inputs["labels"].shape
+
+
+def test_nll_forget_signal_ignores_prompt_and_padding_labels(tmp_path):
+    torch.manual_seed(11)
+    trainer, model = make_uam_trainer(tmp_path, forget_signal="nll")
+    forget_inputs = make_forget_inputs()
+
+    signal, outputs = trainer.compute_uam_forget_signal(model, forget_inputs)
+
+    shifted_labels = forget_inputs["labels"][..., 1:]
+    answer_mask = shifted_labels.ne(-100)
+    safe_labels = shifted_labels.masked_fill(~answer_mask, 0)
+    token_nll = (
+        -outputs.logits[..., :-1, :]
+        .log_softmax(-1)
+        .gather(
+            -1,
+            safe_labels.unsqueeze(-1),
+        )
+        .squeeze(-1)
+    )
+    expected = ((token_nll * answer_mask).sum(-1) / answer_mask.sum(-1)).mean()
+
+    torch.testing.assert_close(signal, expected)
+
+
+def test_nll_forget_signal_rejects_any_empty_answer_mask(tmp_path):
+    trainer, model = make_uam_trainer(tmp_path, forget_signal="nll")
+    forget_inputs = make_forget_inputs()
+    forget_inputs["labels"][0].fill_(-100)
+
+    with pytest.raises(RuntimeError, match="empty answer mask"):
+        trainer.compute_uam_forget_signal(model, forget_inputs)
+
+
+def test_simnpo_forget_signal_is_negative_existing_objective(tmp_path):
+    torch.manual_seed(17)
+    trainer, model = make_uam_trainer(tmp_path, forget_signal="simnpo")
+    forget_inputs = make_forget_inputs()
+
+    simnpo_loss, _ = trainer.compute_forget_loss(model, forget_inputs)
+    signal, outputs = trainer.compute_uam_forget_signal(model, forget_inputs)
+
+    torch.testing.assert_close(signal, -simnpo_loss)
+    assert outputs.logits.shape[:2] == forget_inputs["labels"].shape
+
+
+def test_simnpo_signal_gradients_negate_existing_objective_gradients(tmp_path):
+    torch.manual_seed(19)
+    trainer, model = make_uam_trainer(tmp_path, forget_signal="simnpo")
+    forget_inputs = make_forget_inputs()
+    parameters = [
+        parameter for _, parameter in trainer._selected_named_parameters(model)
+    ]
+
+    simnpo_loss, _ = trainer.compute_forget_loss(model, forget_inputs)
+    loss_grads = torch.autograd.grad(
+        simnpo_loss,
+        parameters,
+        allow_unused=True,
+    )
+    signal, _ = trainer.compute_uam_forget_signal(model, forget_inputs)
+    signal_grads = torch.autograd.grad(
+        signal,
+        parameters,
+        allow_unused=True,
+    )
+
+    for loss_grad, signal_grad in zip(loss_grads, signal_grads, strict=True):
+        if loss_grad is None or signal_grad is None:
+            assert loss_grad is signal_grad is None
+        else:
+            torch.testing.assert_close(signal_grad, -loss_grad)
+
+
+@pytest.mark.parametrize("forget_signal", ["nll", "simnpo"])
+def test_small_step_along_forget_signal_gradient_increases_signal(
+    tmp_path,
+    forget_signal,
+):
+    torch.manual_seed(23)
+    model = TinyCausalLM().double()
+    trainer, model = make_uam_trainer(
+        tmp_path,
+        model=model,
+        forget_signal=forget_signal,
+    )
+    trainer.simnpo_config.beta = 0.25
+    forget_inputs = make_forget_inputs()
+    named_parameters = trainer._selected_named_parameters(model)
+    parameters = [parameter for _, parameter in named_parameters]
+    originals = [parameter.detach().clone() for parameter in parameters]
+    step_size = 1e-5
+
+    signal, _ = trainer.compute_uam_forget_signal(model, forget_inputs)
+    gradients = torch.autograd.grad(signal, parameters, allow_unused=True)
+    directional_derivative = sum(
+        gradient.square().sum() for gradient in gradients if gradient is not None
+    )
+
+    try:
+        with torch.no_grad():
+            for parameter, gradient in zip(parameters, gradients, strict=True):
+                if gradient is not None:
+                    parameter.add_(gradient, alpha=step_size)
+        stepped_signal, _ = trainer.compute_uam_forget_signal(
+            model,
+            forget_inputs,
+        )
+    finally:
+        with torch.no_grad():
+            for parameter, original in zip(parameters, originals, strict=True):
+                parameter.copy_(original)
+
+    predicted_increase = step_size * directional_derivative
+    assert directional_derivative > 0
+    assert stepped_signal - signal > 0.5 * predicted_increase
+    for parameter, original in zip(parameters, originals, strict=True):
+        torch.testing.assert_close(parameter, original, rtol=0, atol=0)
+
+
+def test_unsupported_forget_signal_direct_call_fails_closed(tmp_path):
+    trainer, model = make_uam_trainer(tmp_path)
+    trainer.forget_signal = "unsupported"
+
+    with pytest.raises(ValueError, match="Unsupported UAM forget signal"):
+        trainer.compute_uam_forget_signal(model, make_forget_inputs())
+
+
+@pytest.mark.parametrize(
+    ("loss_name", "drop_config", "message"),
+    [
+        ("npo", False, "requires geometric_config.loss='simnpo'"),
+        ("simnpo", True, "requires a non-null simnpo_config"),
+    ],
+)
+def test_simnpo_signal_runtime_rejects_incompatible_objective_config(
+    tmp_path,
+    loss_name,
+    drop_config,
+    message,
+):
+    trainer, _ = make_uam_trainer(tmp_path, forget_signal="simnpo")
+    trainer.create_optimizer()
+    trainer.loss_name = loss_name
+    if drop_config:
+        trainer.simnpo_config = None
+
+    with pytest.raises(ValueError, match=message):
+        trainer._validate_uam_runtime()
+
+    assert trainer._uam_runtime_validated is False
+
+
+def test_nll_signal_runtime_is_independent_of_geometric_loss(tmp_path):
+    trainer, _ = make_uam_trainer(tmp_path, forget_signal="nll")
+    trainer.create_optimizer()
+    trainer.loss_name = "npo"
+    trainer.simnpo_config = None
+
+    trainer._validate_uam_runtime()
+
+    assert trainer._uam_runtime_validated is True
+
+
+@pytest.mark.parametrize("forget_signal", ["nll", "simnpo"])
+def test_forget_signal_does_not_mutate_input_tensors(tmp_path, forget_signal):
+    trainer, model = make_uam_trainer(
+        tmp_path,
+        forget_signal=forget_signal,
+    )
+    forget_inputs = make_forget_inputs()
+    originals = {name: tensor.clone() for name, tensor in forget_inputs.items()}
+
+    trainer.compute_uam_forget_signal(model, forget_inputs)
+
+    for name, original in originals.items():
+        torch.testing.assert_close(forget_inputs[name], original, rtol=0, atol=0)
 
 
 @pytest.mark.parametrize(
