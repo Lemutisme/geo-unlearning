@@ -11,9 +11,13 @@ from trainer import TRAINER_REGISTRY
 import trainer.unlearn.uam as uam_module
 from trainer.unlearn.component_buffers import ComponentGradientBuffers
 from trainer.unlearn.optimizer_geometry import TorchAdamGeometryAdapter
-from trainer.unlearn.uam import RetainReplayBuffer, UAMUnlearn
+from trainer.unlearn.uam import (
+    RetainReplayBuffer,
+    TemporaryParameterPerturbation,
+    UAMUnlearn,
+)
 from trainer.utils import compute_batch_nll
-from tests.helpers import TinyCausalLM, nested_collator
+from tests.helpers import TinyCausalLM, make_unlearn_batch, nested_collator
 
 
 def make_uam_trainer(tmp_path, **overrides):
@@ -891,3 +895,387 @@ def test_host_memory_failure_does_not_partially_cache_runtime(tmp_path, monkeypa
 
     assert trainer._optimizer_geometry_adapter is None
     assert trainer._uam_runtime_validated is False
+
+
+def initialize_uam_runtime(trainer):
+    trainer.create_optimizer()
+    trainer._validate_uam_runtime()
+
+
+def prepared_unlearn_batch(trainer, seed):
+    return trainer._prepare_inputs(
+        make_unlearn_batch(batch_size=2, sequence_length=6, seed=seed)
+    )
+
+
+@pytest.mark.parametrize("microstep_count", [1, 2])
+def test_collect_uam_microsteps_accumulates_raw_sums_and_effective_means(
+    tmp_path,
+    microstep_count,
+):
+    torch.manual_seed(101)
+    trainer, model = make_uam_trainer(
+        tmp_path,
+        gradient_accumulation_steps=2,
+    )
+    initialize_uam_runtime(trainer)
+    named_params = trainer._selected_named_parameters(model)
+    params = [parameter for _, parameter in named_params]
+    batches = [prepared_unlearn_batch(trainer, 200 + index) for index in range(2)]
+    expected = {"forget": [], "retain": []}
+
+    for inputs in batches[:microstep_count]:
+        with trainer.compute_loss_context_manager():
+            forget_signal, _ = trainer.compute_uam_forget_signal(
+                model,
+                inputs["forget"],
+            )
+            retain_loss = trainer.compute_retain_loss(model, inputs["retain"])
+        expected["forget"].append(
+            torch.autograd.grad(forget_signal, params, allow_unused=True)
+        )
+        expected["retain"].append(
+            torch.autograd.grad(retain_loss, params, allow_unused=True)
+        )
+
+    model.zero_grad(set_to_none=True)
+    returned_losses = [
+        trainer._collect_uam_microstep(model, inputs)
+        for inputs in batches[:microstep_count]
+    ]
+
+    assert trainer._uam_microsteps == microstep_count
+    assert len(trainer.replay_buffer) == microstep_count
+    assert all(not loss.requires_grad for loss in returned_losses)
+    assert any(parameter.grad is not None for parameter in model.parameters())
+    for parameter_index, (name, parameter) in enumerate(named_params):
+        for component in ("forget", "retain"):
+            per_batch = [
+                gradients[parameter_index]
+                for gradients in expected[component]
+                if gradients[parameter_index] is not None
+            ]
+            buffered = trainer.component_buffers.tensor(
+                component,
+                name,
+                parameter.device,
+            )
+            if not per_batch:
+                assert buffered is None
+                continue
+            explicit_sum = torch.stack(per_batch).sum(0).float()
+            torch.testing.assert_close(buffered, explicit_sum)
+            mean = trainer._mean_component_coordinate(
+                component,
+                name,
+                parameter,
+            )
+            torch.testing.assert_close(mean, explicit_sum / microstep_count)
+            torch.testing.assert_close(buffered, explicit_sum)
+
+
+def test_collect_component_add_failure_clears_entire_uam_window(
+    tmp_path,
+    monkeypatch,
+):
+    trainer, model = make_uam_trainer(tmp_path)
+    initialize_uam_runtime(trainer)
+    trainer._collect_uam_microstep(model, prepared_unlearn_batch(trainer, 301))
+    real_add = trainer.component_buffers.add
+
+    def fail_second_component(component, named_params, gradients):
+        if component == "retain":
+            raise RuntimeError("forced retain component failure")
+        return real_add(component, named_params, gradients)
+
+    monkeypatch.setattr(trainer.component_buffers, "add", fail_second_component)
+
+    with pytest.raises(RuntimeError, match="forced retain component failure"):
+        trainer._collect_uam_microstep(
+            model,
+            prepared_unlearn_batch(trainer, 302),
+        )
+
+    assert trainer.component_buffers.empty
+    assert trainer.replay_buffer.empty
+    assert trainer._uam_microsteps == 0
+
+
+def test_mean_component_requires_microsteps_and_returns_none_for_unused_parameter(
+    tmp_path,
+):
+    model = TinyCausalLM()
+    model.unused = torch.nn.Parameter(torch.ones(3))
+    trainer, model = make_uam_trainer(tmp_path, model=model)
+    initialize_uam_runtime(trainer)
+    named_params = trainer._selected_named_parameters(model)
+    unused_name, unused_parameter = next(
+        (name, parameter) for name, parameter in named_params if name == "unused"
+    )
+
+    with pytest.raises(RuntimeError, match="microstep"):
+        trainer._mean_component_coordinate(
+            "forget",
+            unused_name,
+            unused_parameter,
+        )
+
+    trainer._collect_uam_microstep(model, prepared_unlearn_batch(trainer, 401))
+
+    assert (
+        trainer._mean_component_coordinate(
+            "forget",
+            unused_name,
+            unused_parameter,
+        )
+        is None
+    )
+
+
+def test_build_uam_perturbations_obey_fixed_loss_and_metric_trust_invariants(
+    tmp_path,
+):
+    torch.manual_seed(503)
+    trainer, model = make_uam_trainer(tmp_path, rho=0.07)
+    initialize_uam_runtime(trainer)
+    named_params = trainer._selected_named_parameters(model)
+    trainer._collect_uam_microstep(model, prepared_unlearn_batch(trainer, 501))
+    initialized_parameter = named_params[0][1]
+    trainer.optimizer.state[initialized_parameter].update(
+        step=torch.tensor(3.0),
+        exp_avg_sq=torch.linspace(
+            0.01,
+            0.91,
+            initialized_parameter.numel(),
+        ).reshape_as(initialized_parameter),
+    )
+    originals = {name: parameter.detach().clone() for name, parameter in named_params}
+    adapter = trainer._optimizer_geometry_adapter
+    groups = adapter.groups_by_parameter()
+    raw_forget_sq = 0.0
+    optimizer_forget_sq = 0.0
+    denominators = {}
+    for name, parameter in named_params:
+        raw = trainer._mean_component_coordinate("forget", name, parameter)
+        if raw is None:
+            continue
+        denominator = adapter.sqrt_denominator(
+            parameter,
+            groups[id(parameter)],
+        )
+        denominators[name] = denominator
+        raw_forget_sq += float(raw.square().sum().item())
+        optimizer = trainer._to_adam_coordinates(raw, denominator)
+        optimizer_forget_sq += float(optimizer.square().sum().item())
+
+    trainer.perturbation_normalization = "fixed_loss"
+    fixed = trainer._build_uam_perturbation(named_params)
+    trainer.perturbation_normalization = "metric_trust"
+    metric = trainer._build_uam_perturbation(named_params)
+
+    fixed_linearized_increase = 0.0
+    metric_radius_sq = 0.0
+    for name, parameter in named_params:
+        raw = trainer._mean_component_coordinate("forget", name, parameter)
+        if raw is None:
+            continue
+        fixed_delta = fixed.deltas[name].to(parameter.device)
+        metric_delta = metric.deltas[name].to(parameter.device)
+        fixed_linearized_increase += float((raw * fixed_delta).sum().item())
+        denominator = denominators[name]
+        metric_factor = 1.0 if denominator is None else denominator
+        metric_radius_sq += float((metric_factor * metric_delta).square().sum().item())
+
+    assert fixed.decision.mode == "fixed_loss"
+    assert metric.decision.mode == "metric_trust"
+    assert fixed.raw_forget_norm == pytest.approx(raw_forget_sq**0.5)
+    assert metric.optimizer_forget_norm == pytest.approx(optimizer_forget_sq**0.5)
+    assert fixed.identity_fallback_parameters == 1
+    assert metric.identity_fallback_parameters == 1
+    assert fixed_linearized_increase == pytest.approx(trainer.rho, rel=2e-5)
+    assert metric_radius_sq**0.5 == pytest.approx(trainer.rho, rel=2e-5)
+    assert any(
+        not torch.equal(fixed.deltas[name], metric.deltas[name])
+        for name in fixed.deltas.keys() & metric.deltas.keys()
+    )
+    for result in (fixed, metric):
+        assert result.deltas
+        for delta in result.deltas.values():
+            assert delta.device.type == "cpu"
+            assert delta.dtype is torch.float32
+            assert torch.isfinite(delta).all()
+    for name, parameter in named_params:
+        assert torch.equal(parameter, originals[name])
+
+
+def test_replay_shared_perturbation_matches_concatenated_retain_gradient(
+    tmp_path,
+):
+    torch.manual_seed(607)
+    trainer, model = make_uam_trainer(tmp_path)
+    initialize_uam_runtime(trainer)
+    named_params = trainer._selected_named_parameters(model)
+    params = [parameter for _, parameter in named_params]
+    batches = [prepared_unlearn_batch(trainer, seed) for seed in (601, 602)]
+    for inputs in batches:
+        trainer._collect_uam_microstep(model, inputs)
+    deltas = {
+        name: torch.full(parameter.shape, 1e-3, dtype=torch.float32)
+        for name, parameter in named_params
+    }
+    originals = {name: parameter.detach().clone() for name, parameter in named_params}
+    for parameter in params:
+        parameter.grad = torch.randn_like(parameter)
+    grad_snapshots = [parameter.grad.detach().clone() for parameter in params]
+    concatenated_retain = {
+        key: torch.cat([inputs["retain"][key] for inputs in batches], dim=0)
+        for key in batches[0]["retain"]
+    }
+    with TemporaryParameterPerturbation(named_params, deltas):
+        with trainer.compute_loss_context_manager():
+            retain_loss = trainer.compute_retain_loss(model, concatenated_retain)
+        expected = torch.autograd.grad(
+            retain_loss,
+            params,
+            allow_unused=True,
+        )
+
+    stats, replayed_batches = trainer._replay_perturbed_retain_gradients(
+        named_params,
+        deltas,
+    )
+
+    assert replayed_batches == 2
+    assert trainer.replay_calls == 1
+    assert stats.requested_norm > 0.0
+    assert stats.effective_norm > 0.0
+    for (name, parameter), explicit, grad_snapshot in zip(
+        named_params,
+        expected,
+        grad_snapshots,
+        strict=True,
+    ):
+        replay_mean = trainer._mean_component_coordinate(
+            "perturbed_retain",
+            name,
+            parameter,
+        )
+        if explicit is None:
+            assert replay_mean is None
+        else:
+            torch.testing.assert_close(replay_mean, explicit.float())
+        assert torch.equal(parameter, originals[name])
+        assert torch.equal(parameter.grad, grad_snapshot)
+
+
+def test_replay_failure_restores_and_preserves_base_window(
+    tmp_path,
+    monkeypatch,
+):
+    trainer, model = make_uam_trainer(tmp_path)
+    initialize_uam_runtime(trainer)
+    named_params = trainer._selected_named_parameters(model)
+    for seed in (701, 702):
+        trainer._collect_uam_microstep(
+            model,
+            prepared_unlearn_batch(trainer, seed),
+        )
+    deltas = {
+        name: torch.full(parameter.shape, 1e-3, dtype=torch.float32)
+        for name, parameter in named_params
+    }
+    originals = {name: parameter.detach().clone() for name, parameter in named_params}
+    base_buffers = {
+        (component, name): trainer.component_buffers.tensor(
+            component,
+            name,
+            parameter.device,
+        ).clone()
+        for component in ("forget", "retain")
+        for name, parameter in named_params
+    }
+    real_compute_retain_loss = trainer.compute_retain_loss
+    calls = 0
+
+    def fail_second_replay(model_arg, retain_inputs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("forced second replay failure")
+        return real_compute_retain_loss(model_arg, retain_inputs)
+
+    monkeypatch.setattr(trainer, "compute_retain_loss", fail_second_replay)
+
+    with pytest.raises(RuntimeError, match="forced second replay failure"):
+        trainer._replay_perturbed_retain_gradients(named_params, deltas)
+
+    assert trainer.replay_calls == 0
+    assert not trainer.component_buffers.has_component("perturbed_retain")
+    assert trainer._uam_microsteps == 2
+    assert len(trainer.replay_buffer) == 2
+    for name, parameter in named_params:
+        assert torch.equal(parameter, originals[name])
+        for component in ("forget", "retain"):
+            assert torch.equal(
+                trainer.component_buffers.tensor(
+                    component,
+                    name,
+                    parameter.device,
+                ),
+                base_buffers[(component, name)],
+            )
+
+
+def test_replay_clears_stale_perturbed_component_before_accumulation(tmp_path):
+    trainer, model = make_uam_trainer(tmp_path)
+    initialize_uam_runtime(trainer)
+    named_params = trainer._selected_named_parameters(model)
+    params = [parameter for _, parameter in named_params]
+    inputs = prepared_unlearn_batch(trainer, 801)
+    trainer._collect_uam_microstep(model, inputs)
+    with trainer.compute_loss_context_manager():
+        expected_loss = trainer.compute_retain_loss(model, inputs["retain"])
+    expected = torch.autograd.grad(expected_loss, params, allow_unused=True)
+    trainer.component_buffers.add(
+        "perturbed_retain",
+        named_params,
+        [torch.full_like(parameter, 1e6) for parameter in params],
+    )
+
+    trainer._replay_perturbed_retain_gradients(named_params, {})
+
+    for (name, parameter), explicit in zip(named_params, expected, strict=True):
+        actual = trainer._mean_component_coordinate(
+            "perturbed_retain",
+            name,
+            parameter,
+        )
+        if explicit is None:
+            assert actual is None
+        else:
+            torch.testing.assert_close(actual, explicit.float())
+
+
+@pytest.mark.parametrize("mismatch", [False, True], ids=["empty", "mismatched"])
+def test_invalid_replay_window_fails_before_parameter_mutation(tmp_path, mismatch):
+    trainer, model = make_uam_trainer(tmp_path)
+    initialize_uam_runtime(trainer)
+    named_params = trainer._selected_named_parameters(model)
+    if mismatch:
+        trainer._collect_uam_microstep(
+            model,
+            prepared_unlearn_batch(trainer, 901),
+        )
+        trainer.replay_buffer.append(prepared_unlearn_batch(trainer, 902)["retain"])
+    originals = {name: parameter.detach().clone() for name, parameter in named_params}
+    deltas = {
+        name: torch.full(parameter.shape, 0.25, dtype=torch.float32)
+        for name, parameter in named_params
+    }
+
+    with pytest.raises(RuntimeError, match="replay.*microstep"):
+        trainer._replay_perturbed_retain_gradients(named_params, deltas)
+
+    assert trainer.replay_calls == 0
+    for name, parameter in named_params:
+        assert torch.equal(parameter, originals[name])

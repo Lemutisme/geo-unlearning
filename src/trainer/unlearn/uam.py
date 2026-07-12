@@ -8,6 +8,7 @@ import torch
 from trainer.unlearn.component_buffers import ComponentGradientBuffers
 from trainer.unlearn.geometric import GeometricUnlearn
 from trainer.unlearn.optimizer_geometry import make_optimizer_geometry_adapter
+from trainer.unlearn.uam_geometry import PerturbationDecision, decide_perturbation
 from trainer.utils import compute_batch_nll
 
 
@@ -78,6 +79,15 @@ class PerturbationStats:
         if self.requested_norm == 0.0:
             return 0.0
         return self.effective_norm / self.requested_norm
+
+
+@dataclass(frozen=True)
+class UAMPerturbation:
+    deltas: dict[str, torch.Tensor]
+    decision: PerturbationDecision
+    raw_forget_norm: float
+    optimizer_forget_norm: float
+    identity_fallback_parameters: int
 
 
 class TemporaryParameterPerturbation:
@@ -362,6 +372,202 @@ class UAMUnlearn(GeometricUnlearn):
             self._validate_finite_forget_signal(signal)
             return signal, outputs
         raise ValueError(f"Unsupported UAM forget signal: {self.forget_signal}")
+
+    def _clear_uam_window(self):
+        self.component_buffers.clear()
+        self.replay_buffer.clear()
+        self._uam_microsteps = 0
+
+    def _collect_uam_microstep(self, model, inputs):
+        with self.compute_loss_context_manager():
+            forget_signal, _ = self.compute_uam_forget_signal(
+                model,
+                inputs["forget"],
+            )
+            retain_loss = self.compute_retain_loss(model, inputs["retain"])
+
+        named_params = self._selected_named_parameters(model)
+        params = [parameter for _, parameter in named_params]
+        forget_grads = torch.autograd.grad(
+            forget_signal,
+            params,
+            retain_graph=True,
+            create_graph=False,
+            allow_unused=True,
+        )
+        retain_grads = torch.autograd.grad(
+            retain_loss,
+            params,
+            retain_graph=True,
+            create_graph=False,
+            allow_unused=True,
+        )
+
+        try:
+            self.component_buffers.add("forget", named_params, forget_grads)
+            self.component_buffers.add("retain", named_params, retain_grads)
+            self.replay_buffer.append(inputs["retain"])
+        except BaseException:
+            self._clear_uam_window()
+            raise
+
+        self._uam_microsteps += 1
+        self.accelerator.backward(retain_loss)
+        return retain_loss.detach()
+
+    def _mean_component_coordinate(
+        self,
+        component,
+        name,
+        parameter,
+        sqrt_denominator=None,
+    ):
+        if self._uam_microsteps <= 0:
+            raise RuntimeError("UAM component mean requires at least one microstep.")
+        tensor = self.component_buffers.tensor(
+            component,
+            name,
+            parameter.device,
+        )
+        if tensor is None:
+            return None
+        if tensor.dtype != torch.float32:
+            raise RuntimeError("UAM component buffers must use FP32.")
+        effective_mean = tensor.float() / self._uam_microsteps
+        return self._to_adam_coordinates(effective_mean, sqrt_denominator)
+
+    @torch.no_grad()
+    def _build_uam_perturbation(self, named_params):
+        named_params = list(named_params)
+        if self._uam_microsteps <= 0:
+            raise RuntimeError("UAM perturbation requires at least one microstep.")
+        if not self.component_buffers.has_component("forget"):
+            raise RuntimeError("UAM forget gradient buffer is empty.")
+        if not named_params:
+            raise RuntimeError("UAM perturbation requires selected parameters.")
+        adapter = self._optimizer_geometry_adapter
+        if adapter is None or not self._uam_runtime_validated:
+            raise RuntimeError(
+                "UAM perturbation requires an initialized validated optimizer adapter."
+            )
+
+        groups_by_parameter = adapter.groups_by_parameter()
+        scalar_device = named_params[0][1].device
+        raw_forget_sq = torch.zeros(
+            (),
+            dtype=torch.float32,
+            device=scalar_device,
+        )
+        optimizer_forget_sq = torch.zeros_like(raw_forget_sq)
+        identity_fallback_parameters = 0
+
+        for name, parameter in named_params:
+            raw_forget = self._mean_component_coordinate(
+                "forget",
+                name,
+                parameter,
+            )
+            if raw_forget is None:
+                continue
+            group = groups_by_parameter[id(parameter)]
+            sqrt_denominator = adapter.sqrt_denominator(parameter, group)
+            if sqrt_denominator is None:
+                identity_fallback_parameters += 1
+            optimizer_forget = self._to_adam_coordinates(
+                raw_forget,
+                sqrt_denominator,
+            )
+            raw_forget_sq.add_(raw_forget.square().sum())
+            optimizer_forget_sq.add_(optimizer_forget.square().sum())
+
+        decision = decide_perturbation(
+            self.perturbation_normalization,
+            raw_forget_sq,
+            optimizer_forget_sq,
+            self.rho,
+            self.projection_eps,
+        )
+
+        deltas = {}
+        for name, parameter in named_params:
+            raw_forget = self._mean_component_coordinate(
+                "forget",
+                name,
+                parameter,
+            )
+            if raw_forget is None:
+                continue
+            coefficient = decision.coefficient.to(raw_forget.device)
+            delta = coefficient * raw_forget
+            if decision.mode == "metric_trust":
+                group = groups_by_parameter[id(parameter)]
+                sqrt_denominator = adapter.sqrt_denominator(parameter, group)
+                if sqrt_denominator is not None:
+                    delta = delta / sqrt_denominator.square()
+            if not torch.isfinite(delta).all().item():
+                raise RuntimeError(
+                    f"UAM perturbation delta for parameter {name!r} is non-finite."
+                )
+            cpu_delta = delta.detach().to(device="cpu", dtype=torch.float32).clone()
+            if not torch.isfinite(cpu_delta).all().item():
+                raise RuntimeError(
+                    f"UAM CPU perturbation delta for parameter {name!r} "
+                    "is non-finite."
+                )
+            deltas[name] = cpu_delta
+
+        return UAMPerturbation(
+            deltas=deltas,
+            decision=decision,
+            raw_forget_norm=float(raw_forget_sq.sqrt().item()),
+            optimizer_forget_norm=float(optimizer_forget_sq.sqrt().item()),
+            identity_fallback_parameters=identity_fallback_parameters,
+        )
+
+    def _replay_perturbed_retain_gradients(self, named_params, deltas):
+        named_params = list(named_params)
+        self.component_buffers.clear_component("perturbed_retain")
+        replay_batch_count = len(self.replay_buffer)
+        if self._uam_microsteps <= 0 or replay_batch_count != self._uam_microsteps:
+            raise RuntimeError(
+                "UAM replay batch count must match a positive microstep count."
+            )
+        if not named_params:
+            raise RuntimeError("UAM replay requires selected parameters.")
+
+        params = [parameter for _, parameter in named_params]
+        try:
+            with TemporaryParameterPerturbation(named_params, deltas) as stats:
+                completed_batches = 0
+                for retain_inputs in self.replay_buffer.batches(
+                    self.accelerator.device
+                ):
+                    with self.compute_loss_context_manager():
+                        retain_loss = self.compute_retain_loss(
+                            self.model,
+                            retain_inputs,
+                        )
+                    retain_grads = torch.autograd.grad(
+                        retain_loss,
+                        params,
+                        create_graph=False,
+                        allow_unused=True,
+                    )
+                    self.component_buffers.add(
+                        "perturbed_retain",
+                        named_params,
+                        retain_grads,
+                    )
+                    completed_batches += 1
+
+                if not self.component_buffers.has_component("perturbed_retain"):
+                    raise RuntimeError("UAM perturbed retain gradient buffer is empty.")
+        except BaseException:
+            self.component_buffers.clear_component("perturbed_retain")
+            raise
+
+        self.replay_calls += 1
+        return stats, completed_batches
 
     def _validate_uam_runtime(self):
         if self._uam_runtime_validated:
