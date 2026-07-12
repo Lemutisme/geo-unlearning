@@ -37,6 +37,7 @@ declare -a active_method=("" "")
 declare -a active_start=("" "")
 declare -a active_command=("" "")
 failure=0
+active_count=0
 
 launch_arm() {
     local slot=$1
@@ -49,19 +50,14 @@ launch_arm() {
     active_method[slot]=${method}
     active_start[slot]=${start_utc}
     active_command[slot]=${command}
+    active_count=$((active_count + 1))
     echo "Started pid=${active_pid[slot]} gpu=${slot} method=${method}"
 }
 
-wait_for_slot() {
+record_completion() {
     local slot=$1
-    local pid=${active_pid[slot]}
-    [[ -n "${pid}" ]] || return 0
-
-    local exit_code
-    set +e
-    wait "${pid}"
-    exit_code=$?
-    set -e
+    local pid=$2
+    local exit_code=$3
 
     local end_utc
     end_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -74,25 +70,64 @@ wait_for_slot() {
         echo "Arm failed pid=${pid} exit_code=${exit_code}; no new arms will be scheduled." >&2
     fi
     active_pid[slot]=""
+    active_count=$((active_count - 1))
 }
 
-next_slot=0
-for method in "${arms[@]}"; do
-    if [[ ${failure} -ne 0 ]]; then
-        break
+reap_next_completion() {
+    local -a pids=()
+    local slot
+    for slot in 0 1; do
+        if [[ -n "${active_pid[slot]}" ]]; then
+            pids+=("${active_pid[slot]}")
+        fi
+    done
+    if (( ${#pids[@]} == 0 )); then
+        echo "Internal scheduler error: no active PID to reap." >&2
+        return 1
     fi
-    if [[ -n "${active_pid[next_slot]}" ]]; then
-        wait_for_slot "${next_slot}"
-        if [[ ${failure} -ne 0 ]]; then
+
+    local completed_pid=""
+    local exit_code
+    set +e
+    wait -n -p completed_pid "${pids[@]}"
+    exit_code=$?
+    set -e
+    if [[ -z "${completed_pid}" ]]; then
+        echo "Internal scheduler error: wait -n returned no PID." >&2
+        return 1
+    fi
+
+    local completed_slot=""
+    for slot in 0 1; do
+        if [[ "${active_pid[slot]}" == "${completed_pid}" ]]; then
+            completed_slot=${slot}
             break
         fi
+    done
+    if [[ -z "${completed_slot}" ]]; then
+        echo "Internal scheduler error: unknown completed PID ${completed_pid}." >&2
+        return 1
     fi
-    launch_arm "${next_slot}" "${method}"
-    next_slot=$((1 - next_slot))
+    record_completion "${completed_slot}" "${completed_pid}" "${exit_code}"
+}
+
+next_arm=0
+for slot in 0 1; do
+    launch_arm "${slot}" "${arms[next_arm]}"
+    next_arm=$((next_arm + 1))
 done
 
-for slot in 0 1; do
-    wait_for_slot "${slot}"
+while (( active_count > 0 )); do
+    reap_next_completion
+    if [[ ${failure} -eq 0 && ${next_arm} -lt ${#arms[@]} ]]; then
+        for slot in 0 1; do
+            if [[ -z "${active_pid[slot]}" ]]; then
+                launch_arm "${slot}" "${arms[next_arm]}"
+                next_arm=$((next_arm + 1))
+                break
+            fi
+        done
+    fi
 done
 
 if [[ ${failure} -ne 0 ]]; then

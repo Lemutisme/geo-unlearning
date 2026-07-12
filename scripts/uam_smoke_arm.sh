@@ -45,6 +45,32 @@ audit_checkpoint_payloads() {
     fi
 }
 
+audit_persistent_allowlist() {
+    local persistent_root=$1
+    local artifact relative
+    while IFS= read -r -d '' artifact; do
+        relative=${artifact#"${persistent_root}/"}
+        case "${relative}" in
+            .hydra|evals)
+                if [[ ! -d "${artifact}" || -L "${artifact}" ]]; then
+                    echo "Unexpected persistent artifact: ${artifact}" >&2
+                    return 1
+                fi
+                ;;
+            .hydra/config.yaml|evals/TOFU_SUMMARY.json|run.log|UAMUnlearn.log|uam_diagnostics.jsonl|uam_diagnostics.summary.json)
+                if [[ ! -f "${artifact}" || -L "${artifact}" ]]; then
+                    echo "Unexpected persistent artifact: ${artifact}" >&2
+                    return 1
+                fi
+                ;;
+            *)
+                echo "Unexpected persistent artifact: ${artifact}" >&2
+                return 1
+                ;;
+        esac
+    done < <(find "${persistent_root}" -mindepth 1 -print0)
+}
+
 if [[ $# -eq 2 && $1 == --audit-only ]]; then
     audit_checkpoint_payloads "$2"
     exit $?
@@ -75,6 +101,11 @@ case "${method}" in
         ;;
 esac
 
+if [[ ! "${timestamp}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    echo "Unsafe timestamp: ${timestamp}" >&2
+    exit 2
+fi
+
 conda_exe=${CONDA_EXE:-}
 if [[ -z "${conda_exe}" ]]; then
     conda_exe=$(command -v conda || true)
@@ -102,6 +133,12 @@ task_name="uam_smoke_${method}_${timestamp}"
 diagnostics_path="${local_arm_dir}/uam_diagnostics.jsonl"
 smoke_rho=${UAM_SMOKE_RHO:-0.05}
 
+expected_arm_dir="saves/exp/UAM_SMOKE/${timestamp}/${method}"
+if [[ "${arm_dir}" != "${expected_arm_dir}" ]]; then
+    echo "Refusing to clean unexpected persistent arm path: ${arm_dir}" >&2
+    exit 2
+fi
+rm -rf -- "${arm_dir}"
 mkdir -p "${local_arm_dir}"
 
 command=(
@@ -216,4 +253,5 @@ if [[ -f "${local_arm_dir}/UAMUnlearn.log" ]]; then
 fi
 
 audit_checkpoint_payloads "${arm_dir}"
+audit_persistent_allowlist "${arm_dir}"
 echo "Completed ${method}: ${persistent_summary}"

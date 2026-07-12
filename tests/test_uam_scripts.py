@@ -297,11 +297,18 @@ def _write_fake_accelerate(tmp_path):
         '"${root}/checkpoint-10/evals/TOFU_SUMMARY.json"\n'
         "printf '{\"detail\": true}\\n' > "
         '"${root}/checkpoint-10/evals/details.json"\n'
+        "if [[ ${FAKE_CHECKPOINT_PAYLOAD:-0} == 1 ]]; then\n"
+        "    printf 'payload\\n' > \"${root}/checkpoint-10/optimizer.pt\"\n"
+        "fi\n"
         'printf \'{"record_type": "uam_geometry"}\\n\' > '
         '"${root}/uam_diagnostics.jsonl"\n'
         "printf '{\"surgery_count\": 1}\\n' > "
         '"${root}/uam_diagnostics.summary.json"\n'
         "printf 'trainer log\\n' > \"${root}/UAMUnlearn.log\"\n"
+        "if [[ -n ${FAKE_PERSISTENT_JUNK:-} ]]; then\n"
+        '    mkdir -p "$(dirname "${FAKE_PERSISTENT_JUNK}")"\n'
+        "    printf 'junk\\n' > \"${FAKE_PERSISTENT_JUNK}\"\n"
+        "fi\n"
     )
     executable.chmod(0o755)
     return executable
@@ -309,6 +316,14 @@ def _write_fake_accelerate(tmp_path):
 
 def test_arm_normalizes_eval_container_and_persists_only_allowlist(tmp_path):
     local_arm = tmp_path / "local/stamp/uam_nll"
+    matrix_root = tmp_path / "saves/exp/UAM_SMOKE/stamp"
+    persistent_arm = matrix_root / "uam_nll"
+    persistent_arm.mkdir(parents=True)
+    (persistent_arm / "junk.json").write_text("stale\n")
+    (matrix_root / "RUN_MANIFEST.tsv").write_text("manifest sentinel\n")
+    sibling = matrix_root / "uam_simnpo/sentinel.txt"
+    sibling.parent.mkdir()
+    sibling.write_text("sibling sentinel\n")
     fake_accelerate = _write_fake_accelerate(tmp_path)
     environment = os.environ.copy()
     environment["CONDA_EXE"] = str(_write_fake_conda(tmp_path))
@@ -326,7 +341,6 @@ def test_arm_normalizes_eval_container_and_persists_only_allowlist(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
-    persistent_arm = tmp_path / "saves/exp/UAM_SMOKE/stamp/uam_nll"
     assert not list(local_arm.rglob("checkpoint-*"))
     assert not list(persistent_arm.rglob("checkpoint-*"))
     allowed = {
@@ -347,6 +361,77 @@ def test_arm_normalizes_eval_container_and_persists_only_allowlist(tmp_path):
         for path in local_arm.rglob("*")
         if path.is_file()
     } == allowed
+    assert (matrix_root / "RUN_MANIFEST.tsv").read_text() == "manifest sentinel\n"
+    assert sibling.read_text() == "sibling sentinel\n"
+
+
+def test_arm_rejects_unsafe_timestamp_before_environment_bootstrap(tmp_path):
+    environment = os.environ.copy()
+    environment["CONDA_EXE"] = str(tmp_path / "must-not-run-conda")
+
+    result = subprocess.run(
+        ["bash", str(ARM), "uam_nll", "0", "../escape"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert "Unsafe timestamp" in result.stderr
+
+
+def test_arm_rejects_checkpoint_payload_before_deleting_eval_container(tmp_path):
+    local_arm = tmp_path / "local/stamp/uam_nll"
+    fake_accelerate = _write_fake_accelerate(tmp_path)
+    environment = os.environ.copy()
+    environment["CONDA_EXE"] = str(_write_fake_conda(tmp_path))
+    environment["PATH"] = f"{fake_accelerate.parent}:{environment['PATH']}"
+    environment["UAM_LOCAL_ROOT"] = str(tmp_path / "local")
+    environment["FAKE_LOCAL_ARM"] = str(local_arm)
+    environment["FAKE_CHECKPOINT_PAYLOAD"] = "1"
+
+    result = subprocess.run(
+        ["bash", str(ARM), "uam_nll", "0", "stamp"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    payload = local_arm / "checkpoint-10/optimizer.pt"
+    assert result.returncode == 1
+    assert "Unexpected checkpoint payload" in result.stderr
+    assert payload.is_file()
+    assert not (local_arm / "evals/TOFU_SUMMARY.json").exists()
+
+
+def test_arm_final_allowlist_rejects_junk_created_after_initial_cleanup(tmp_path):
+    local_arm = tmp_path / "local/stamp/uam_nll"
+    persistent_arm = tmp_path / "saves/exp/UAM_SMOKE/stamp/uam_nll"
+    junk = persistent_arm / "junk.json"
+    fake_accelerate = _write_fake_accelerate(tmp_path)
+    environment = os.environ.copy()
+    environment["CONDA_EXE"] = str(_write_fake_conda(tmp_path))
+    environment["PATH"] = f"{fake_accelerate.parent}:{environment['PATH']}"
+    environment["UAM_LOCAL_ROOT"] = str(tmp_path / "local")
+    environment["FAKE_LOCAL_ARM"] = str(local_arm)
+    environment["FAKE_PERSISTENT_JUNK"] = str(junk)
+
+    result = subprocess.run(
+        ["bash", str(ARM), "uam_nll", "0", "stamp"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 1
+    assert "Unexpected persistent artifact" in result.stderr
+    assert junk.is_file()
 
 
 def test_matrix_fail_fast_waits_active_and_schedules_no_new_arm(tmp_path):
@@ -391,6 +476,83 @@ def test_matrix_fail_fast_waits_active_and_schedules_no_new_arm(tmp_path):
         row[6] == f"bash scripts/uam_smoke_arm.sh {row[2]} {row[1]} teststamp"
         for row in rows
     )
+
+
+def test_matrix_observes_fast_slot_one_failure_before_scheduling_third_arm(tmp_path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copy2(MATRIX, scripts / MATRIX.name)
+    fake_arm = scripts / ARM.name
+    fake_arm.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$1\" >> launched.txt\n"
+        "case $1 in\n"
+        "    uam_nll) sleep 0.4; exit 0 ;;\n"
+        "    uam_simnpo) sleep 0.03; exit 9 ;;\n"
+        "    *) exit 0 ;;\n"
+        "esac\n"
+    )
+    fake_arm.chmod(0o755)
+    environment = os.environ.copy()
+    environment["CONDA_EXE"] = str(_write_fake_conda(tmp_path))
+
+    result = subprocess.run(
+        ["bash", f"scripts/{MATRIX.name}", "race"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode != 0
+    assert set((tmp_path / "launched.txt").read_text().splitlines()) == {
+        "uam_nll",
+        "uam_simnpo",
+    }
+    manifest = (
+        (tmp_path / "saves/exp/UAM_SMOKE/race/RUN_MANIFEST.tsv")
+        .read_text()
+        .splitlines()
+    )
+    assert len(manifest) == 3
+    rows = [line.split("\t") for line in manifest[1:]]
+    assert {row[2] for row in rows} == {"uam_nll", "uam_simnpo"}
+    assert {int(row[5]) for row in rows} == {0, 9}
+
+
+def test_matrix_success_records_each_of_four_methods_once(tmp_path):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copy2(MATRIX, scripts / MATRIX.name)
+    fake_arm = scripts / ARM.name
+    fake_arm.write_text(
+        "#!/usr/bin/env bash\n" "printf '%s\\n' \"$1\" >> launched.txt\n" "sleep 0.02\n"
+    )
+    fake_arm.chmod(0o755)
+    environment = os.environ.copy()
+    environment["CONDA_EXE"] = str(_write_fake_conda(tmp_path))
+
+    result = subprocess.run(
+        ["bash", f"scripts/{MATRIX.name}", "success"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert set((tmp_path / "launched.txt").read_text().splitlines()) == set(METHODS)
+    manifest = (
+        (tmp_path / "saves/exp/UAM_SMOKE/success/RUN_MANIFEST.tsv")
+        .read_text()
+        .splitlines()
+    )
+    assert len(manifest) == 5
+    rows = [line.split("\t") for line in manifest[1:]]
+    assert {row[2] for row in rows} == set(METHODS)
+    assert all(int(row[5]) == 0 for row in rows)
 
 
 def load_analyzer():
