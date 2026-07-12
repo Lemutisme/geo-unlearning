@@ -379,7 +379,7 @@ def checkpoint_payloads(root):
 
 
 def _mean(values):
-    return sum(values) / len(values)
+    return math.fsum(values) / len(values)
 
 
 def _metric_delta(left, baseline):

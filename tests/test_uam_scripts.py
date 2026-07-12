@@ -1440,6 +1440,24 @@ def load_analyzer():
     return module
 
 
+def test_analyzer_mean_is_stable_across_python_float_sum_algorithms():
+    analyzer = load_analyzer()
+    values = [
+        0.7913729666566313,
+        1.0000085533190375,
+        1.0003326608700953,
+        1.0002989363633583,
+        1.0002284297544124,
+        1.0003058529494582,
+        1.0013736281680377,
+        1.0009572335259038,
+        1.001692950182522,
+        1.0016288681299705,
+    ]
+
+    assert analyzer._mean(values) == math.fsum(values) / len(values)
+
+
 def method_parameters(method):
     return {
         "uam_nll": ("uam", "nll", "fixed_loss"),
