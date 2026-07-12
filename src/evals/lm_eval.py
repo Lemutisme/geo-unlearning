@@ -24,7 +24,7 @@ class LMEvalEvaluator(Evaluator):
     def prepare_model(self, model, **kwargs):
         """Prepare model for evaluation"""
         model.eval()
-        return HFLM(model)
+        return HFLM(model, tokenizer=kwargs.get("tokenizer"))
 
     def summarize(self, eval_results: dict, task_name: str) -> dict:
         """
