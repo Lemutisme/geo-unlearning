@@ -124,6 +124,10 @@ def uam_gpu_trainer(tmp_path):
         initial_state=None,
         vocab_size=64,
         seed=709,
+        learning_rate=1e-2,
+        forget_signal="nll",
+        lr_scheduler_type="constant",
+        warmup_steps=0,
     ):
         nonlocal trainer_count
         trainer_count += 1
@@ -142,8 +146,9 @@ def uam_gpu_trainer(tmp_path):
             per_device_train_batch_size=2,
             gradient_accumulation_steps=1,
             max_steps=max_steps,
-            learning_rate=1e-2,
-            lr_scheduler_type="constant",
+            learning_rate=learning_rate,
+            lr_scheduler_type=lr_scheduler_type,
+            warmup_steps=warmup_steps,
             optim=optim,
             adam_beta1=0.0,
             weight_decay=0.0,
@@ -173,7 +178,7 @@ def uam_gpu_trainer(tmp_path):
         )
         uam_config = SimpleNamespace(
             mode=mode,
-            forget_signal="nll",
+            forget_signal=forget_signal,
             perturbation_normalization="auto",
             rho=5e-2,
             reflection_gamma=2.0,
@@ -227,6 +232,12 @@ def uam_gpu_trainer(tmp_path):
                 trainer.remove_callback(callback)
                 callback.optimizer = None
                 callback.named_parameters.clear()
+            elif isinstance(callback, CaptureOptimizerStepDelta):
+                trainer.remove_callback(callback)
+                callback.trainer = None
+                callback.optimizer = None
+                callback.named_parameters.clear()
+                callback.snapshots.clear()
 
         optimizer = getattr(trainer, "optimizer", None)
         if optimizer is not None:
@@ -308,6 +319,61 @@ class CapturePagedState(TrainerCallback):
                 "numel": parameter.numel(),
             }
         self.state2_metadata.append(initialized)
+        return control
+
+
+class CaptureOptimizerStepDelta(TrainerCallback):
+    def __init__(self, trainer, optimizer, model):
+        self.trainer = trainer
+        self.optimizer = optimizer
+        self.named_parameters = dict(model.named_parameters())
+        self.snapshots = {}
+        self.records = []
+
+    def on_pre_optimizer_step(self, _args, _state, control, **_kwargs):
+        self.snapshots = {
+            name: parameter.detach().clone()
+            for name, parameter in self.named_parameters.items()
+        }
+        return control
+
+    def on_optimizer_step(self, _args, _state, control, **_kwargs):
+        changed_elements = 0
+        maximum_delta = 0.0
+        delta_square_sum = 0.0
+        state_steps = set()
+        state2_parameters = 0
+        paged_state2_parameters = 0
+        for name, parameter in self.named_parameters.items():
+            delta = parameter.detach().float() - self.snapshots[name].float()
+            changed_elements += int(torch.count_nonzero(delta).item())
+            if delta.numel():
+                maximum_delta = max(maximum_delta, float(delta.abs().max().item()))
+            delta_square_sum += float(delta.square().sum().item())
+            optimizer_state = self.optimizer.state.get(parameter, {})
+            if "step" in optimizer_state:
+                state_steps.add(int(optimizer_state["step"]))
+            if "state2" in optimizer_state:
+                state2_parameters += 1
+                paged_state2_parameters += int(
+                    bool(getattr(optimizer_state["state2"], "is_paged", False))
+                )
+        self.records.append(
+            {
+                "changed_elements": changed_elements,
+                "maximum_delta": maximum_delta,
+                "delta_norm": math.sqrt(delta_square_sum),
+                "state_steps": state_steps,
+                "state2_parameters": state2_parameters,
+                "paged_state2_parameters": paged_state2_parameters,
+                "optimizer_was_skipped": (
+                    self.trainer.accelerator.optimizer_step_was_skipped
+                ),
+                "learning_rates": {
+                    float(group["lr"]) for group in self.optimizer.param_groups
+                },
+            }
+        )
         return control
 
 
@@ -598,6 +664,56 @@ def test_bf16_flash_attention_two_matches_eager_public_uam_update(
         assert close_fraction.item() >= 0.99, name
         assert relative_update_error.item() < 0.13, name
         assert update_cosine.item() > 0.99, name
+
+
+@pytest.mark.parametrize("forget_signal", ["nll", "simnpo"])
+def test_paged_adamw_32bit_bf16_first_step_changes_parameters_without_warmup(
+    uam_gpu_trainer,
+    forget_signal,
+):
+    require_flash_attention_2()
+    pytest.importorskip(
+        "bitsandbytes",
+        reason="bitsandbytes is unavailable; PagedAdamW32 integration cannot run",
+    )
+    trainer, model = uam_gpu_trainer(
+        mode="uam",
+        attention_implementation="flash_attention_2",
+        optim="paged_adamw_32bit",
+        max_steps=1,
+        vocab_size=2_048,
+        learning_rate=1e-5,
+        forget_signal=forget_signal,
+        lr_scheduler_type="linear",
+        warmup_steps=0,
+    )
+    trainer.create_optimizer()
+    optimizer = unwrap_optimizer(trainer.optimizer)
+    gradient_capture = CapturePreOptimizerState(trainer)
+    step_capture = CaptureOptimizerStepDelta(trainer, optimizer, model)
+    trainer.add_callback(gradient_capture)
+    trainer.add_callback(step_capture)
+
+    trainer.train()
+
+    assert len(gradient_capture.gradients) == len(step_capture.records) == 1
+    assert gradient_capture.gradients[0]
+    assert any(
+        torch.count_nonzero(gradient).item()
+        for gradient in gradient_capture.gradients[0].values()
+    )
+    record = step_capture.records[0]
+    print(f"first-step optimizer diagnostic: {record}")
+    assert record["state_steps"] == {1}
+    assert record["state2_parameters"] > 0
+    assert record["paged_state2_parameters"] > 0
+    assert record["optimizer_was_skipped"] is False
+    assert trainer.args.learning_rate == 1e-5
+    assert record["learning_rates"] == {1e-5}
+    assert record["changed_elements"] > 0, record
+    assert record["maximum_delta"] > 0.0, record
+    assert record["delta_norm"] > 0.0, record
+    assert_no_checkpoint_payload(trainer.args.output_dir)
 
 
 def test_paged_adamw_32bit_bf16_runs_two_public_uam_gu_updates(

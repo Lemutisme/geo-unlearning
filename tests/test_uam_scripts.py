@@ -132,7 +132,8 @@ def test_arm_uses_approved_tofu_production_stack_and_smoke_rho_override():
         "trainer.method_args.uam_config.perturbation_normalization=${normalization}",
         "trainer.method_args.uam_config.rho=${smoke_rho}",
         "smoke_rho=${UAM_SMOKE_RHO:-0.05}",
-        "smoke_learning_rate=${UAM_SMOKE_LEARNING_RATE:-1e-4}",
+        "smoke_learning_rate=${UAM_SMOKE_LEARNING_RATE:-1e-5}",
+        "trainer.args.warmup_epochs=0",
         "trainer.method_args.geometric_config.actual_delta_mode=full",
         "trainer.method_args.geometric_config.actual_delta_steps=[1,10]",
     ):
@@ -418,7 +419,15 @@ def _cleanup_pids(paths):
                 pass
 
 
-def test_arm_normalizes_eval_container_and_persists_only_allowlist(tmp_path):
+@pytest.mark.parametrize(
+    ("learning_rate_override", "expected_learning_rate"),
+    [(None, "1e-5"), ("2e-4", "2e-4")],
+)
+def test_arm_normalizes_eval_container_and_persists_only_allowlist(
+    tmp_path,
+    learning_rate_override,
+    expected_learning_rate,
+):
     local_arm = tmp_path / "local/stamp/uam_nll"
     matrix_root = tmp_path / "saves/exp/UAM_SMOKE/stamp"
     persistent_arm = matrix_root / "uam_nll"
@@ -435,7 +444,8 @@ def test_arm_normalizes_eval_container_and_persists_only_allowlist(tmp_path):
     environment["FAKE_LOCAL_ARM"] = str(local_arm)
     argv_log = tmp_path / "accelerate.argv"
     environment["FAKE_ACCELERATE_ARGV"] = str(argv_log)
-    environment["UAM_SMOKE_LEARNING_RATE"] = "2e-4"
+    if learning_rate_override is not None:
+        environment["UAM_SMOKE_LEARNING_RATE"] = learning_rate_override
 
     result = subprocess.run(
         ["bash", str(ARM), "uam_nll", "0", "stamp"],
@@ -483,7 +493,8 @@ def test_arm_normalizes_eval_container_and_persists_only_allowlist(tmp_path):
         "retain_split=retain99",
         "holdout_split=holdout01",
         "trainer.args.max_steps=10",
-        "trainer.args.learning_rate=2e-4",
+        f"trainer.args.learning_rate={expected_learning_rate}",
+        "trainer.args.warmup_epochs=0",
         "trainer.args.optim=paged_adamw_32bit",
         "trainer.method_args.geometric_config.actual_delta_mode=full",
         "trainer.method_args.geometric_config.actual_delta_steps=[1,10]",
