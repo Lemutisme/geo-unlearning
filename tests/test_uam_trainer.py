@@ -1,3 +1,4 @@
+import copy
 import math
 from pathlib import Path
 from types import SimpleNamespace
@@ -6,12 +7,15 @@ import pytest
 import torch
 from hydra import compose, initialize_config_dir
 from omegaconf import OmegaConf
-from transformers import TrainingArguments
+from transformers import TrainerCallback, TrainingArguments
 
 from trainer import TRAINER_REGISTRY
 import trainer.unlearn.uam as uam_module
 from trainer.unlearn.component_buffers import ComponentGradientBuffers
-from trainer.unlearn.optimizer_geometry import TorchAdamGeometryAdapter
+from trainer.unlearn.optimizer_geometry import (
+    TorchAdamGeometryAdapter,
+    unwrap_optimizer,
+)
 from trainer.unlearn.uam import (
     RetainReplayBuffer,
     TemporaryParameterPerturbation,
@@ -78,6 +82,7 @@ def make_uam_trainer(tmp_path, **overrides):
         optim="adamw_torch",
         adam_beta1=0.0,
         weight_decay=0.0,
+        max_grad_norm=overrides.pop("max_grad_norm", 1.0),
         remove_unused_columns=False,
         disable_tqdm=True,
         save_strategy="no",
@@ -2406,3 +2411,338 @@ def test_finalize_uam_repeated_windows_are_independent(tmp_path, monkeypatch):
         not torch.equal(first, second)
         for first, second in zip(snapshots[0], snapshots[1], strict=True)
     )
+
+
+def unbatch_uam_dataset(batch):
+    batch_size = batch["forget"]["input_ids"].shape[0]
+    return [
+        {
+            component: {key: tensor[index] for key, tensor in component_batch.items()}
+            for component, component_batch in batch.items()
+        }
+        for index in range(batch_size)
+    ]
+
+
+def seed_strongly_nonuniform_adam_state(trainer):
+    trainer.create_optimizer()
+    optimizer = unwrap_optimizer(trainer.optimizer)
+    for parameter_index, group in enumerate(optimizer.param_groups, start=1):
+        for parameter in group["params"]:
+            state = optimizer.state[parameter]
+            state["step"] = torch.tensor(17.0)
+            state["exp_avg"] = torch.linspace(
+                -0.2,
+                0.2,
+                parameter.numel(),
+                device=parameter.device,
+                dtype=parameter.dtype,
+            ).reshape_as(parameter)
+            state["exp_avg_sq"] = (
+                torch.logspace(
+                    -8,
+                    2,
+                    parameter.numel(),
+                    device=parameter.device,
+                    dtype=torch.float32,
+                )
+                .reshape_as(parameter)
+                .mul(parameter_index)
+                .to(parameter.dtype)
+            )
+
+    ratios = [
+        state["exp_avg_sq"].max() / state["exp_avg_sq"].min()
+        for state in optimizer.state.values()
+    ]
+    assert min(ratio.item() for ratio in ratios) >= 1e9
+    return optimizer
+
+
+@pytest.mark.parametrize("mode", ["uam", "uam_gu"])
+def test_uam_training_path_finalizes_and_replays_once_per_update(tmp_path, mode):
+    torch.manual_seed(1801)
+    dataset = unbatch_uam_dataset(
+        make_unlearn_batch(batch_size=4, sequence_length=6, seed=1802)
+    )
+    trainer, model = make_uam_trainer(
+        tmp_path,
+        mode=mode,
+        train_dataset=dataset,
+        per_device_train_batch_size=2,
+        max_steps=2,
+    )
+    initial_parameters = [
+        parameter.detach().clone() for parameter in model.parameters()
+    ]
+    finalized_windows = []
+    real_finalize = trainer._finalize_uam_gradients
+
+    def record_finalize(named_params):
+        microsteps = trainer._uam_microsteps
+        real_finalize(named_params)
+        finalized_windows.append(
+            (microsteps, trainer.replay_calls, dict(trainer.last_uam_diagnostics))
+        )
+
+    trainer._finalize_uam_gradients = record_finalize
+
+    trainer.train()
+
+    assert trainer.uam_calls == trainer.replay_calls == trainer.state.global_step == 2
+    assert [window[0] for window in finalized_windows] == [1, 1]
+    assert [window[1] for window in finalized_windows] == [1, 2]
+    assert [window[2]["update_step"] for window in finalized_windows] == [1, 2]
+    assert [window[2]["replay_microsteps"] for window in finalized_windows] == [1, 1]
+    assert trainer.component_buffers.empty
+    assert trainer.replay_buffer.empty
+    assert trainer._uam_microsteps == 0
+    assert any(
+        not torch.equal(initial, parameter)
+        for initial, parameter in zip(
+            initial_parameters,
+            model.parameters(),
+            strict=True,
+        )
+    )
+    assert not list(Path(tmp_path).glob("checkpoint-*"))
+
+
+@pytest.mark.parametrize("mode", ["uam", "uam_gu"])
+def test_uam_gas_equivalence_matches_effective_batch_update(tmp_path, mode):
+    torch.manual_seed(1901)
+    full_batch_model = TinyCausalLM()
+    accumulated_model = copy.deepcopy(full_batch_model)
+    initial_parameters = [
+        parameter.detach().clone() for parameter in full_batch_model.parameters()
+    ]
+    dataset = unbatch_uam_dataset(
+        make_unlearn_batch(batch_size=8, sequence_length=6, seed=1902)
+    )
+    common = {
+        "mode": mode,
+        "rho": 1e-2,
+        "train_dataset": dataset,
+        "max_steps": 1,
+        "max_grad_norm": 0.0,
+    }
+    (
+        full_batch_trainer,
+        _,
+    ) = make_uam_trainer(
+        tmp_path / "full",
+        model=full_batch_model,
+        per_device_train_batch_size=8,
+        gradient_accumulation_steps=1,
+        **common,
+    )
+    (
+        accumulated_trainer,
+        _,
+    ) = make_uam_trainer(
+        tmp_path / "accumulated",
+        model=accumulated_model,
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=4,
+        **common,
+    )
+    seed_strongly_nonuniform_adam_state(full_batch_trainer)
+    seed_strongly_nonuniform_adam_state(accumulated_trainer)
+
+    full_batch_trainer.train()
+    accumulated_trainer.train()
+
+    full_diagnostics = full_batch_trainer.last_uam_diagnostics
+    accumulated_diagnostics = accumulated_trainer.last_uam_diagnostics
+    assert full_diagnostics["replay_microsteps"] == 1
+    assert accumulated_diagnostics["replay_microsteps"] == 4
+    assert full_diagnostics["mode"] == accumulated_diagnostics["mode"] == mode
+    for key in (
+        "residual_sign_gate_passed",
+        "residual_orthogonality_safe",
+        "residual_gate_kept",
+    ):
+        assert full_diagnostics[key] is accumulated_diagnostics[key]
+    for key in (
+        "perturbation_coefficient",
+        "uam_projection_coefficient",
+        "residual_projection_coefficient",
+        "optimizer_forget_norm",
+        "optimizer_retain_norm",
+        "uam_coordinate_norm",
+        "final_coordinate_norm",
+        "residual_normal_norm",
+        "relative_residual_orthogonality",
+        "residual_forget_gate_dot",
+        "predicted_retain_directional_derivative",
+        "predicted_forget_correction_derivative",
+    ):
+        assert full_diagnostics[key] == pytest.approx(
+            accumulated_diagnostics[key],
+            rel=1e-5,
+            abs=1e-6,
+        )
+    if mode == "uam_gu":
+        assert abs(full_diagnostics["residual_forget_gate_dot"]) > 1e-6
+    assert full_batch_trainer.uam_calls == full_batch_trainer.replay_calls == 1
+    assert accumulated_trainer.uam_calls == accumulated_trainer.replay_calls == 1
+    for initial, full_parameter, accumulated_parameter in zip(
+        initial_parameters,
+        full_batch_model.parameters(),
+        accumulated_model.parameters(),
+        strict=True,
+    ):
+        assert not torch.equal(initial, full_parameter)
+        torch.testing.assert_close(
+            full_parameter,
+            accumulated_parameter,
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
+
+@pytest.mark.parametrize("mode", ["uam", "uam_gu"])
+def test_uam_short_window_finalizes_actual_microsteps(tmp_path, mode):
+    dataset = unbatch_uam_dataset(
+        make_unlearn_batch(batch_size=2, sequence_length=6, seed=2001)
+    )
+    trainer, model = make_uam_trainer(
+        tmp_path,
+        mode=mode,
+        train_dataset=dataset,
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=4,
+        max_steps=1,
+    )
+
+    trainer.train()
+
+    assert trainer.uam_calls == trainer.replay_calls == trainer.state.global_step == 1
+    assert trainer.last_uam_diagnostics["replay_microsteps"] == 1
+    assert all(
+        math.isfinite(float(value))
+        for key, value in trainer.last_uam_diagnostics.items()
+        if key != "mode"
+    )
+    assert trainer.component_buffers.empty
+    assert trainer.replay_buffer.empty
+    assert trainer._uam_microsteps == 0
+    assert all(parameter.grad is None for parameter in model.parameters())
+
+
+def test_uam_non_selected_gradient_reaches_optimizer_step_unchanged(tmp_path):
+    torch.manual_seed(2101)
+    model = TinyCausalLM()
+    reference_model = copy.deepcopy(model)
+    full_batch = make_unlearn_batch(batch_size=2, sequence_length=6, seed=2102)
+    dataset = unbatch_uam_dataset(full_batch)
+    trainer, _ = make_uam_trainer(
+        tmp_path,
+        model=model,
+        mode="uam",
+        trainable_params_regex=["embed.weight"],
+        train_dataset=dataset,
+        per_device_train_batch_size=2,
+        max_steps=1,
+        max_grad_norm=0.0,
+    )
+    expected_loss = reference_model(**full_batch["retain"]).loss
+    (expected_non_selected_gradient,) = torch.autograd.grad(
+        expected_loss,
+        (reference_model.lm_head.weight,),
+    )
+    seed_strongly_nonuniform_adam_state(trainer)
+
+    class CaptureGradientBeforeOptimizerStep(TrainerCallback):
+        def __init__(self):
+            self.gradients = []
+
+        def on_pre_optimizer_step(self, _args, _state, _control, **_kwargs):
+            self.gradients.append(model.lm_head.weight.grad.detach().clone())
+
+    capture_callback = CaptureGradientBeforeOptimizerStep()
+    trainer.add_callback(capture_callback)
+
+    trainer.train()
+
+    assert len(capture_callback.gradients) == 1
+    torch.testing.assert_close(
+        capture_callback.gradients[0],
+        expected_non_selected_gradient,
+        rtol=1e-6,
+        atol=1e-7,
+    )
+    assert trainer.uam_calls == trainer.replay_calls == trainer.state.global_step == 1
+
+
+def test_uam_failure_no_step_and_cleans_real_training_window(tmp_path, monkeypatch):
+    dataset = unbatch_uam_dataset(
+        make_unlearn_batch(batch_size=2, sequence_length=6, seed=2201)
+    )
+    trainer, model = make_uam_trainer(
+        tmp_path,
+        train_dataset=dataset,
+        per_device_train_batch_size=2,
+        max_steps=1,
+    )
+    optimizer = seed_strongly_nonuniform_adam_state(trainer)
+    optimizer_type = type(optimizer)
+    real_step = optimizer_type.step
+    optimizer_step_calls = 0
+
+    def record_step(optimizer_instance, *args, **kwargs):
+        nonlocal optimizer_step_calls
+        optimizer_step_calls += 1
+        return real_step(optimizer_instance, *args, **kwargs)
+
+    def fail_finalization(*_args, **_kwargs):
+        raise RuntimeError("forced training-path finalization failure")
+
+    monkeypatch.setattr(optimizer_type, "step", record_step)
+    monkeypatch.setattr(trainer, "_build_uam_perturbation", fail_finalization)
+
+    with pytest.raises(
+        RuntimeError,
+        match="forced training-path finalization failure",
+    ):
+        trainer.train()
+
+    assert optimizer_step_calls == 0
+    assert trainer.state.global_step == 0
+    assert trainer.uam_calls == trainer.replay_calls == 0
+    assert trainer.component_buffers.empty
+    assert trainer.replay_buffer.empty
+    assert trainer._uam_microsteps == 0
+    assert all(parameter.grad is None for parameter in model.parameters())
+    assert all(
+        parameter.grad is None
+        for group in optimizer.param_groups
+        for parameter in group["params"]
+    )
+
+
+def test_uam_loss_scaling_returns_retain_loss_divided_by_gas(tmp_path, monkeypatch):
+    torch.manual_seed(2301)
+    trainer, model = make_uam_trainer(
+        tmp_path,
+        gradient_accumulation_steps=4,
+    )
+    trainer.create_optimizer()
+    raw_inputs = make_unlearn_batch(batch_size=2, sequence_length=6, seed=2302)
+    collected_inputs = []
+
+    def collect(_model, inputs):
+        collected_inputs.append(inputs)
+        return torch.tensor(8.0, device=trainer.args.device)
+
+    monkeypatch.setattr(trainer, "_collect_uam_microstep", collect)
+    trainer.accelerator.gradient_state._set_sync_gradients(False)
+    try:
+        returned_loss = trainer.training_step(model, raw_inputs)
+    finally:
+        trainer.accelerator.gradient_state._set_sync_gradients(True)
+        trainer._clear_uam_window(model, clear_grads=True)
+
+    assert len(collected_inputs) == 1
+    assert collected_inputs[0]["retain"]["input_ids"].device == trainer.args.device
+    assert returned_loss.item() == 2.0

@@ -438,6 +438,20 @@ class UAMUnlearn(GeometricUnlearn):
 
         return retain_loss.detach()
 
+    def training_step(self, model, inputs):
+        self._validate_uam_runtime()
+        model.train()
+        if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
+            self.optimizer.train()
+
+        inputs = self._prepare_inputs(inputs)
+        retain_loss = self._collect_uam_microstep(model, inputs)
+        named_params = self._selected_named_parameters(model)
+        if self.accelerator.sync_gradients or self._is_short_final_accumulation_step():
+            self._finalize_uam_gradients(named_params)
+
+        return retain_loss / self.args.gradient_accumulation_steps
+
     def _mean_component_coordinate(
         self,
         component,
@@ -565,17 +579,18 @@ class UAMUnlearn(GeometricUnlearn):
                 for retain_inputs in self.replay_buffer.batches(
                     self.accelerator.device
                 ):
-                    with self.compute_loss_context_manager():
-                        retain_loss = self.compute_retain_loss(
-                            self.model,
-                            retain_inputs,
+                    with torch.enable_grad():
+                        with self.compute_loss_context_manager():
+                            retain_loss = self.compute_retain_loss(
+                                self.model,
+                                retain_inputs,
+                            )
+                        retain_grads = torch.autograd.grad(
+                            retain_loss,
+                            params,
+                            create_graph=False,
+                            allow_unused=True,
                         )
-                    retain_grads = torch.autograd.grad(
-                        retain_loss,
-                        params,
-                        create_graph=False,
-                        allow_unused=True,
-                    )
                     buffered_retain_grads = tuple(
                         gradient
                         if gradient is not None
@@ -616,7 +631,7 @@ class UAMUnlearn(GeometricUnlearn):
                 raise RuntimeError("UAM finalization requires selected parameters.")
 
             perturbation = self._build_uam_perturbation(named_params)
-            self._replay_perturbed_retain_gradients(
+            _, replay_microsteps = self._replay_perturbed_retain_gradients(
                 named_params,
                 perturbation.deltas,
             )
@@ -887,6 +902,7 @@ class UAMUnlearn(GeometricUnlearn):
             diagnostics = {
                 "mode": self.uam_mode,
                 "update_step": self.uam_calls + 1,
+                "replay_microsteps": replay_microsteps,
                 "perturbation_coefficient": float(
                     perturbation.decision.coefficient.item()
                 ),
