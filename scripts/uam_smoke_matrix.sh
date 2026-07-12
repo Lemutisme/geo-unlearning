@@ -8,6 +8,11 @@ if [[ $# -ne 1 ]]; then
 fi
 
 timestamp=$1
+if [[ ! "${timestamp}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    echo "Invalid timestamp: ${timestamp}" >&2
+    exit 2
+fi
+
 conda_exe=${CONDA_EXE:-}
 if [[ -z "${conda_exe}" ]]; then
     conda_exe=$(command -v conda || true)

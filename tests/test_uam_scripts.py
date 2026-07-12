@@ -284,6 +284,16 @@ def _write_fake_conda(tmp_path):
     return executable
 
 
+def _write_failing_conda_spy(tmp_path):
+    marker = tmp_path / "conda-spy-called"
+    executable = tmp_path / "conda-spy"
+    executable.write_text(
+        "#!/usr/bin/env bash\n" f"printf 'called\\n' >> '{marker}'\n" "exit 99\n"
+    )
+    executable.chmod(0o755)
+    return executable, marker
+
+
 def _write_fake_accelerate(tmp_path):
     executable = tmp_path / "bin/accelerate"
     executable.parent.mkdir()
@@ -476,6 +486,27 @@ def test_matrix_fail_fast_waits_active_and_schedules_no_new_arm(tmp_path):
         row[6] == f"bash scripts/uam_smoke_arm.sh {row[2]} {row[1]} teststamp"
         for row in rows
     )
+
+
+def test_matrix_rejects_unsafe_timestamp_before_conda_or_path_writes(tmp_path):
+    conda_spy, marker = _write_failing_conda_spy(tmp_path)
+    environment = os.environ.copy()
+    environment["CONDA_EXE"] = str(conda_spy)
+
+    result = subprocess.run(
+        ["bash", str(MATRIX), "../../escape"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    escaped_manifest = tmp_path / "saves/exp/escape/RUN_MANIFEST.tsv"
+    assert result.returncode == 2
+    assert "Invalid timestamp" in result.stderr
+    assert not marker.exists()
+    assert not escaped_manifest.exists()
 
 
 def test_matrix_observes_fast_slot_one_failure_before_scheduling_third_arm(tmp_path):
