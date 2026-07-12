@@ -9,16 +9,16 @@ Per-Sample Gradient Orthogonalization,” arXiv:2503.02312v2
 
 ## 1. Goal
 
-Implement a full-parameter OrthoGrad minimum viable path for TOFU and compare
-its feasibility, compute cost, GPU memory, and ten-step behavior with the
-repository’s SimNPO control and GU implementation.
+Implement a full-parameter OrthoGrad minimum viable path for TOFU, MUSE, and
+WMDP and compare its feasibility, compute cost, GPU memory, and ten-step
+behavior with matched SimNPO, Euclidean-GU, and Adam-metric-GU arms.
 
 The comparison answers two narrow questions:
 
-1. Can exact per-sample retain-gradient orthogonalization run on the
-   Llama-3.2-1B TOFU stack without LoRA on one A100-80GB?
-2. What wall-clock, per-step, projection, and memory overhead do GU and
-   OrthoGrad add over a matched SimNPO control?
+1. Can exact per-sample retain-gradient orthogonalization run without LoRA on
+   the repository's 1B and 7B benchmark stacks?
+2. What wall-clock, per-step, projection, and memory overhead do Euclidean GU,
+   Adam-metric GU, and OrthoGrad add over a matched SimNPO control?
 
 The experiment is a single-seed, ten-update feasibility study. It must not be
 used to claim performance superiority.
@@ -75,6 +75,7 @@ guarantees.
 - non-reentrant gradient checkpointing;
 - all trainable parameters selected;
 - retain batch size from 1 through 4;
+- FP32 basis/component storage on the parameter device or pinned CPU memory;
 - gradient accumulation equal to 1;
 - SimNPO forget candidate and NLL retain loss.
 
@@ -113,7 +114,7 @@ For one batch of size `k`:
 2. slice the retain input tree into `k` batch-size-one inputs;
 3. compute one NLL retain gradient per sample with a separate forward and
    `torch.autograd.grad`;
-4. convert each selected gradient to FP32 on the parameter device;
+4. convert each selected gradient to FP32 on the configured basis device;
 5. accumulate the arithmetic mean retain gradient;
 6. insert the sample gradient into a global retain basis.
 
@@ -137,6 +138,11 @@ pairwise basis residual.
 
 The implementation must not compute independent blockwise coefficients and
 must not flatten the full parameter vector into one contiguous tensor.
+TOFU uses parameter-device basis storage. MUSE and WMDP use pinned CPU basis
+and component storage because their 7B models cannot hold the full FP32 basis
+alongside model, activations, gradients, and optimizer state on an A100-80GB.
+CPU geometry is included in wall-clock time and reported through process-tree
+RSS; it must not be presented as free memory.
 
 ### 4.4 Projection and writeback
 
@@ -161,10 +167,20 @@ method clears all selected `parameter.grad` values before re-raising.
 
 Trainer clipping and `optimizer.step()` remain outside `training_step()`.
 
+### 4.5 Euclidean and Adam GU controls
+
+Extend `GeometricUnlearn` with an explicit `optimizer_geometry` choice. The
+default remains `adam` and preserves existing behavior. In `euclidean` mode,
+the same batch-mean global rank-one GU projection bypasses square-root Adam
+coordinate transforms while retaining identical SimNPO/NLL weights. Runtime
+diagnostics record `euclidean` or the resolved frozen-Adam adapter name. Unit
+tests require the Adam default to remain bitwise unchanged.
+
 ## 5. Resource and Time Profiling
 
-Profiling is opt-in and applied identically to Control, GU, and OrthoGrad arms.
-Synchronization used for timing is therefore part of all profiled runs.
+Profiling is opt-in and applied identically to Control, both GU arms, and
+OrthoGrad. Synchronization used for timing is therefore part of all profiled
+runs.
 
 ### 5.1 End-to-end measurements
 
@@ -185,11 +201,12 @@ The trainer records:
 
 ### 5.2 Method phase measurements
 
-GU records component-gradient collection, projection/finalization, and
-writeback time. OrthoGrad records candidate-gradient collection, per-sample
-retain-gradient collection, orthonormalization, projection/writeback, and
-total training-step time. CUDA events are resolved once at the end of a step
-to avoid a synchronization after every tensor operation.
+Both GU variants record component-gradient collection,
+projection/finalization, and writeback time. OrthoGrad records
+candidate-gradient collection, per-sample retain-gradient collection,
+orthonormalization, projection/writeback, and total training-step time. CUDA
+events are resolved once at the end of a step to avoid a synchronization after
+every tensor operation. CPU-basis phases use synchronized wall time.
 
 Control has no surgery phases; its end-to-end and per-update timings are the
 baseline for overhead ratios.
@@ -213,21 +230,27 @@ presented as interchangeable.
 
 ## 6. Matched Experiment
 
-Run sequentially on GPU 0 to avoid cross-device timing variance:
+For each benchmark, run sequentially on one GPU to avoid within-table device
+variance:
 
 1. `control`: ordinary SimNPO with GU disabled;
-2. `gu`: existing frozen-Adam GU;
-3. `orthograd`: full-parameter Euclidean per-sample OrthoGrad.
+2. `orthograd`: full-parameter Euclidean per-sample OrthoGrad;
+3. `gu_euclidean`: batch-mean rank-one GU in Euclidean geometry;
+4. `gu_adam`: existing batch-mean rank-one GU in frozen-Adam geometry.
+
+The benchmark list is TOFU forget01/forget05/forget10, MUSE News/Books, and
+WMDP Cyber/Bio. WMDP corpus files are downloaded from the official source only
+when absent; the source URL and SHA-256 checksums are stored in provenance.
 
 Common configuration:
 
 | Setting | Value |
 |---|---|
-| Model | Llama-3.2-1B-Instruct |
-| Dataset | TOFU forget01 / retain99 / holdout01 |
+| Models | Llama-3.2-1B-Instruct; Llama-2-7B; Zephyr-7B |
+| Datasets | TOFU01/05/10; MUSE News/Books; WMDP Cyber/Bio |
 | Seed | 0 |
 | Optimizer updates | 10 |
-| Batch / GAS | 4 / 1 |
+| Batch / GAS | TOFU 4/1; MUSE and WMDP 2/1 |
 | Precision | BF16 |
 | Attention | FlashAttention 2 |
 | Optimizer | PagedAdamW32 |
@@ -239,15 +262,32 @@ Common configuration:
 
 The timing comparison uses the same profiler and synchronization policy for
 all arms. Evaluation runs after training and is excluded from training wall
-time. Each arm persists only its resolved Hydra config, TOFU summary,
+time. Each arm persists only its resolved Hydra config, benchmark summary,
 diagnostics, resource profile, and logs.
 
 ## 7. Outputs and Analysis
 
 The matrix root is `saves/exp/ORTHOGRAD_MVP/<timestamp>`. Generate
-`ORTHOGRAD_MVP_REPORT.md` containing:
+`ORTHOGRAD_MVP_REPORT.md` with one four-row table per benchmark.
 
-1. raw TOFU metrics and paired deltas;
+TOFU tables use exactly:
+
+| Method | ES Re. ↑ | ES Un. ↓ | Priv. ↑ | MU ↑ | wall-clock | peak mem |
+|---|---:|---:|---:|---:|---:|---:|
+| SimNPO (base) | value | value | value | value | value | value |
+| + OrthoGrad-style (per-sample QR, Euclidean) | value | value | value | value | value | value |
+| + GU, Euclidean metric (Table 5) | value | value | value | value | value | value |
+| + GU, Adam metric (ours) | value | value | value | value | value | value |
+
+MUSE uses `ES Re.`, `ES Un.`, `Priv.`, and `Retain KnowMem` in place of MU;
+its evaluator is configured to emit retain extraction strength. WMDP uses
+`WMDP accuracy ↓` and `MMLU accuracy ↑`; unavailable ES/privacy columns are
+not fabricated. Every family retains the same four method rows plus wall-clock
+and peak GPU memory. CPU RSS is reported in a companion resource table.
+
+The report also contains:
+
+1. raw family-appropriate metrics and deltas from the matched SimNPO arm;
 2. train runtime, step-time distribution, and phase breakdown;
 3. peak allocated, reserved, NVML, and CPU RSS values;
 4. GU and OrthoGrad time/memory overhead relative to Control;
@@ -286,7 +326,7 @@ configs.
 - BF16 eager and FlashAttention 2 produce finite, close tiny-model updates;
 - real PagedAdamW32 runs two public updates;
 - memory counters are positive and internally ordered;
-- the three-arm launcher uses the exact matched configuration;
+- the four-arm launcher uses the exact matched configuration for each family;
 - analysis and reports are deterministic;
 - no model, optimizer, scheduler, RNG, Trainer-state, or checkpoint payload is
   persisted.
@@ -296,7 +336,8 @@ configs.
 The MVP is complete only if:
 
 - all CPU and GPU tests pass without hiding skips;
-- all three real arms finish ten updates and evaluation;
+- all four real arms for every available benchmark finish ten updates and
+  evaluation;
 - OrthoGrad’s maximum retain-basis residual is below `1e-5`;
 - GU and OrthoGrad timing and all requested memory quantities are present;
 - overhead ratios are computed from matched successful arms;
@@ -306,5 +347,5 @@ The MVP is complete only if:
 
 An OrthoGrad OOM is also a valid feasibility result only after the measured
 peak, analytic basis requirement, attempted configuration, and failure path
-are recorded. It does not satisfy the three-arm endpoint comparison and must
+are recorded. It does not satisfy the four-arm endpoint comparison and must
 not be reported as an implementation success.

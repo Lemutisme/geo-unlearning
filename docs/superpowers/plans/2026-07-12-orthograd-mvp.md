@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Implement exact full-parameter per-sample Euclidean OrthoGrad for TOFU and produce a matched Control/GU/OrthoGrad compute, GPU-memory, timing, and endpoint comparison.
+**Goal:** Implement exact full-parameter per-sample Euclidean OrthoGrad for TOFU, MUSE, and WMDP and produce matched SimNPO/OrthoGrad/Euclidean-GU/Adam-GU compute, memory, timing, and endpoint tables for every benchmark.
 
-**Architecture:** Add a separate `OrthogradUnlearn` trainer with a global FP32 per-sample retain basis and its own transactional training step. Reuse current SimNPO/NLL losses, optimizer validation, component probes, and Trainer clipping/step order. Add opt-in resource profiling shared by Control, GU, and OrthoGrad, plus a strict checkpoint-free three-arm runner and deterministic analyzer.
+**Architecture:** Add a separate `OrthogradUnlearn` trainer with a global FP32 per-sample retain basis and its own transactional training step; use GPU basis storage for the 1B TOFU model and pinned CPU storage for 7B MUSE/WMDP models. Add an explicit Euclidean mode to the existing batch-mean GU while preserving frozen-Adam GU as default. Add opt-in resource profiling shared by all four arms, a strict multi-benchmark runner, and a deterministic family-aware analyzer.
 
 **Tech Stack:** Python 3.11, PyTorch 2.4, Transformers 4.45.1, Accelerate, bitsandbytes 0.44.1, Hydra/OmegaConf, psutil, NVIDIA NVML, pytest, Ruff, Bash.
 
@@ -16,6 +16,7 @@
 - Create `src/trainer/unlearn/orthograd.py`: `OrthogradUnlearn`, input slicing, per-sample retain gradients, transactional writeback, runtime validation.
 - Create `src/trainer/resource_profiler.py`: matched per-step CUDA/CPU timing, allocator peaks, phase aggregation, atomic JSON output.
 - Modify `src/trainer/unlearn/geometric.py`: opt-in GU phase timing and shared resource callback registration.
+- Modify `configs/eval/muse.yaml`: emit retain extraction strength for the MUSE table.
 - Modify `src/trainer/__init__.py`: register `OrthogradUnlearn`.
 - Create `configs/trainer/OrthogradUnlearn.yaml`: supported MVP contract and fixed comparison weights.
 - Create `tests/test_orthograd_geometry.py`: global geometry, rank deficiency, blockwise counterexample, FLOP and storage accounting.
@@ -23,8 +24,9 @@
 - Create `tests/test_resource_profiler.py`: synchronized step timing, peaks, atomic profile output, phase aggregation.
 - Create `tests/test_orthograd_gpu_integration.py`: BF16 eager/Flash and real PagedAdamW32 public updates.
 - Create `scripts/profile_process_tree.py`: child process, CPU RSS, NVML memory, wall time sampler.
+- Create `scripts/prepare_wmdp_data.sh`: idempotent official corpus download and checksum manifest.
 - Create `scripts/orthograd_mvp_arm.sh`: one strict no-checkpoint arm.
-- Create `scripts/orthograd_mvp_matrix.sh`: sequential Control/GU/OrthoGrad matrix on GPU 0.
+- Create `scripts/orthograd_mvp_matrix.sh`: sequential four-method matrices for TOFU01/05/10, MUSE News/Books, and WMDP Cyber/Bio.
 - Create `scripts/analyze_orthograd_mvp.py`: validate artifacts/config parity and render raw/overhead tables.
 - Create `tests/test_orthograd_scripts.py`: process profiler, launch contract, analyzer fixtures and failure cases.
 - Create `ORTHOGRAD_MVP_REPORT.md`: generated real-run report.
@@ -230,6 +232,7 @@ def test_orthograd_yaml_has_mvp_defaults():
     assert orthograd.forget_weight == 0.125
     assert orthograd.retain_weight == 1.0
     assert orthograd.maximum_retain_batch_size == 4
+    assert orthograd.basis_device == "parameter"
 ```
 
 - [ ] **Step 2: Verify RED**
@@ -262,6 +265,7 @@ method_args:
     retain_weight: 1.0
     rank_tolerance: 1.0e-8
     maximum_retain_batch_size: 4
+    basis_device: parameter
     diagnostics_path: null
 ```
 
@@ -269,16 +273,19 @@ method_args:
 
 Use the existing `TinyCausalLM` fixture and parameterize mutations for GAS 2,
 FP16, reentrant checkpointing, partial regex selection, batch 5, nonzero
-beta1/weight decay, DeepSpeed, FSDP, DDP, and empty selection. Require exact
-message fragments such as `gradient_accumulation_steps=1`, `all trainable
-parameters`, and `maximum retain batch size`.
+beta1/weight decay, invalid basis device, DeepSpeed, FSDP, DDP, and empty
+selection. Require exact message fragments such as
+`gradient_accumulation_steps=1`, `all trainable parameters`, `basis device`,
+and `maximum retain batch size`.
 
 - [ ] **Step 5: Implement fail-closed validation**
 
 Reuse `make_optimizer_geometry_adapter(self.optimizer).validate(named_params)`
 for optimizer-family validation, then require selected parameter IDs to equal
 all trainable parameter IDs. Reject every unsupported mode from the design and
-cache validation only after all checks pass.
+cache validation only after all checks pass. `parameter` keeps FP32 basis
+tensors on each parameter's device; `cpu` uses pinned FP32 storage and validates
+host memory for `maximum_retain_batch_size + 2` full vectors with 20% headroom.
 
 - [ ] **Step 6: Run trainer contract tests**
 
@@ -456,13 +463,35 @@ git commit -m "feat: train with per-sample Orthograd projection"
 - Modify: `tests/test_geometric_adam.py`
 - Modify: `tests/test_orthograd_trainer.py`
 
-- [ ] **Step 1: Write failing profile aggregation tests**
+- [ ] **Step 1: Write failing Euclidean-GU geometry tests**
+
+Add `optimizer_geometry: adam` to the existing YAML assertions, then construct
+nonuniform initialized Adam denominators. Require `adam` to match the current
+raw gradient bitwise and `euclidean` to equal direct rank-one projection in raw
+gradient space. Assert the two modes differ for the nonuniform denominator and
+both write their explicit geometry label.
+
+- [ ] **Step 2: Implement the explicit GU geometry switch**
+
+Resolve `optimizer_geometry` in `GeometricUnlearn.__init__`, accepting only
+`adam` and `euclidean`. In Euclidean mode, return `None` instead of calling the
+adapter for every square-root denominator; retain optimizer-family validation,
+beta1 0, and weight-decay 0. Keep `adam` as the default and do not change its
+diagnostic values or gradients.
+
+- [ ] **Step 3: Verify Euclidean and default-Adam GU**
+
+```bash
+pytest -q tests/test_geometric_adam.py -k 'optimizer_geometry or euclidean'
+```
+
+- [ ] **Step 4: Write failing profile aggregation tests**
 
 Construct step records `[100, 20, 30]` milliseconds and assert the summary
 separates step 1 and aggregates steps 2 onward with deterministic p50/mean/p95.
 Also require phase totals and nonnegative allocator peaks.
 
-- [ ] **Step 2: Implement `ResourceProfileCallback`**
+- [ ] **Step 5: Implement `ResourceProfileCallback`**
 
 The callback accepts a JSON path and enabled flag. On train begin it resets CUDA
 peaks and clears records. On step begin/end it synchronizes once, uses
@@ -486,7 +515,7 @@ writes sorted JSON containing:
 Use linear interpolation with a locally implemented deterministic quantile;
 do not depend on NumPy.
 
-- [ ] **Step 3: Add trainer registration and phase events**
+- [ ] **Step 6: Add trainer registration and phase events**
 
 Both trainers read `resource_profile_path`. When set, add the callback. Add a
 small `CudaPhaseRecorder` that records start/end events and resolves all events
@@ -494,13 +523,13 @@ once per update. GU phases are `component_gradients`, `projection_writeback`;
 OrthoGrad phases are `forget_gradient`, `per_sample_retain_gradients`,
 `orthonormalization`, and `projection_writeback`.
 
-- [ ] **Step 4: Add profiling-off equivalence tests**
+- [ ] **Step 7: Add profiling-off equivalence tests**
 
 With profiling disabled, compare one GU update before/after instrumentation and
 require bitwise-equal tiny-model parameters. With it enabled, require a valid
 JSON profile and positive step time.
 
-- [ ] **Step 5: Run profiling and trainer regressions**
+- [ ] **Step 8: Run profiling and trainer regressions**
 
 ```bash
 pytest -q tests/test_resource_profiler.py
@@ -510,14 +539,14 @@ ruff check src/trainer/resource_profiler.py src/trainer/unlearn/geometric.py \
   src/trainer/unlearn/orthograd.py tests/test_resource_profiler.py
 ```
 
-- [ ] **Step 6: Commit shared profiling**
+- [ ] **Step 9: Commit GU geometry and shared profiling**
 
 ```bash
 git add src/trainer/resource_profiler.py src/trainer/unlearn/geometric.py \
   src/trainer/unlearn/orthograd.py configs/trainer/GeometricUnlearn.yaml \
   configs/trainer/OrthogradUnlearn.yaml tests/test_resource_profiler.py \
   tests/test_geometric_adam.py tests/test_orthograd_trainer.py
-git commit -m "feat: profile GU and Orthograd resource overhead"
+git commit -m "feat: compare Euclidean and Adam GU overhead"
 ```
 
 ### Task 6: Add process-tree CPU/GPU sampling
@@ -612,16 +641,17 @@ git commit -m "test: validate Orthograd on BF16 Flash and PagedAdamW32"
 **Files:**
 - Create: `scripts/orthograd_mvp_arm.sh`
 - Create: `scripts/orthograd_mvp_matrix.sh`
+- Create: `scripts/prepare_wmdp_data.sh`
 - Create: `scripts/analyze_orthograd_mvp.py`
+- Modify: `configs/eval/muse.yaml`
 - Modify: `tests/test_orthograd_scripts.py`
 
 - [ ] **Step 1: Write failing launcher contract tests**
 
-Require exactly three methods and these common tokens:
+Require exactly four methods, all seven benchmarks, and these common tokens:
 
 ```python
 for token in (
-    "trainer.args.per_device_train_batch_size=4",
     "trainer.args.gradient_accumulation_steps=1",
     "trainer.args.max_steps=10",
     "trainer.args.learning_rate=1e-5",
@@ -636,32 +666,40 @@ for token in (
     assert token in arm_text
 ```
 
-Require `control -> GeometricUnlearn/gu_enabled=false`, `gu ->
-GeometricUnlearn/gu_enabled=true`, and `orthograd -> OrthogradUnlearn`.
+Require `control -> GeometricUnlearn/gu_enabled=false`, `orthograd ->
+OrthogradUnlearn`, `gu_euclidean -> GeometricUnlearn/optimizer_geometry=euclidean`,
+and `gu_adam -> GeometricUnlearn/optimizer_geometry=adam`. TOFU uses batch 4
+and parameter-device buffers; MUSE/WMDP use batch 2 and CPU buffers/basis.
 
 - [ ] **Step 2: Implement one arm and sequential matrix**
 
-Stage under `/tmp/orthograd_mvp/<timestamp>/<method>`. Wrap the exact
-`accelerate launch` command with `profile_process_tree.py`. Run methods
-sequentially on physical GPU 0 and write a seven-column atomic manifest with
-start/end UTC, exit code, and command.
+Stage under `/tmp/orthograd_mvp/<timestamp>/<benchmark>/<method>`. Wrap the
+exact `accelerate launch` command with `profile_process_tree.py`. Run the four
+methods sequentially within each benchmark and write an eight-column atomic
+manifest including benchmark, method, start/end UTC, exit code, and command.
+Cover `tofu01`, `tofu05`, `tofu10`, `muse_news`, `muse_books`, `wmdp_cyber`,
+and `wmdp_bio`. Add an idempotent WMDP data-preparation command that downloads
+only missing official corpora and records URL plus SHA-256 checksums.
 
 - [ ] **Step 3: Implement fail-closed artifact persistence**
 
-Persist only run log, resolved Hydra config, TOFU summary, method diagnostics,
-training resource profile, and process resource profile. Audit symlinks,
+Persist only run log, resolved Hydra config, benchmark summary, method
+diagnostics, training resource profile, process resource profile, and WMDP
+provenance when applicable. Audit symlinks,
 `checkpoint-*`, safetensors, `.bin`, `.pt`, `.pth`, `.ckpt`, optimizer,
 scheduler, RNG, and Trainer state before and after publication.
 
 - [ ] **Step 4: Write failing analyzer fixtures**
 
-Create fake three-arm outputs. Assert the analyzer validates method mapping,
-all common config fields, ten updates, identical metric keys, finite resource
-values, memory ordering, zero payloads, and Orthograd rank/residual criteria.
+Create fake four-arm outputs for one fixture from each family. Assert the
+analyzer validates method mapping, family-specific config parity, ten updates,
+identical within-family metric keys, finite resource values, memory ordering,
+zero payloads, WMDP checksums, and Orthograd rank/residual criteria.
 
 - [ ] **Step 5: Implement deterministic analysis**
 
-Produce raw metrics, GU-Control and OrthoGrad-Control deltas, and:
+Produce raw metrics and deltas from SimNPO for OrthoGrad, Euclidean GU, and
+Adam GU, plus:
 
 ```python
 time_overhead = method_train_runtime / control_train_runtime - 1.0
@@ -671,13 +709,18 @@ nvml_overhead = method_nvml_delta / control_nvml_delta - 1.0
 
 Report first-step, steady mean/p50/p95, phase totals, CPU RSS, basis bytes,
 estimated projection FLOPs, rank, signal ratio, and residual. Use `math.fsum`
-for every floating aggregate and atomic sorted JSON/Markdown output.
+for every floating aggregate and atomic sorted JSON/Markdown output. Render one
+four-row table per benchmark. TOFU uses `ES Re./ES Un./Priv./MU`; MUSE uses
+`ES Re./ES Un./Priv./Retain KnowMem`; WMDP uses `WMDP accuracy/MMLU accuracy`.
+All tables include wall-clock and peak GPU memory, with CPU RSS in a companion
+resource table.
 
 - [ ] **Step 6: Run script tests and syntax checks**
 
 ```bash
 pytest -q tests/test_orthograd_scripts.py
-bash -n scripts/orthograd_mvp_arm.sh scripts/orthograd_mvp_matrix.sh
+bash -n scripts/orthograd_mvp_arm.sh scripts/orthograd_mvp_matrix.sh \
+  scripts/prepare_wmdp_data.sh
 ruff check scripts/analyze_orthograd_mvp.py scripts/profile_process_tree.py \
   tests/test_orthograd_scripts.py
 ```
@@ -686,11 +729,12 @@ ruff check scripts/analyze_orthograd_mvp.py scripts/profile_process_tree.py \
 
 ```bash
 git add scripts/orthograd_mvp_arm.sh scripts/orthograd_mvp_matrix.sh \
-  scripts/analyze_orthograd_mvp.py tests/test_orthograd_scripts.py
+  scripts/prepare_wmdp_data.sh scripts/analyze_orthograd_mvp.py \
+  configs/eval/muse.yaml tests/test_orthograd_scripts.py
 git commit -m "feat: add matched Orthograd overhead matrix"
 ```
 
-### Task 9: Run the real three-arm matrix
+### Task 9: Run the real multi-benchmark four-arm matrix
 
 **Files:**
 - Create: `ORTHOGRAD_MVP_REPORT.md`
@@ -721,9 +765,11 @@ endpoint result.
 
 - [ ] **Step 3: Audit successful outputs**
 
-Require three exit-zero manifest rows, three summaries/configs/resource
-profiles, ten GU/OrthoGrad geometry records, no orphan process, and no
-checkpoint payload in persistent or local roots.
+Require 28 exit-zero manifest rows, 28 summaries/configs/resource profiles,
+ten geometry records for each projected arm, no orphan process, and no
+checkpoint payload in persistent or local roots. If an official WMDP corpus or
+model cannot be obtained, record the external blocker and do not synthesize a
+table row.
 
 - [ ] **Step 4: Generate report and JSON**
 
