@@ -2,6 +2,33 @@
 
 set -euo pipefail
 
+prepare_persistent_base() {
+    local current=""
+    local component
+    for component in saves exp UAM_SMOKE; do
+        current=${current:+${current}/}${component}
+        if [[ -L "${current}" ]]; then
+            echo "Persistent path contains symlink: ${current}" >&2
+            return 1
+        fi
+        if [[ -e "${current}" && ! -d "${current}" ]]; then
+            echo "Persistent path component is not a directory: ${current}" >&2
+            return 1
+        fi
+        if [[ ! -e "${current}" ]]; then
+            mkdir "${current}"
+        fi
+    done
+
+    local expected actual
+    expected="$(pwd -P)/saves/exp/UAM_SMOKE"
+    actual=$(cd saves/exp/UAM_SMOKE && pwd -P)
+    if [[ "${actual}" != "${expected}" ]]; then
+        echo "Persistent path escapes repository containment: ${actual}" >&2
+        return 1
+    fi
+}
+
 if [[ $# -ne 1 ]]; then
     echo "Usage: $0 <timestamp>" >&2
     exit 2
@@ -28,9 +55,14 @@ conda_base=$("${conda_exe}" info --base)
 source "${conda_base}/etc/profile.d/conda.sh"
 conda activate unlearning
 
+prepare_persistent_base
 matrix_root="saves/exp/UAM_SMOKE/${timestamp}"
 manifest="${matrix_root}/RUN_MANIFEST.tsv"
-mkdir -p "${matrix_root}"
+if [[ -e "${matrix_root}" || -L "${matrix_root}" ]]; then
+    echo "Matrix root already exists: ${matrix_root}" >&2
+    exit 1
+fi
+mkdir "${matrix_root}"
 printf 'pid\tgpu\tmethod\tstart_utc\tend_utc\texit_code\tcommand\n' > "${manifest}"
 
 arms=(uam_nll uam_simnpo uam_gu_nll uam_gu_simnpo)
@@ -42,7 +74,7 @@ declare -a active_method=("" "")
 declare -a active_start=("" "")
 declare -a active_command=("" "")
 failure=0
-active_count=0
+cleanup_in_progress=0
 
 launch_arm() {
     local slot=$1
@@ -55,7 +87,6 @@ launch_arm() {
     active_method[slot]=${method}
     active_start[slot]=${start_utc}
     active_command[slot]=${command}
-    active_count=$((active_count + 1))
     echo "Started pid=${active_pid[slot]} gpu=${slot} method=${method}"
 }
 
@@ -75,63 +106,93 @@ record_completion() {
         echo "Arm failed pid=${pid} exit_code=${exit_code}; no new arms will be scheduled." >&2
     fi
     active_pid[slot]=""
-    active_count=$((active_count - 1))
 }
 
-reap_next_completion() {
-    local -a pids=()
-    local slot
-    for slot in 0 1; do
-        if [[ -n "${active_pid[slot]}" ]]; then
-            pids+=("${active_pid[slot]}")
-        fi
-    done
-    if (( ${#pids[@]} == 0 )); then
-        echo "Internal scheduler error: no active PID to reap." >&2
-        return 1
-    fi
-
-    local completed_pid=""
+wait_for_slot() {
+    local slot=$1
+    local pid=${active_pid[slot]}
+    [[ -n "${pid}" ]] || return 0
     local exit_code
     set +e
-    wait -n -p completed_pid "${pids[@]}"
+    wait "${pid}"
     exit_code=$?
     set -e
-    if [[ -z "${completed_pid}" ]]; then
-        echo "Internal scheduler error: wait -n returned no PID." >&2
-        return 1
-    fi
-
-    local completed_slot=""
-    for slot in 0 1; do
-        if [[ "${active_pid[slot]}" == "${completed_pid}" ]]; then
-            completed_slot=${slot}
-            break
-        fi
-    done
-    if [[ -z "${completed_slot}" ]]; then
-        echo "Internal scheduler error: unknown completed PID ${completed_pid}." >&2
-        return 1
-    fi
-    record_completion "${completed_slot}" "${completed_pid}" "${exit_code}"
+    record_completion "${slot}" "${pid}" "${exit_code}"
 }
 
-next_arm=0
-for slot in 0 1; do
-    launch_arm "${slot}" "${arms[next_arm]}"
-    next_arm=$((next_arm + 1))
-done
+pid_is_running() {
+    local pid=$1
+    [[ -r "/proc/${pid}/stat" ]] || return 1
+    [[ "$(awk '{print $3}' "/proc/${pid}/stat")" != Z ]]
+}
 
-while (( active_count > 0 )); do
-    reap_next_completion
-    if [[ ${failure} -eq 0 && ${next_arm} -lt ${#arms[@]} ]]; then
+terminate_active_arms() {
+    if [[ ${cleanup_in_progress} -ne 0 ]]; then
+        return 0
+    fi
+    cleanup_in_progress=1
+
+    local slot pid
+    for slot in 0 1; do
+        pid=${active_pid[slot]}
+        if [[ -n "${pid}" ]] && pid_is_running "${pid}"; then
+            kill -TERM "${pid}" 2>/dev/null || true
+        fi
+    done
+
+    local deadline=$((SECONDS + 5))
+    while (( SECONDS < deadline )); do
+        local running=0
         for slot in 0 1; do
-            if [[ -z "${active_pid[slot]}" ]]; then
-                launch_arm "${slot}" "${arms[next_arm]}"
-                next_arm=$((next_arm + 1))
-                break
+            pid=${active_pid[slot]}
+            if [[ -n "${pid}" ]] && pid_is_running "${pid}"; then
+                running=1
             fi
         done
+        [[ ${running} -ne 0 ]] || break
+        sleep 0.05
+    done
+
+    for slot in 0 1; do
+        pid=${active_pid[slot]}
+        if [[ -n "${pid}" ]] && pid_is_running "${pid}"; then
+            kill -KILL "${pid}" 2>/dev/null || true
+        fi
+    done
+    for slot in 0 1; do
+        wait_for_slot "${slot}"
+    done
+    cleanup_in_progress=0
+}
+
+handle_signal() {
+    local exit_code=$1
+    trap - INT TERM HUP
+    failure=1
+    terminate_active_arms
+    exit "${exit_code}"
+}
+
+handle_exit() {
+    local exit_code=$?
+    if [[ ${exit_code} -ne 0 ]]; then
+        terminate_active_arms
+    fi
+    return "${exit_code}"
+}
+
+trap 'handle_signal 130' INT
+trap 'handle_signal 143' TERM
+trap 'handle_signal 129' HUP
+trap handle_exit EXIT
+
+for wave_start in 0 2; do
+    launch_arm 0 "${arms[wave_start]}"
+    launch_arm 1 "${arms[wave_start + 1]}"
+    wait_for_slot 0
+    wait_for_slot 1
+    if [[ ${failure} -ne 0 ]]; then
+        break
     fi
 done
 

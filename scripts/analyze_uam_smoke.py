@@ -4,6 +4,8 @@ import argparse
 import csv
 import json
 import math
+import os
+import tempfile
 from numbers import Integral, Real
 from pathlib import Path
 
@@ -137,6 +139,27 @@ def read_manifest(root):
             f"found {observed}"
         )
     for row in rows:
+        try:
+            pid = int(row["pid"])
+        except ValueError as error:
+            raise ValueError(f"Manifest PID is invalid: {row['pid']!r}") from error
+        if pid <= 0:
+            raise ValueError(f"Manifest PID must be positive: {row['pid']!r}")
+        if row["gpu"] not in {"0", "1"}:
+            raise ValueError(f"Manifest GPU must be 0 or 1: {row['gpu']!r}")
+        if not row["start_utc"].strip() or not row["end_utc"].strip():
+            raise ValueError(
+                f"Manifest timestamps must be nonempty for {row['method']}"
+            )
+        expected_command = (
+            f"bash scripts/uam_smoke_arm.sh {row['method']} "
+            f"{row['gpu']} {root.name}"
+        )
+        if row["command"] != expected_command:
+            raise ValueError(
+                f"Manifest command mismatch for {row['method']}: "
+                f"expected {expected_command!r}, found {row['command']!r}"
+            )
         try:
             exit_code = int(row["exit_code"])
         except ValueError as error:
@@ -285,6 +308,24 @@ def read_diagnostics(path):
             f"UAM geometry update steps in {path} must be 1..10, "
             f"found {geometry_steps}"
         )
+    rhos = {float(record["rho"]) for record in geometry}
+    if len(rhos) != 1:
+        raise ValueError(f"UAM diagnostics rho must be constant in {path}")
+    if next(iter(rhos)) <= 0.0:
+        raise ValueError(f"UAM diagnostics rho in {path} must be positive")
+    positive_fields = {
+        "requested_perturbation_norm",
+        "effective_perturbation_norm",
+        "effective_perturbation_ratio",
+    }
+    for record in geometry:
+        for field in positive_fields:
+            if record[field] <= 0.0:
+                raise ValueError(
+                    f"UAM geometry field {field!r} in {path} must be positive"
+                )
+        if record["replay_microsteps"] != 8:
+            raise ValueError(f"UAM geometry replay_microsteps in {path} must equal 8")
 
     if len(actual_delta) != 2:
         raise ValueError(
@@ -303,9 +344,21 @@ def read_diagnostics(path):
 
 def checkpoint_payloads(root):
     root = Path(root)
-    payloads = {str(path) for path in root.rglob("checkpoint-*") if path.is_dir()}
+    payloads = set()
+    if root.is_symlink():
+        payloads.add(str(root))
+    payloads.update(str(path) for path in root.rglob("*") if path.is_symlink())
+    payloads.update(
+        str(path)
+        for path in root.rglob("checkpoint-*")
+        if not path.is_symlink() and path.is_dir()
+    )
     for pattern in CHECKPOINT_PAYLOAD_PATTERNS:
-        payloads.update(str(path) for path in root.rglob(pattern) if path.is_file())
+        payloads.update(
+            str(path)
+            for path in root.rglob(pattern)
+            if not path.is_symlink() and path.is_file()
+        )
     return sorted(payloads)
 
 
@@ -314,7 +367,13 @@ def _mean(values):
 
 
 def _metric_delta(left, baseline):
-    return {metric: left[metric] - baseline[metric] for metric in sorted(baseline)}
+    result = {}
+    for metric in sorted(baseline):
+        delta = left[metric] - baseline[metric]
+        if not math.isfinite(delta):
+            raise ValueError(f"Metric subtraction for {metric!r} must remain finite")
+        result[metric] = delta
+    return result
 
 
 def _aggregate_diagnostics(records, path):
@@ -499,19 +558,43 @@ def render_markdown(result):
     return "\n".join(lines)
 
 
+def _write_output_temp(destination, content):
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+        dir=destination.parent,
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except BaseException:
+        if os.path.exists(temporary_name):
+            os.unlink(temporary_name)
+        raise
+    return Path(temporary_name)
+
+
 def write_outputs(result, markdown_path, json_path):
     markdown_path = Path(markdown_path)
     json_path = Path(json_path)
+    markdown_content = render_markdown(result).rstrip("\n") + "\n"
+    json_content = json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n"
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.parent.mkdir(parents=True, exist_ok=True)
-    markdown_path.write_text(
-        render_markdown(result).rstrip("\n") + "\n",
-        encoding="utf-8",
-    )
-    json_path.write_text(
-        json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n",
-        encoding="utf-8",
-    )
+    temporary_paths = []
+    try:
+        temporary_paths.append(_write_output_temp(markdown_path, markdown_content))
+        temporary_paths.append(_write_output_temp(json_path, json_content))
+        os.replace(temporary_paths[0], markdown_path)
+        temporary_paths.pop(0)
+        os.replace(temporary_paths[0], json_path)
+        temporary_paths.clear()
+    finally:
+        for temporary_path in temporary_paths:
+            if temporary_path.exists():
+                temporary_path.unlink()
 
 
 def _parse_args():

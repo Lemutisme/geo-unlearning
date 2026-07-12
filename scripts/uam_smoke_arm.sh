@@ -29,6 +29,16 @@ audit_checkpoint_files() {
     fi
 }
 
+audit_symlinks() {
+    local audit_root=$1
+    local unexpected
+    unexpected=$(find "${audit_root}" -type l -print -quit)
+    if [[ -n "${unexpected}" ]]; then
+        echo "Unexpected symlink: ${unexpected}" >&2
+        return 1
+    fi
+}
+
 audit_checkpoint_payloads() {
     local audit_root=$1
     local unexpected
@@ -37,6 +47,7 @@ audit_checkpoint_payloads() {
         echo "Audit root is not a directory: ${audit_root}" >&2
         return 1
     fi
+    audit_symlinks "${audit_root}"
     audit_checkpoint_files "${audit_root}"
     unexpected=$(find "${audit_root}" -type d -name 'checkpoint-*' -print -quit)
     if [[ -n "${unexpected}" ]]; then
@@ -70,6 +81,78 @@ audit_persistent_allowlist() {
         esac
     done < <(find "${persistent_root}" -mindepth 1 -print0)
 }
+
+validate_persistent_matrix_root() {
+    local expected_matrix_root=$1
+    local current=""
+    local component
+    for component in saves exp UAM_SMOKE "${timestamp}"; do
+        current=${current:+${current}/}${component}
+        if [[ -L "${current}" ]]; then
+            echo "Persistent path contains symlink: ${current}" >&2
+            return 1
+        fi
+        if [[ ! -d "${current}" ]]; then
+            echo "Persistent matrix path is not a directory: ${current}" >&2
+            return 1
+        fi
+    done
+
+    local expected actual
+    expected="$(pwd -P)/${expected_matrix_root}"
+    actual=$(cd "${expected_matrix_root}" && pwd -P)
+    if [[ "${actual}" != "${expected}" ]]; then
+        echo "Persistent path escapes repository containment: ${actual}" >&2
+        return 1
+    fi
+}
+
+persist_tmp=""
+training_pid=""
+created_local_staging=0
+cleanup_persist_tmp() {
+    if [[ -n "${persist_tmp}" && -d "${persist_tmp}" ]]; then
+        rm -rf -- "${persist_tmp}"
+    fi
+}
+trap cleanup_persist_tmp EXIT
+
+training_group_is_running() {
+    [[ -n "${training_pid}" ]] || return 1
+    kill -0 -- "-${training_pid}" 2>/dev/null
+}
+
+terminate_training_group() {
+    [[ -n "${training_pid}" ]] || return 0
+    if training_group_is_running; then
+        kill -TERM -- "-${training_pid}" 2>/dev/null || true
+    fi
+    local deadline=$((SECONDS + 5))
+    while (( SECONDS < deadline )) && training_group_is_running; do
+        sleep 0.05
+    done
+    if training_group_is_running; then
+        kill -KILL -- "-${training_pid}" 2>/dev/null || true
+    fi
+    set +e
+    wait "${training_pid}" 2>/dev/null
+    set -e
+    training_pid=""
+}
+
+handle_arm_signal() {
+    local exit_code=$1
+    trap - INT TERM HUP
+    terminate_training_group
+    if [[ ${created_local_staging} -ne 0 && -n "${local_arm_dir:-}" ]]; then
+        rm -rf -- "${local_arm_dir}"
+    fi
+    exit "${exit_code}"
+}
+
+trap 'handle_arm_signal 130' INT
+trap 'handle_arm_signal 143' TERM
+trap 'handle_arm_signal 129' HUP
 
 if [[ $# -eq 2 && $1 == --audit-only ]]; then
     audit_checkpoint_payloads "$2"
@@ -105,6 +188,11 @@ if [[ ! "${timestamp}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
     echo "Unsafe timestamp: ${timestamp}" >&2
     exit 2
 fi
+if [[ ! "${gpu}" =~ ^[0-9]+$ ]]; then
+    echo "Invalid GPU: ${gpu}" >&2
+    exit 2
+fi
+smoke_rho=${UAM_SMOKE_RHO:-0.05}
 
 conda_exe=${CONDA_EXE:-}
 if [[ -z "${conda_exe}" ]]; then
@@ -121,6 +209,13 @@ conda_base=$("${conda_exe}" info --base)
 source "${conda_base}/etc/profile.d/conda.sh"
 conda activate unlearning
 
+if ! python -c \
+    'import math, sys; value = float(sys.argv[1]); raise SystemExit(not (math.isfinite(value) and value > 0.0))' \
+    "${smoke_rho}" 2>/dev/null; then
+    echo "Invalid UAM_SMOKE_RHO: ${smoke_rho}" >&2
+    exit 2
+fi
+
 export CUDA_VISIBLE_DEVICES="${gpu}"
 export HF_HOME=/root/.cache/huggingface
 export TOKENIZERS_PARALLELISM=false
@@ -131,15 +226,24 @@ local_root=${UAM_LOCAL_ROOT:-/tmp/uam_smoke}
 local_arm_dir="${local_root}/${timestamp}/${method}"
 task_name="uam_smoke_${method}_${timestamp}"
 diagnostics_path="${local_arm_dir}/uam_diagnostics.jsonl"
-smoke_rho=${UAM_SMOKE_RHO:-0.05}
 
 expected_arm_dir="saves/exp/UAM_SMOKE/${timestamp}/${method}"
 if [[ "${arm_dir}" != "${expected_arm_dir}" ]]; then
-    echo "Refusing to clean unexpected persistent arm path: ${arm_dir}" >&2
+    echo "Refusing unexpected persistent arm path: ${arm_dir}" >&2
     exit 2
 fi
-rm -rf -- "${arm_dir}"
-mkdir -p "${local_arm_dir}"
+validate_persistent_matrix_root "${matrix_root}"
+if [[ -e "${arm_dir}" || -L "${arm_dir}" ]]; then
+    echo "Persistent arm already exists: ${arm_dir}" >&2
+    exit 1
+fi
+if [[ -e "${local_arm_dir}" || -L "${local_arm_dir}" ]]; then
+    echo "Local staging already exists: ${local_arm_dir}" >&2
+    exit 1
+fi
+mkdir -p "$(dirname "${local_arm_dir}")"
+mkdir "${local_arm_dir}"
+created_local_staging=1
 
 command=(
     accelerate launch
@@ -193,8 +297,19 @@ command=(
 
 printf 'Launching %q ' "${command[@]}"
 printf '\n'
-"${command[@]}" 2>&1 | tee "${local_arm_dir}/run.log"
+setsid "${command[@]}" > "${local_arm_dir}/run.log" 2>&1 &
+training_pid=$!
+set +e
+wait "${training_pid}"
+training_exit_code=$?
+set -e
+training_pid=""
+if [[ ${training_exit_code} -ne 0 ]]; then
+    echo "Training command failed with exit code ${training_exit_code}." >&2
+    exit "${training_exit_code}"
+fi
 
+audit_symlinks "${local_arm_dir}"
 audit_checkpoint_files "${local_arm_dir}"
 
 mapfile -t summary_paths < <(
@@ -238,20 +353,38 @@ for required_artifact in \
     fi
 done
 
-mkdir -p "${arm_dir}/evals" "${arm_dir}/.hydra"
-audit_checkpoint_payloads "${arm_dir}"
-
-persistent_summary="${arm_dir}/evals/TOFU_SUMMARY.json"
-cp "${summary_path}" "${persistent_summary}"
-cp "${local_arm_dir}/run.log" "${arm_dir}/run.log"
-cp "${local_arm_dir}/.hydra/config.yaml" "${arm_dir}/.hydra/config.yaml"
-cp "${local_arm_dir}/uam_diagnostics.jsonl" "${arm_dir}/uam_diagnostics.jsonl"
+persist_tmp=$(mktemp -d "${matrix_root}/.${method}.tmp.XXXXXX")
+mkdir "${persist_tmp}/evals" "${persist_tmp}/.hydra"
+cp "${summary_path}" "${persist_tmp}/evals/TOFU_SUMMARY.json"
+cp "${local_arm_dir}/run.log" "${persist_tmp}/run.log"
+cp "${local_arm_dir}/.hydra/config.yaml" "${persist_tmp}/.hydra/config.yaml"
+cp "${local_arm_dir}/uam_diagnostics.jsonl" \
+    "${persist_tmp}/uam_diagnostics.jsonl"
 cp "${local_arm_dir}/uam_diagnostics.summary.json" \
-    "${arm_dir}/uam_diagnostics.summary.json"
+    "${persist_tmp}/uam_diagnostics.summary.json"
 if [[ -f "${local_arm_dir}/UAMUnlearn.log" ]]; then
-    cp "${local_arm_dir}/UAMUnlearn.log" "${arm_dir}/UAMUnlearn.log"
+    cp "${local_arm_dir}/UAMUnlearn.log" "${persist_tmp}/UAMUnlearn.log"
 fi
 
+audit_checkpoint_payloads "${persist_tmp}"
+audit_persistent_allowlist "${persist_tmp}"
+while IFS= read -r -d '' artifact; do
+    sync -f "${artifact}"
+done < <(find "${persist_tmp}" -type f -print0)
+sync -f "${persist_tmp}"
+
+if [[ -e "${arm_dir}" || -L "${arm_dir}" ]]; then
+    echo "Persistent arm already exists: ${arm_dir}" >&2
+    exit 1
+fi
+mv -T -n "${persist_tmp}" "${arm_dir}"
+if [[ -d "${persist_tmp}" ]]; then
+    echo "Atomic persistent arm publication was not completed: ${arm_dir}" >&2
+    exit 1
+fi
+persist_tmp=""
+sync -f "${matrix_root}"
 audit_checkpoint_payloads "${arm_dir}"
 audit_persistent_allowlist "${arm_dir}"
+persistent_summary="${arm_dir}/evals/TOFU_SUMMARY.json"
 echo "Completed ${method}: ${persistent_summary}"
