@@ -138,6 +138,16 @@ def test_arm_has_matched_no_checkpoint_production_contract():
     assert "process_resource_profile.json" in text
 
 
+def test_arm_preserves_shared_hf_cache_and_uses_the_public_model_tokenizer():
+    text = ARM.read_text()
+
+    assert (
+        "export HF_HOME=${ORTHOGRAD_HF_HOME:-${HF_HOME:-/root/.cache/huggingface}}"
+        in text
+    )
+    assert '"model.tokenizer_args.pretrained_model_name_or_path=${base_model}"' in text
+
+
 def test_arm_maps_four_methods_and_family_memory_contracts():
     text = ARM.read_text()
 

@@ -72,7 +72,7 @@ fi
 mkdir -p "${arm_dir}/.hydra" "${local_arm_dir}"
 
 export CUDA_VISIBLE_DEVICES=${physical_gpu}
-export HF_HOME=${ORTHOGRAD_HF_HOME:-/root/.cache/huggingface}
+export HF_HOME=${ORTHOGRAD_HF_HOME:-${HF_HOME:-/root/.cache/huggingface}}
 export TOKENIZERS_PARALLELISM=false
 
 method_overrides=()
@@ -205,6 +205,7 @@ command=(
     "task_name=${task_name}"
     "model=${model_name}"
     "model.model_args.pretrained_model_name_or_path=${base_model}"
+    "model.tokenizer_args.pretrained_model_name_or_path=${base_model}"
     model.model_args.attn_implementation=flash_attention_2
     model.model_args.torch_dtype=bfloat16
     "retain_logs_path=${retain_logs_path}"
