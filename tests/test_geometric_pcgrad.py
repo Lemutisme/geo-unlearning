@@ -94,6 +94,17 @@ def test_positive_dot_pcgrad_leaves_forget_component_unprojected(tmp_path):
     assert gu_gradients[0].reshape(-1)[0].item() == pytest.approx(1.0)
 
 
+def test_zero_retain_norm_is_explicit_in_surgery_diagnostics(tmp_path):
+    trainer, _ = make_finalized_gradients(
+        tmp_path,
+        TinyCausalLM(),
+        "pcgrad",
+        dot_sign=0,
+    )
+
+    assert trainer.last_surgery_diagnostics["zero_retain_norm"] is True
+
+
 def test_pcgrad_lifecycle_runs_once_per_optimizer_update(tmp_path):
     dataset = unbatch(make_unlearn_batch(batch_size=4, sequence_length=6, seed=31))
     trainer, _, _ = make_geometric_trainer(

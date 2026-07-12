@@ -397,6 +397,7 @@ class GeometricUnlearn(GradDiff):
             "optimizer_geometry": adapter.name,
             "component_buffer_device": self.component_buffer_device,
             "conflict": decision.conflict,
+            "zero_retain_norm": bool(retain_sq.item() == 0.0),
             "coefficient": float(decision.coefficient.item()),
             "raw_coefficient": float(decision.raw_coefficient.item()),
             "forget_norm": float(forget_norm.item()),
