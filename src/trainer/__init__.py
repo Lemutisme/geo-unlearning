@@ -16,6 +16,7 @@ from trainer.unlearn.satimp import SatImp
 from trainer.unlearn.wga import WGA
 from trainer.unlearn.pdu import PDU
 from trainer.unlearn.geometric import GeometricUnlearn
+from trainer.unlearn.orthograd import OrthogradUnlearn
 
 
 import logging
@@ -107,3 +108,4 @@ _register_trainer(SatImp)
 _register_trainer(WGA)
 _register_trainer(PDU)
 _register_trainer(GeometricUnlearn)
+_register_trainer(OrthogradUnlearn)

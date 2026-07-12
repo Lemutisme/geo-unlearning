@@ -1,0 +1,22 @@
+defaults:
+  - GeometricUnlearn
+  - _self_
+
+handler: OrthogradUnlearn
+
+args:
+  gradient_accumulation_steps: 1
+  save_strategy: "no"
+  adam_beta1: 0.0
+  weight_decay: 0.0
+  fp16: false
+
+method_args:
+  retain_loss_type: NLL
+  orthograd_config:
+    forget_weight: 0.125
+    retain_weight: 1.0
+    rank_tolerance: 1.0e-8
+    maximum_retain_batch_size: 4
+    basis_device: parameter
+    diagnostics_path: null
