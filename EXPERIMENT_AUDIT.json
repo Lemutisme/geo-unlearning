@@ -1,0 +1,55 @@
+{
+  "auditor": "independent-codex-reviewer",
+  "checks": {
+    "dead_code": {
+      "details": "Reported TOFU metrics were executed; unrelated LM-eval code was not used. Geometry JSONL, not its summary JSON, drives the analyzer.",
+      "status": "warn"
+    },
+    "eval_type": {
+      "classifications": [
+        "real_gt",
+        "self_supervised_proxy",
+        "synthetic_proxy"
+      ],
+      "status": "pass"
+    },
+    "gt_provenance": {
+      "details": "Primary QA references are dataset-provided. Retain-log and gibberish-classifier proxy revisions are not sealed in run provenance.",
+      "status": "warn"
+    },
+    "result_existence": {
+      "details": "All arms and claimed values exist and match at reported precision; code commit is not cryptographically bound in manifest/analysis.",
+      "status": "warn"
+    },
+    "scope": {
+      "details": "One seed, ten updates, one TOFU01 setting; the report accurately labels this as a mechanism check.",
+      "status": "pass"
+    },
+    "score_normalization": {
+      "details": "No self-max normalization found. Effective perturbation ratio is self-relative and should be shown with its absolute numerator and denominator.",
+      "status": "warn"
+    }
+  },
+  "claims": [
+    {
+      "id": "mechanism_correctness",
+      "impact": "partially_supported"
+    },
+    {
+      "id": "optimizer_update_occurrence",
+      "impact": "supported_at_steps_1_and_10"
+    },
+    {
+      "id": "retain_safety",
+      "impact": "needs_qualification"
+    },
+    {
+      "id": "performance_superiority",
+      "impact": "unsupported"
+    }
+  ],
+  "date": "2026-07-12",
+  "integrity_status": "warn",
+  "overall_verdict": "warn",
+  "run": "0712145130"
+}
