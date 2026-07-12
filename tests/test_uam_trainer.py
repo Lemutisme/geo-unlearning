@@ -246,6 +246,16 @@ def test_nll_forget_signal_rejects_any_empty_answer_mask(tmp_path):
         trainer.compute_uam_forget_signal(model, forget_inputs)
 
 
+def test_simnpo_forget_signal_rejects_shifted_empty_answer_mask(tmp_path):
+    trainer, model = make_uam_trainer(tmp_path, forget_signal="simnpo")
+    forget_inputs = make_forget_inputs()
+    forget_inputs["labels"][0].fill_(-100)
+    forget_inputs["labels"][0, 0] = forget_inputs["input_ids"][0, 0]
+
+    with pytest.raises(RuntimeError, match="empty answer mask"):
+        trainer.compute_uam_forget_signal(model, forget_inputs)
+
+
 def test_simnpo_forget_signal_is_negative_existing_objective(tmp_path):
     torch.manual_seed(17)
     trainer, model = make_uam_trainer(tmp_path, forget_signal="simnpo")
@@ -332,11 +342,53 @@ def test_small_step_along_forget_signal_gradient_increases_signal(
         torch.testing.assert_close(parameter, original, rtol=0, atol=0)
 
 
+@pytest.mark.parametrize("forget_signal", ["nll", "simnpo"])
+def test_forget_signal_rejects_non_finite_result(tmp_path, forget_signal):
+    trainer, model = make_uam_trainer(
+        tmp_path,
+        forget_signal=forget_signal,
+    )
+    forget_inputs = make_forget_inputs()
+    original_lm_head = model.lm_head.weight.detach().clone()
+
+    try:
+        with torch.no_grad():
+            model.lm_head.weight[0, 0] = float("nan")
+        with pytest.raises(RuntimeError, match="non-finite"):
+            trainer.compute_uam_forget_signal(model, forget_inputs)
+    finally:
+        with torch.no_grad():
+            model.lm_head.weight.copy_(original_lm_head)
+
+    restored_signal, _ = trainer.compute_uam_forget_signal(model, forget_inputs)
+    assert torch.isfinite(restored_signal)
+
+
 def test_unsupported_forget_signal_direct_call_fails_closed(tmp_path):
     trainer, model = make_uam_trainer(tmp_path)
     trainer.forget_signal = "unsupported"
 
     with pytest.raises(ValueError, match="Unsupported UAM forget signal"):
+        trainer.compute_uam_forget_signal(model, make_forget_inputs())
+
+
+@pytest.mark.parametrize("loss_name", ["npo", "unknown"])
+def test_simnpo_signal_direct_call_rejects_other_loss_names(
+    tmp_path,
+    loss_name,
+):
+    trainer, model = make_uam_trainer(tmp_path, forget_signal="simnpo")
+    trainer.loss_name = loss_name
+
+    with pytest.raises(ValueError, match="requires geometric_config.loss='simnpo'"):
+        trainer.compute_uam_forget_signal(model, make_forget_inputs())
+
+
+def test_simnpo_signal_direct_call_requires_config(tmp_path):
+    trainer, model = make_uam_trainer(tmp_path, forget_signal="simnpo")
+    trainer.simnpo_config = None
+
+    with pytest.raises(ValueError, match="requires a non-null simnpo_config"):
         trainer.compute_uam_forget_signal(model, make_forget_inputs())
 
 
@@ -358,6 +410,39 @@ def test_simnpo_signal_runtime_rejects_incompatible_objective_config(
     trainer.loss_name = loss_name
     if drop_config:
         trainer.simnpo_config = None
+
+    with pytest.raises(ValueError, match=message):
+        trainer._validate_uam_runtime()
+
+    assert trainer._uam_runtime_validated is False
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("beta", True, "SimNPO beta"),
+        ("beta", False, "SimNPO beta"),
+        ("beta", 0.0, "SimNPO beta"),
+        ("beta", -1.0, "SimNPO beta"),
+        ("beta", float("nan"), "SimNPO beta"),
+        ("beta", float("inf"), "SimNPO beta"),
+        ("beta", float("-inf"), "SimNPO beta"),
+        ("delta", True, "SimNPO delta"),
+        ("delta", False, "SimNPO delta"),
+        ("delta", float("nan"), "SimNPO delta"),
+        ("delta", float("inf"), "SimNPO delta"),
+        ("delta", float("-inf"), "SimNPO delta"),
+    ],
+)
+def test_simnpo_signal_runtime_rejects_invalid_objective_scalars(
+    tmp_path,
+    field,
+    value,
+    message,
+):
+    trainer, _ = make_uam_trainer(tmp_path, forget_signal="simnpo")
+    trainer.create_optimizer()
+    setattr(trainer.simnpo_config, field, value)
 
     with pytest.raises(ValueError, match=message):
         trainer._validate_uam_runtime()

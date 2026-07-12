@@ -43,6 +43,40 @@ class UAMUnlearn(GeometricUnlearn):
         self._uam_microsteps = 0
         self._retain_replay_batches = []
 
+    def _validate_simnpo_signal_config(self):
+        if self.loss_name != "simnpo":
+            raise ValueError(
+                "UAM SimNPO forget signal requires " "geometric_config.loss='simnpo'."
+            )
+        if self.simnpo_config is None:
+            raise ValueError(
+                "UAM SimNPO forget signal requires a non-null simnpo_config."
+            )
+        beta = getattr(self.simnpo_config, "beta", None)
+        if isinstance(beta, bool):
+            raise ValueError("UAM SimNPO beta must be positive and finite.")
+        try:
+            beta = float(beta)
+        except (TypeError, ValueError) as error:
+            raise ValueError("UAM SimNPO beta must be positive and finite.") from error
+        if beta <= 0.0 or not math.isfinite(beta):
+            raise ValueError("UAM SimNPO beta must be positive and finite.")
+
+        delta = getattr(self.simnpo_config, "delta", None)
+        if isinstance(delta, bool):
+            raise ValueError("UAM SimNPO delta must be finite.")
+        try:
+            delta = float(delta)
+        except (TypeError, ValueError) as error:
+            raise ValueError("UAM SimNPO delta must be finite.") from error
+        if not math.isfinite(delta):
+            raise ValueError("UAM SimNPO delta must be finite.")
+
+    @staticmethod
+    def _validate_finite_forget_signal(signal):
+        if not signal.isfinite().item():
+            raise RuntimeError("UAM forget signal is non-finite.")
+
     def compute_uam_forget_signal(self, model, forget_inputs):
         if self.forget_signal == "nll":
             sequence_nll, outputs = compute_batch_nll(model, forget_inputs)
@@ -50,10 +84,18 @@ class UAMUnlearn(GeometricUnlearn):
             if (answer_counts == 0).any():
                 raise RuntimeError("UAM NLL forget signal has an empty answer mask.")
             answer_counts = answer_counts.to(sequence_nll)
-            return (sequence_nll / answer_counts).mean(), outputs
+            signal = (sequence_nll / answer_counts).mean()
+            self._validate_finite_forget_signal(signal)
+            return signal, outputs
         if self.forget_signal == "simnpo":
+            self._validate_simnpo_signal_config()
+            answer_counts = forget_inputs["labels"][..., 1:].ne(-100).sum(-1)
+            if (answer_counts == 0).any():
+                raise RuntimeError("UAM SimNPO forget signal has an empty answer mask.")
             simnpo_loss, outputs = self.compute_forget_loss(model, forget_inputs)
-            return -simnpo_loss, outputs
+            signal = -simnpo_loss
+            self._validate_finite_forget_signal(signal)
+            return signal, outputs
         raise ValueError(f"Unsupported UAM forget signal: {self.forget_signal}")
 
     def _validate_uam_runtime(self):
@@ -65,15 +107,7 @@ class UAMUnlearn(GeometricUnlearn):
         if self.forget_signal not in {"nll", "simnpo"}:
             raise ValueError(f"Unsupported UAM forget signal: {self.forget_signal}")
         if self.forget_signal == "simnpo":
-            if self.loss_name != "simnpo":
-                raise ValueError(
-                    "UAM SimNPO forget signal requires "
-                    "geometric_config.loss='simnpo'."
-                )
-            if self.simnpo_config is None:
-                raise ValueError(
-                    "UAM SimNPO forget signal requires a non-null simnpo_config."
-                )
+            self._validate_simnpo_signal_config()
         if self.perturbation_normalization not in {"fixed_loss", "metric_trust"}:
             raise ValueError(
                 "Unsupported UAM perturbation normalization: "
