@@ -687,14 +687,22 @@ class UAMUnlearn(GeometricUnlearn):
                     decision,
                 )
                 raw = self._from_adam_coordinates(uam, sqrt_denominator)
+                if not torch.isfinite(raw).all().item():
+                    raise RuntimeError(
+                        f"UAM raw gradient for parameter {name!r} is non-finite."
+                    )
                 if parameter.grad is None:
                     parameter.grad = torch.zeros_like(parameter)
-                parameter.grad.copy_(
-                    raw.to(
-                        device=parameter.grad.device,
-                        dtype=parameter.grad.dtype,
-                    )
+                converted = raw.to(
+                    device=parameter.grad.device,
+                    dtype=parameter.grad.dtype,
                 )
+                if not torch.isfinite(converted).all().item():
+                    raise RuntimeError(
+                        "UAM converted gradient for parameter "
+                        f"{name!r} is non-finite."
+                    )
+                parameter.grad.copy_(converted)
 
             self._clear_uam_window()
             self.uam_calls += 1

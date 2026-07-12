@@ -1425,13 +1425,14 @@ def install_manual_uam_replay(monkeypatch, trainer, perturbed_retain):
     replayed = []
 
     def replay(named_params, deltas):
-        replayed.append(dict(deltas))
+        replayed.append(deltas)
         trainer.component_buffers.clear_component("perturbed_retain")
         trainer.component_buffers.add(
             "perturbed_retain",
             named_params,
             perturbed_retain,
         )
+        trainer.replay_calls += 1
         return SimpleNamespace(requested_norm=1.0, effective_norm=1.0), 1
 
     monkeypatch.setattr(trainer, "_replay_perturbed_retain_gradients", replay)
@@ -1556,6 +1557,7 @@ def test_finalize_pure_uam_matches_global_optimizer_coordinate_calculation(
             atol=0,
         )
     assert trainer.uam_calls == 1
+    assert trainer.replay_calls == 1
     assert trainer.component_buffers.empty
     assert trainer.replay_buffer.empty
     assert trainer._uam_microsteps == 0
@@ -1656,8 +1658,13 @@ def make_failure_ready_uam_window(trainer, model):
     return named_params, forget
 
 
-def assert_failed_uam_finalization_is_clean(trainer, model):
+def assert_failed_uam_finalization_is_clean(
+    trainer,
+    model,
+    expected_replay_calls,
+):
     assert trainer.uam_calls == 0
+    assert trainer.replay_calls == expected_replay_calls
     assert trainer.component_buffers.empty
     assert trainer.replay_buffer.empty
     assert trainer._uam_microsteps == 0
@@ -1685,7 +1692,11 @@ def test_finalize_uam_replay_failure_clears_window_and_all_gradients(
     with pytest.raises(RuntimeError, match="forced finalizer replay failure"):
         trainer._finalize_uam_gradients(named_params)
 
-    assert_failed_uam_finalization_is_clean(trainer, model)
+    assert_failed_uam_finalization_is_clean(
+        trainer,
+        model,
+        expected_replay_calls=0,
+    )
 
 
 def test_finalize_uam_decision_failure_clears_window_and_all_gradients(
@@ -1705,7 +1716,11 @@ def test_finalize_uam_decision_failure_clears_window_and_all_gradients(
     with pytest.raises(ValueError, match="forced finalizer decision failure"):
         trainer._finalize_uam_gradients(named_params)
 
-    assert_failed_uam_finalization_is_clean(trainer, model)
+    assert_failed_uam_finalization_is_clean(
+        trainer,
+        model,
+        expected_replay_calls=1,
+    )
 
 
 def test_finalize_uam_mid_writeback_failure_removes_partial_gradients(
@@ -1732,7 +1747,63 @@ def test_finalize_uam_mid_writeback_failure_removes_partial_gradients(
         trainer._finalize_uam_gradients(named_params)
 
     assert apply_calls == 2
-    assert_failed_uam_finalization_is_clean(trainer, model)
+    assert_failed_uam_finalization_is_clean(
+        trainer,
+        model,
+        expected_replay_calls=1,
+    )
+
+
+def test_finalize_uam_rejects_raw_gradient_overflow_and_clears_partial_writeback(
+    tmp_path,
+    monkeypatch,
+):
+    trainer, model = make_uam_trainer(tmp_path, reflection_gamma=1e10)
+    initialize_uam_runtime(trainer)
+    named_params = trainer._selected_named_parameters(model)
+    assert len(named_params) == 2
+    forget = [torch.zeros_like(parameter) for _, parameter in named_params]
+    perturbed_retain = [
+        torch.ones_like(named_params[0][1]),
+        torch.zeros_like(named_params[1][1]),
+    ]
+    forget[1].reshape(-1)[0] = 1e3
+    perturbed_retain[1].reshape(-1)[0] = 1e30
+    overflow_parameter = named_params[1][1]
+    trainer.optimizer.state[overflow_parameter].update(
+        step=torch.tensor(1000.0),
+        exp_avg_sq=torch.full_like(overflow_parameter, 1e36),
+    )
+    denominator = trainer._optimizer_geometry_adapter.sqrt_denominator(
+        overflow_parameter,
+        trainer._optimizer_geometry_adapter.groups_by_parameter()[
+            id(overflow_parameter)
+        ],
+    )
+    assert torch.isfinite(denominator).all()
+    prepare_manual_uam_window(
+        trainer,
+        named_params,
+        forget,
+        [torch.full_like(parameter, 0.25) for _, parameter in named_params],
+    )
+    replayed_deltas = install_manual_uam_replay(
+        monkeypatch,
+        trainer,
+        perturbed_retain,
+    )
+    for parameter in model.parameters():
+        parameter.grad = torch.full_like(parameter, 7.0)
+
+    with pytest.raises(RuntimeError, match="raw gradient.*non-finite"):
+        trainer._finalize_uam_gradients(named_params)
+
+    assert replayed_deltas == [{}]
+    assert_failed_uam_finalization_is_clean(
+        trainer,
+        model,
+        expected_replay_calls=1,
+    )
 
 
 def test_finalize_uam_preserves_non_selected_gradient_on_success(
@@ -1795,6 +1866,7 @@ def test_finalize_uam_repeated_windows_are_independent(tmp_path, monkeypatch):
             named_params_arg,
             replay_gradients,
         )
+        trainer.replay_calls += 1
         return SimpleNamespace(requested_norm=1.0, effective_norm=1.0), 1
 
     monkeypatch.setattr(trainer, "_replay_perturbed_retain_gradients", replay)
@@ -1822,6 +1894,7 @@ def test_finalize_uam_repeated_windows_are_independent(tmp_path, monkeypatch):
         assert trainer._uam_microsteps == 0
 
     assert replay_calls == 2
+    assert trainer.replay_calls == 2
     assert trainer.uam_calls == 2
     assert any(
         not torch.equal(first, second)
