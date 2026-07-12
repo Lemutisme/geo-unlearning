@@ -130,6 +130,68 @@ def make_matrix(tmp_path, *, one_non_degenerate=True):
     return root
 
 
+def add_system_arm(root, system_mode, *, metric_offset, delta_norm):
+    arm_name = f"tofu01_pcgrad_{system_mode}"
+    arm_dir = root / arm_name
+    eval_dir = arm_dir / "checkpoint-10" / "evals"
+    eval_dir.mkdir(parents=True)
+    (eval_dir / "TOFU_SUMMARY.json").write_text(
+        json.dumps(
+            {
+                "forget_metric": 12.0 + metric_offset,
+                "retain_metric": 18.0 - metric_offset,
+            }
+        )
+    )
+    hydra_dir = arm_dir / ".hydra"
+    hydra_dir.mkdir()
+    (hydra_dir / "config.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "task_name": arm_name,
+                "paths": {"output_dir": str(arm_dir)},
+                "model": {"name": "tofu01"},
+                "trainer": {
+                    "args": {"learning_rate": 1e-5, "optim": system_mode},
+                    "method_args": {
+                        "geometric_config": {
+                            "gu_enabled": True,
+                            "gradient_surgery": "pcgrad",
+                            "diagnostics_path": str(arm_dir / "gu_diagnostics.jsonl"),
+                            "actual_delta_mode": "full",
+                        }
+                    },
+                },
+            }
+        )
+    )
+    records = [
+        {
+            "record_type": "geometry",
+            "update_step": 1,
+            "conflict": True,
+            "relative_orthogonality_residual": 0.0,
+            "relative_surgery_magnitude": 0.1,
+            "relative_pcgrad_gu_distance": 0.0,
+        },
+        {
+            "record_type": "actual_delta",
+            "update_step": 10,
+            "coverage": "full",
+            "parameter_delta_norm": delta_norm,
+            "forget_directional_derivative": -0.2,
+            "retain_directional_derivative": -0.3,
+        },
+    ]
+    (arm_dir / "gu_diagnostics.jsonl").write_text(
+        "".join(json.dumps(record) + "\n" for record in records)
+    )
+    with (root / "RUN_MANIFEST.tsv").open("a") as handle:
+        handle.write(
+            "999\t0\ttofu01\tpcgrad\t" f"{system_mode}\tstart\tend\t0\trun {arm_name}\n"
+        )
+
+
 def test_analyzer_emits_raw_deltas_geometry_and_advancement(tmp_path):
     analyzer = load_analyzer()
     root = make_matrix(tmp_path, one_non_degenerate=True)
@@ -195,3 +257,25 @@ def test_markdown_and_json_outputs_are_written(tmp_path):
     assert "# PCGrad Multi-Dataset Smoke Analysis" in markdown_path.read_text()
     assert "tofu01" in markdown_path.read_text()
     assert json.loads(json_path.read_text())["datasets"]["muse_books"]
+
+
+def test_system_isolation_reports_metric_deltas_and_actual_updates(tmp_path):
+    analyzer = load_analyzer()
+    root = make_matrix(tmp_path)
+    add_system_arm(
+        root,
+        "torch_eager_fp32",
+        metric_offset=-3.0,
+        delta_norm=0.04,
+    )
+
+    result = analyzer.analyze_matrix(root)
+    system = result["systems"]["tofu01/pcgrad/torch_eager_fp32"]
+
+    assert system["delta_from_production"]["forget_metric"] == -3.0
+    assert system["actual_deltas"][0]["parameter_delta_norm"] == 0.04
+
+    markdown = analyzer.render_markdown(result)
+    assert "System metric comparison" in markdown
+    assert "Actual update probes" in markdown
+    assert "torch_eager_fp32" in markdown

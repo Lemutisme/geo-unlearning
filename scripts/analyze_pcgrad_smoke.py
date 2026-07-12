@@ -85,6 +85,28 @@ def aggregate_geometry(path):
     }
 
 
+def actual_delta_records(path):
+    records = [
+        record
+        for record in load_jsonl(path)
+        if record.get("record_type") == "actual_delta"
+    ]
+    required = {
+        "update_step",
+        "coverage",
+        "parameter_delta_norm",
+        "forget_directional_derivative",
+        "retain_directional_derivative",
+    }
+    for index, record in enumerate(records, start=1):
+        missing = required - record.keys()
+        if missing:
+            raise ValueError(
+                f"Actual-delta record {index} in {path} is missing {sorted(missing)}"
+            )
+    return records
+
+
 def flatten_dict(value, prefix=""):
     flattened = {}
     if isinstance(value, dict):
@@ -203,6 +225,7 @@ def analyze_matrix(matrix_root):
         raw = {}
         summary_paths = {}
         geometry = {}
+        actual_deltas = {}
         for method in METHODS:
             raw[method], path = find_summary(arm_dirs[method], dataset)
             summary_paths[method] = str(path)
@@ -211,6 +234,7 @@ def analyze_matrix(matrix_root):
                 if not diagnostics_path.is_file():
                     raise ValueError(f"Missing diagnostics: {diagnostics_path}")
                 geometry[method] = aggregate_geometry(diagnostics_path)
+                actual_deltas[method] = actual_delta_records(diagnostics_path)
 
         metric_keys = {method: set(values) for method, values in raw.items()}
         if len({frozenset(keys) for keys in metric_keys.values()}) != 1:
@@ -237,6 +261,7 @@ def analyze_matrix(matrix_root):
                 "pcgrad_minus_gu": metric_delta(raw["pcgrad"], raw["gu"]),
             },
             "geometry": geometry,
+            "actual_deltas": actual_deltas,
             "conflict_rate": conflict_rate,
             "mean_relative_pcgrad_gu_distance": distance,
             "degenerate_to_gu": degenerate,
@@ -256,13 +281,25 @@ def analyze_matrix(matrix_root):
         summary, summary_path = find_summary(arm_dir, row["dataset"])
         diagnostics_path = arm_dir / "gu_diagnostics.jsonl"
         system_key = f"{row['dataset']}/{row['method']}/{row['system_mode']}"
+        production_reference = result["datasets"][row["dataset"]]["raw"][row["method"]]
+        if set(summary) != set(production_reference):
+            raise ValueError(
+                f"Metric keys differ for system arm {system_key}: "
+                f"system={sorted(summary)}; production={sorted(production_reference)}"
+            )
         result["systems"][system_key] = {
             "raw": summary,
+            "delta_from_production": metric_delta(summary, production_reference),
             "summary_path": str(summary_path),
             "geometry": (
                 aggregate_geometry(diagnostics_path)
                 if diagnostics_path.is_file()
                 else None
+            ),
+            "actual_deltas": (
+                actual_delta_records(diagnostics_path)
+                if diagnostics_path.is_file()
+                else []
             ),
         }
     return result
@@ -336,6 +373,50 @@ def render_markdown(result):
                 f"| {name} | {format_number(geometry.get('conflict_rate'))} | "
                 f"{format_number(geometry.get('mean_relative_pcgrad_gu_distance'))} |"
             )
+        lines.extend(
+            [
+                "",
+                "### System metric comparison",
+                "",
+                "| Arm | Metric | Value | Delta vs production |",
+                "|---|---|---:|---:|",
+            ]
+        )
+        for name, row in sorted(result["systems"].items()):
+            for metric in sorted(row["raw"]):
+                lines.append(
+                    f"| {name} | {metric} | {format_number(row['raw'][metric])} | "
+                    f"{format_number(row['delta_from_production'][metric])} |"
+                )
+
+        lines.extend(
+            [
+                "",
+                "### Actual update probes",
+                "",
+                "| Arm | Step | Coverage | Delta norm | Forget dot | Retain dot |",
+                "|---|---:|---|---:|---:|---:|",
+            ]
+        )
+        production_deltas = result["datasets"]["tofu01"]["actual_deltas"].get(
+            "pcgrad", []
+        )
+        for record in production_deltas:
+            lines.append(
+                "| tofu01/pcgrad/production | "
+                f"{record['update_step']} | {record['coverage']} | "
+                f"{format_number(record['parameter_delta_norm'])} | "
+                f"{format_number(record['forget_directional_derivative'])} | "
+                f"{format_number(record['retain_directional_derivative'])} |"
+            )
+        for name, row in sorted(result["systems"].items()):
+            for record in row["actual_deltas"]:
+                lines.append(
+                    f"| {name} | {record['update_step']} | {record['coverage']} | "
+                    f"{format_number(record['parameter_delta_norm'])} | "
+                    f"{format_number(record['forget_directional_derivative'])} | "
+                    f"{format_number(record['retain_directional_derivative'])} |"
+                )
         lines.append("")
     return "\n".join(lines)
 
