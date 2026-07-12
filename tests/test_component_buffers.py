@@ -167,11 +167,27 @@ def test_host_memory_requirement_defaults_to_two_components():
     assert default == explicit
 
 
-@pytest.mark.parametrize("component_count", [0, -1])
-def test_host_memory_requirement_rejects_non_positive_component_count(
+@pytest.mark.parametrize(
+    "component_count",
+    [
+        pytest.param(True, id="true"),
+        pytest.param(False, id="false"),
+        pytest.param(1.5, id="fractional"),
+        pytest.param(math.nan, id="nan"),
+        pytest.param(math.inf, id="positive-infinity"),
+        pytest.param(-math.inf, id="negative-infinity"),
+        pytest.param(0, id="zero"),
+        pytest.param(-1, id="negative-one"),
+        pytest.param(-3, id="negative-three"),
+    ],
+)
+def test_host_memory_requirement_rejects_invalid_component_count(
     component_count,
 ):
-    with pytest.raises(ValueError, match="component_count must be positive"):
+    with pytest.raises(
+        ValueError,
+        match="component_count must be a positive integer",
+    ):
         ComponentGradientBuffers.required_host_bytes(
             selected_numel=10,
             component_count=component_count,

@@ -5,14 +5,14 @@ import torch
 
 
 class ComponentGradientBuffers:
-    _COMPONENTS = {"forget", "retain", "perturbed_retain"}
+    _COMPONENTS = ("forget", "retain", "perturbed_retain")
 
     def __init__(self, device_mode: str, pin_memory: bool = True):
         if device_mode not in {"cpu", "parameter"}:
             raise ValueError(f"Unsupported component buffer device: {device_mode}")
         self.device_mode = device_mode
         self.pin_memory = bool(pin_memory)
-        self._data = {"forget": {}, "retain": {}, "perturbed_retain": {}}
+        self._data = {component: {} for component in self._COMPONENTS}
 
     @property
     def empty(self) -> bool:
@@ -100,8 +100,12 @@ class ComponentGradientBuffers:
             raise ValueError("selected_numel must be non-negative.")
         if headroom < 1.0 or not math.isfinite(headroom):
             raise ValueError("headroom must be finite and at least 1.0.")
-        if component_count <= 0:
-            raise ValueError("component_count must be positive.")
+        if (
+            not isinstance(component_count, int)
+            or isinstance(component_count, bool)
+            or component_count <= 0
+        ):
+            raise ValueError("component_count must be a positive integer.")
         return math.ceil(
             component_count
             * selected_numel
