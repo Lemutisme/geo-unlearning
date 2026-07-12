@@ -396,7 +396,7 @@ class UAMUnlearn(GeometricUnlearn):
             forget_grads = torch.autograd.grad(
                 forget_signal,
                 params,
-                retain_graph=True,
+                retain_graph=False,
                 create_graph=False,
                 allow_unused=True,
             )
@@ -410,6 +410,7 @@ class UAMUnlearn(GeometricUnlearn):
 
             self.component_buffers.add("forget", named_params, forget_grads)
             self.component_buffers.add("retain", named_params, retain_grads)
+            del forget_grads, retain_grads
             self.replay_buffer.append(inputs["retain"])
             self._uam_microsteps += 1
             self.accelerator.backward(retain_loss)
@@ -557,11 +558,22 @@ class UAMUnlearn(GeometricUnlearn):
                         create_graph=False,
                         allow_unused=True,
                     )
+                    buffered_retain_grads = tuple(
+                        gradient
+                        if gradient is not None
+                        else torch.zeros_like(parameter)
+                        for parameter, gradient in zip(
+                            params,
+                            retain_grads,
+                            strict=True,
+                        )
+                    )
                     self.component_buffers.add(
                         "perturbed_retain",
                         named_params,
-                        retain_grads,
+                        buffered_retain_grads,
                     )
+                    del retain_grads, buffered_retain_grads
                     completed_batches += 1
 
                 if not self.component_buffers.has_component("perturbed_retain"):

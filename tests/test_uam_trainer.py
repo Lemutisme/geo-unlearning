@@ -1040,6 +1040,31 @@ def test_collect_backward_failure_clears_window_and_parameter_gradients(
     )
 
 
+def test_collect_releases_forget_graph_before_retain_backward(
+    tmp_path,
+    monkeypatch,
+):
+    trainer, model = make_uam_trainer(tmp_path)
+    initialize_uam_runtime(trainer)
+    real_autograd_grad = torch.autograd.grad
+    retain_graph_flags = []
+
+    def record_retain_graph(*args, **kwargs):
+        retain_graph_flags.append(kwargs.get("retain_graph", False))
+        return real_autograd_grad(*args, **kwargs)
+
+    monkeypatch.setattr(torch.autograd, "grad", record_retain_graph)
+
+    loss = trainer._collect_uam_microstep(
+        model,
+        prepared_unlearn_batch(trainer, 375),
+    )
+
+    assert retain_graph_flags == [False, True]
+    assert not loss.requires_grad
+    assert any(parameter.grad is not None for parameter in model.parameters())
+
+
 def test_mean_component_requires_microsteps_and_returns_none_for_unused_parameter(
     tmp_path,
 ):
@@ -1312,6 +1337,56 @@ def test_replay_clears_stale_perturbed_component_before_accumulation(tmp_path):
             assert actual is None
         else:
             torch.testing.assert_close(actual, explicit.float())
+
+
+def test_replay_materializes_all_none_selected_gradients_as_zero(
+    tmp_path,
+    monkeypatch,
+):
+    trainer, model = make_uam_trainer(tmp_path)
+    initialize_uam_runtime(trainer)
+    named_params = trainer._selected_named_parameters(model)
+    trainer._collect_uam_microstep(model, prepared_unlearn_batch(trainer, 851))
+    originals = {name: parameter.detach().clone() for name, parameter in named_params}
+
+    def independent_retain_loss(_model, _retain_inputs):
+        return torch.ones(
+            (),
+            device=trainer.accelerator.device,
+            requires_grad=True,
+        )
+
+    monkeypatch.setattr(
+        trainer,
+        "compute_retain_loss",
+        independent_retain_loss,
+    )
+
+    stats, replayed_batches = trainer._replay_perturbed_retain_gradients(
+        named_params,
+        {},
+    )
+
+    assert replayed_batches == 1
+    assert trainer.replay_calls == 1
+    assert stats.requested_norm == stats.effective_norm == 0.0
+    assert trainer.component_buffers.has_component("perturbed_retain")
+    for name, parameter in named_params:
+        buffered = trainer.component_buffers.tensor(
+            "perturbed_retain",
+            name,
+            parameter.device,
+        )
+        assert buffered is not None
+        assert buffered.dtype is torch.float32
+        assert torch.count_nonzero(buffered).item() == 0
+        mean = trainer._mean_component_coordinate(
+            "perturbed_retain",
+            name,
+            parameter,
+        )
+        torch.testing.assert_close(mean, torch.zeros_like(parameter).float())
+        assert torch.equal(parameter, originals[name])
 
 
 @pytest.mark.parametrize("mismatch", [False, True], ids=["empty", "mismatched"])
