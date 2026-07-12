@@ -1,4 +1,5 @@
 import copy
+import gc
 import math
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,11 +13,17 @@ from transformers import (
     TrainingArguments,
 )
 
-from trainer.unlearn.optimizer_geometry import unwrap_optimizer
+from trainer.unlearn.optimizer_geometry import (
+    PagedAdamW32GeometryAdapter,
+    unwrap_optimizer,
+)
 from trainer.unlearn.uam import UAMUnlearn
 
 
 pytestmark = pytest.mark.gpu
+
+_CUDA_FRAMEWORK_ALLOCATION_ALLOWANCE = 32 * 1024 * 1024
+_CUDA_PER_TEST_GROWTH_ALLOWANCE = 1 * 1024 * 1024
 
 
 def require_cuda():
@@ -38,7 +45,12 @@ def require_flash_attention_2():
         )
 
 
-def make_tofu_like_dataset(num_examples=4, sequence_length=16, seed=701):
+def make_tofu_like_dataset(
+    num_examples=4,
+    sequence_length=16,
+    vocab_size=64,
+    seed=701,
+):
     generator = torch.Generator().manual_seed(seed)
     dataset = []
     for _ in range(num_examples):
@@ -46,7 +58,7 @@ def make_tofu_like_dataset(num_examples=4, sequence_length=16, seed=701):
         for component in ("forget", "retain"):
             input_ids = torch.randint(
                 3,
-                64,
+                vocab_size,
                 (sequence_length,),
                 generator=generator,
             )
@@ -71,9 +83,9 @@ def nested_collator(features):
     }
 
 
-def make_bf16_llama(attention_implementation, state_dict=None):
+def make_bf16_llama(attention_implementation, state_dict=None, vocab_size=64):
     config = LlamaConfig(
-        vocab_size=64,
+        vocab_size=vocab_size,
         hidden_size=64,
         intermediate_size=128,
         num_hidden_layers=2,
@@ -100,6 +112,8 @@ def make_bf16_llama(attention_implementation, state_dict=None):
 def uam_gpu_trainer(tmp_path):
     require_cuda()
     trainer_count = 0
+    trainers = []
+    baseline_cuda_allocation = torch.cuda.memory_allocated()
 
     def factory(
         *,
@@ -108,12 +122,17 @@ def uam_gpu_trainer(tmp_path):
         optim="adamw_torch",
         max_steps=2,
         initial_state=None,
+        vocab_size=64,
         seed=709,
     ):
         nonlocal trainer_count
         trainer_count += 1
         torch.manual_seed(seed)
-        model = make_bf16_llama(attention_implementation, initial_state)
+        model = make_bf16_llama(
+            attention_implementation,
+            initial_state,
+            vocab_size,
+        )
         output_dir = tmp_path / (
             f"run-{trainer_count}-{mode}-{attention_implementation}-{optim}"
         )
@@ -172,7 +191,10 @@ def uam_gpu_trainer(tmp_path):
         trainer = UAMUnlearn(
             model=model,
             args=args,
-            train_dataset=make_tofu_like_dataset(seed=seed + 1),
+            train_dataset=make_tofu_like_dataset(
+                vocab_size=vocab_size,
+                seed=seed + 1,
+            ),
             data_collator=nested_collator,
             gamma=0.125,
             alpha=1.0,
@@ -186,9 +208,58 @@ def uam_gpu_trainer(tmp_path):
             wga_config=None,
             satimp_config=None,
         )
+        trainers.append(trainer)
         return trainer, model
 
-    return factory
+    yield factory
+
+    for trainer in trainers:
+        original_replay = getattr(trainer, "_uam_test_original_replay", None)
+        if original_replay is not None:
+            trainer._replay_perturbed_retain_gradients = original_replay
+            del trainer._uam_test_original_replay
+
+        for callback in tuple(trainer.callback_handler.callbacks):
+            if isinstance(callback, CapturePreOptimizerState):
+                trainer.remove_callback(callback)
+                callback.trainer = None
+            elif isinstance(callback, CapturePagedState):
+                trainer.remove_callback(callback)
+                callback.optimizer = None
+                callback.named_parameters.clear()
+
+        optimizer = getattr(trainer, "optimizer", None)
+        if optimizer is not None:
+            unwrapped_optimizer = unwrap_optimizer(optimizer)
+            unwrapped_optimizer.state.clear()
+            for group in unwrapped_optimizer.param_groups:
+                group["params"].clear()
+
+        trainer.callback_handler.model = None
+        trainer.callback_handler.optimizer = None
+        trainer.callback_handler.lr_scheduler = None
+        trainer.callback_handler.train_dataloader = None
+        trainer.accelerator.free_memory()
+        trainer._optimizer_geometry_adapter = None
+        trainer.train_dataset = None
+        trainer.optimizer = None
+        trainer.lr_scheduler = None
+        trainer.model_wrapped = None
+        trainer.model = None
+
+    trainers.clear()
+    original_replay = None
+    callback = None
+    optimizer = None
+    unwrapped_optimizer = None
+    trainer = None
+    gc.collect()
+    torch.cuda.empty_cache()
+    post_teardown_allocation = torch.cuda.memory_allocated()
+    assert post_teardown_allocation <= max(
+        _CUDA_FRAMEWORK_ALLOCATION_ALLOWANCE,
+        baseline_cuda_allocation + _CUDA_PER_TEST_GROWTH_ALLOWANCE,
+    )
 
 
 class CapturePreOptimizerState(TrainerCallback):
@@ -219,23 +290,32 @@ class CapturePreOptimizerState(TrainerCallback):
 
 
 class CapturePagedState(TrainerCallback):
-    def __init__(self, optimizer):
+    def __init__(self, optimizer, model):
         self.optimizer = optimizer
-        self.state2_dtypes = []
+        self.named_parameters = dict(model.named_parameters())
+        self.state2_metadata = []
 
     def on_optimizer_step(self, _args, _state, control, **_kwargs):
-        initialized = [
-            state["state2"].dtype
-            for state in self.optimizer.state.values()
-            if "state2" in state
-        ]
-        self.state2_dtypes.append(initialized)
+        initialized = {}
+        for name, parameter in self.named_parameters.items():
+            state = self.optimizer.state[parameter]
+            if "state2" not in state:
+                continue
+            state2 = state["state2"]
+            initialized[name] = {
+                "dtype": state2.dtype,
+                "is_paged": getattr(state2, "is_paged", False),
+                "numel": parameter.numel(),
+            }
+        self.state2_metadata.append(initialized)
         return control
 
 
 def install_restoration_audit(trainer):
     replay_records = []
     real_replay = trainer._replay_perturbed_retain_gradients
+    assert not hasattr(trainer, "_uam_test_original_replay")
+    trainer._uam_test_original_replay = real_replay
 
     def audited_replay(named_params, deltas):
         named_params = list(named_params)
@@ -330,16 +410,32 @@ def assert_no_checkpoint_payload(output_dir):
     if output_dir.exists():
         for path in output_dir.rglob("*"):
             payload_prefix = path.name.lower().startswith(
-                ("optimizer", "scheduler", "rng_state", "trainer_state")
+                (
+                    "optimizer",
+                    "scheduler",
+                    "rng_state",
+                    "rng-state",
+                    "trainer_state",
+                    "trainer-state",
+                )
             )
             if (
                 path.name.startswith("checkpoint-")
-                or path.suffix in {".safetensors", ".bin", ".ckpt"}
+                or path.suffix in {".safetensors", ".bin", ".ckpt", ".pt", ".pth"}
                 or path.name in forbidden_names
                 or payload_prefix
             ):
                 forbidden.append(path)
     assert forbidden == []
+
+
+@pytest.mark.parametrize("filename", ["model.pt", "weights.pth"])
+def test_checkpoint_audit_rejects_generic_torch_payloads(tmp_path, filename):
+    payload = tmp_path / filename
+    payload.write_bytes(b"not a real checkpoint")
+
+    with pytest.raises(AssertionError):
+        assert_no_checkpoint_payload(tmp_path)
 
 
 def assert_attention_implementation(model, expected):
@@ -393,6 +489,10 @@ def test_torch_adamw_bf16_runs_two_public_uam_updates(
     assert all(record["replay_microsteps"] == 1 for record in replay_records)
     for update_step, diagnostics in enumerate(capture.diagnostics, start=1):
         assert_diagnostics_coherent(diagnostics, mode, update_step)
+    if mode == "uam_gu":
+        assert {
+            diagnostics["residual_gate_kept"] for diagnostics in capture.diagnostics
+        } == {False, True}
     assert capture.diagnostics[0]["identity_fallback_parameters"] > 0
     assert capture.diagnostics[1]["identity_fallback_parameters"] == 0
     assert trainer.component_buffers.empty
@@ -502,18 +602,25 @@ def test_bf16_flash_attention_two_matches_eager_public_uam_update(
 
 def test_paged_adamw_32bit_bf16_runs_two_public_uam_gu_updates(
     uam_gpu_trainer,
+    monkeypatch,
 ):
+    require_flash_attention_2()
     pytest.importorskip(
         "bitsandbytes",
         reason="bitsandbytes is unavailable; PagedAdamW32 integration cannot run",
     )
     trainer, model = uam_gpu_trainer(
         mode="uam_gu",
+        attention_implementation="flash_attention_2",
         optim="paged_adamw_32bit",
         max_steps=2,
+        vocab_size=2_048,
     )
     assert trainer.args.bf16 is True
-    assert_attention_implementation(model, "eager")
+    assert trainer.args.gradient_checkpointing is True
+    assert trainer.args.gradient_checkpointing_kwargs == {"use_reentrant": False}
+    assert model.config.use_cache is False
+    assert_attention_implementation(model, "flash_attention_2")
     initial_parameters = snapshot_parameters(model)
     trainer.create_optimizer()
     optimizer = unwrap_optimizer(trainer.optimizer)
@@ -524,22 +631,32 @@ def test_paged_adamw_32bit_bf16_runs_two_public_uam_gu_updates(
     assert optimizer.param_groups[0]["betas"][0] == 0.0
     assert optimizer.param_groups[0]["weight_decay"] == 0.0
 
-    prefetch_calls = 0
-    real_prefetch = optimizer.prefetch_state
+    parameter_names = {
+        id(parameter): name for name, parameter in model.named_parameters()
+    }
+    second_finalization_prefetches = []
+    real_prefetch = PagedAdamW32GeometryAdapter.prefetch
 
-    def record_prefetch(parameter):
-        nonlocal prefetch_calls
-        prefetch_calls += 1
-        return real_prefetch(parameter)
+    def record_adapter_prefetch(adapter, parameter):
+        if trainer.uam_calls == 1:
+            assert "state2" in optimizer.state[parameter]
+            second_finalization_prefetches.append(parameter_names[id(parameter)])
+        return real_prefetch(adapter, parameter)
 
-    optimizer.prefetch_state = record_prefetch
     replay_records = install_restoration_audit(trainer)
     pre_optimizer_capture = CapturePreOptimizerState(trainer)
-    paged_state_capture = CapturePagedState(optimizer)
+    paged_state_capture = CapturePagedState(optimizer, model)
     trainer.add_callback(pre_optimizer_capture)
     trainer.add_callback(paged_state_capture)
 
-    trainer.train()
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            PagedAdamW32GeometryAdapter,
+            "prefetch",
+            record_adapter_prefetch,
+        )
+        trainer.train()
+    assert PagedAdamW32GeometryAdapter.prefetch is real_prefetch
 
     assert trainer.uam_calls == trainer.replay_calls == trainer.state.global_step == 2
     assert len(replay_records) == 2
@@ -548,10 +665,23 @@ def test_paged_adamw_32bit_bf16_runs_two_public_uam_gu_updates(
         set(gradient_dtypes.values()) == {torch.bfloat16}
         for gradient_dtypes in pre_optimizer_capture.gradient_dtypes
     )
-    assert len(paged_state_capture.state2_dtypes) == 2
-    assert paged_state_capture.state2_dtypes[0]
-    assert all(dtype == torch.float32 for dtype in paged_state_capture.state2_dtypes[0])
-    assert prefetch_calls > 0
+    assert len(paged_state_capture.state2_metadata) == 2
+    first_step_state = paged_state_capture.state2_metadata[0]
+    assert first_step_state
+    assert all(
+        metadata["dtype"] == torch.float32 for metadata in first_step_state.values()
+    )
+    truly_paged_states = {
+        name: metadata["numel"]
+        for name, metadata in first_step_state.items()
+        if metadata["is_paged"]
+    }
+    assert truly_paged_states == {
+        "model.embed_tokens.weight": 131_072,
+        "lm_head.weight": 131_072,
+    }
+    assert second_finalization_prefetches
+    assert set(truly_paged_states) <= set(second_finalization_prefetches)
     for update_step, diagnostics in enumerate(
         pre_optimizer_capture.diagnostics,
         start=1,
