@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,6 +17,7 @@ from trainer.unlearn.uam import (
     TemporaryParameterPerturbation,
     UAMUnlearn,
 )
+from trainer.unlearn.uam_geometry import decide_residual_gu
 from trainer.utils import compute_batch_nll
 from tests.helpers import TinyCausalLM, make_unlearn_batch, nested_collator
 
@@ -1439,6 +1441,15 @@ def install_manual_uam_replay(monkeypatch, trainer, perturbed_retain):
     return replayed
 
 
+def make_sparse_selected_tensors(named_params, blocks):
+    tensors = []
+    for (_, parameter), block in zip(named_params, blocks, strict=True):
+        tensor = torch.zeros_like(parameter)
+        tensor.reshape(-1)[: len(block)] = torch.tensor(block, dtype=tensor.dtype)
+        tensors.append(tensor)
+    return tensors
+
+
 def test_finalize_pure_uam_matches_global_optimizer_coordinate_calculation(
     tmp_path,
     monkeypatch,
@@ -1561,6 +1572,17 @@ def test_finalize_pure_uam_matches_global_optimizer_coordinate_calculation(
     assert trainer.component_buffers.empty
     assert trainer.replay_buffer.empty
     assert trainer._uam_microsteps == 0
+    diagnostics = trainer.last_uam_diagnostics
+    assert diagnostics["mode"] == "uam"
+    assert diagnostics["residual_gate_kept"] is False
+    assert diagnostics["relative_residual_orthogonality"] == 0.0
+    assert diagnostics["residual_forget_gate_dot"] == 0.0
+    assert diagnostics["predicted_forget_correction_derivative"] == 0.0
+    assert all(
+        math.isfinite(float(value))
+        for key, value in diagnostics.items()
+        if key != "mode"
+    )
 
 
 def test_finalize_pure_uam_uses_one_global_not_per_tensor_coefficient(
@@ -1595,6 +1617,333 @@ def test_finalize_pure_uam_uses_one_global_not_per_tensor_coefficient(
         per_tensor = replay - per_tensor_coefficients[index] * forget_tensor
         torch.testing.assert_close(parameter.grad, expected, rtol=0, atol=0)
         assert not torch.equal(parameter.grad, per_tensor)
+
+
+def test_finalize_residual_gu_uses_one_global_projection_and_keeps_safe_normal(
+    tmp_path,
+    monkeypatch,
+):
+    trainer, model = make_uam_trainer(
+        tmp_path,
+        mode="uam_gu",
+        reflection_gamma=0.0,
+        residual_lambda=0.5,
+    )
+    initialize_uam_runtime(trainer)
+    named_params = trainer._selected_named_parameters(model)
+    assert len(named_params) == 2
+    retain = make_sparse_selected_tensors(named_params, [[1.0, 0.0], [0.0, 2.0]])
+    residual = make_sparse_selected_tensors(named_params, [[1.0, 4.0], [5.0, 6.0]])
+    expected_projection = torch.tensor(13.0 / 5.0)
+    expected_normal = [
+        residual_tensor - expected_projection * retain_tensor
+        for residual_tensor, retain_tensor in zip(residual, retain, strict=True)
+    ]
+    forget = [-normal for normal in expected_normal]
+    uam = [
+        retain_tensor + residual_tensor
+        for retain_tensor, residual_tensor in zip(retain, residual, strict=True)
+    ]
+    prepare_manual_uam_window(trainer, named_params, forget, retain)
+    install_manual_uam_replay(monkeypatch, trainer, uam)
+    decision_inputs = []
+
+    def decide_once(
+        residual_retain_dot,
+        residual_forget_dot,
+        forget_retain_dot,
+        optimizer_retain_sq,
+        residual_lambda,
+        sign_tau,
+        eps,
+    ):
+        decision_inputs.append(
+            tuple(
+                value.detach().clone()
+                for value in (
+                    residual_retain_dot,
+                    residual_forget_dot,
+                    forget_retain_dot,
+                    optimizer_retain_sq,
+                )
+            )
+        )
+        return decide_residual_gu(
+            residual_retain_dot,
+            residual_forget_dot,
+            forget_retain_dot,
+            optimizer_retain_sq,
+            residual_lambda,
+            sign_tau,
+            eps,
+        )
+
+    monkeypatch.setattr(
+        uam_module,
+        "decide_residual_gu",
+        decide_once,
+        raising=False,
+    )
+
+    trainer._finalize_uam_gradients(named_params)
+
+    assert len(decision_inputs) == 1
+    residual_retain_dot, _, _, optimizer_retain_sq = decision_inputs[0]
+    assert residual_retain_dot.item() == pytest.approx(13.0)
+    assert optimizer_retain_sq.item() == pytest.approx(5.0)
+    for index, ((_, parameter), retain_tensor, normal) in enumerate(
+        zip(named_params, retain, expected_normal, strict=True)
+    ):
+        expected = retain_tensor + trainer.residual_lambda * normal
+        torch.testing.assert_close(parameter.grad, expected, rtol=0, atol=1e-6)
+
+        block_residual_dot = (residual[index] * retain_tensor).sum()
+        block_coefficient = block_residual_dot / retain_tensor.square().sum()
+        block_normal = residual[index] - block_coefficient * retain_tensor
+        blockwise_final = retain_tensor + trainer.residual_lambda * block_normal
+        assert not torch.allclose(parameter.grad, blockwise_final)
+
+    diagnostics = trainer.last_uam_diagnostics
+    assert diagnostics["mode"] == "uam_gu"
+    assert diagnostics["residual_gate_kept"] is True
+    assert diagnostics["residual_projection_coefficient"] == pytest.approx(13.0 / 5.0)
+    assert diagnostics["relative_residual_orthogonality"] < 1e-6
+    assert diagnostics["residual_forget_gate_dot"] == pytest.approx(-44.2)
+    assert diagnostics["predicted_retain_directional_derivative"] == pytest.approx(-5.0)
+    assert diagnostics["predicted_forget_correction_derivative"] == pytest.approx(22.1)
+    assert all(
+        math.isfinite(float(value))
+        for key, value in diagnostics.items()
+        if key != "mode"
+    )
+
+
+def test_finalize_residual_gu_rejects_non_beneficial_correction(
+    tmp_path,
+    monkeypatch,
+):
+    trainer, model = make_uam_trainer(
+        tmp_path,
+        mode="uam_gu",
+        reflection_gamma=0.0,
+        residual_lambda=0.75,
+        sign_tau=0.1,
+    )
+    initialize_uam_runtime(trainer)
+    named_params = trainer._selected_named_parameters(model)
+    retain = make_sparse_selected_tensors(named_params, [[1.0, 0.0], [0.0, 2.0]])
+    normal = make_sparse_selected_tensors(named_params, [[0.0, 1.0], [1.0, 0.0]])
+    forget = [tensor.clone() for tensor in normal]
+    uam = [
+        retain_tensor + normal_tensor
+        for retain_tensor, normal_tensor in zip(retain, normal, strict=True)
+    ]
+    prepare_manual_uam_window(trainer, named_params, forget, retain)
+    install_manual_uam_replay(monkeypatch, trainer, uam)
+
+    trainer._finalize_uam_gradients(named_params)
+
+    for (_, parameter), retain_tensor in zip(named_params, retain, strict=True):
+        assert torch.equal(parameter.grad, retain_tensor)
+    diagnostics = trainer.last_uam_diagnostics
+    assert diagnostics["residual_gate_kept"] is False
+    assert diagnostics["residual_forget_gate_dot"] >= -trainer.sign_tau
+    assert diagnostics["predicted_retain_directional_derivative"] < 0.0
+    assert diagnostics["predicted_forget_correction_derivative"] == 0.0
+
+
+def test_finalize_residual_gu_zero_global_retain_norm_fails_atomically(
+    tmp_path,
+    monkeypatch,
+):
+    trainer, model = make_uam_trainer(
+        tmp_path,
+        mode="uam_gu",
+        reflection_gamma=0.0,
+    )
+    initialize_uam_runtime(trainer)
+    named_params = trainer._selected_named_parameters(model)
+    forget = make_sparse_selected_tensors(named_params, [[1.0], [2.0]])
+    retain = [torch.zeros_like(parameter) for _, parameter in named_params]
+    uam = make_sparse_selected_tensors(named_params, [[3.0], [4.0]])
+    prepare_manual_uam_window(trainer, named_params, forget, retain)
+    install_manual_uam_replay(monkeypatch, trainer, uam)
+    for parameter in model.parameters():
+        parameter.grad = torch.full_like(parameter, 7.0)
+    previous_diagnostics = {"mode": "prior-success", "update_step": 3.0}
+    trainer.last_uam_diagnostics = previous_diagnostics
+    trainer.uam_calls = 3
+    trainer.replay_calls = 3
+
+    with pytest.raises(
+        RuntimeError,
+        match="Residual-GU-UAM retain gradient has zero norm",
+    ):
+        trainer._finalize_uam_gradients(named_params)
+
+    assert trainer.last_uam_diagnostics is previous_diagnostics
+    assert trainer.uam_calls == 3
+    assert trainer.replay_calls == 4
+    assert trainer.component_buffers.empty
+    assert trainer.replay_buffer.empty
+    assert trainer._uam_microsteps == 0
+    assert all(parameter.grad is None for parameter in model.parameters())
+    assert all(
+        parameter.grad is None
+        for group in trainer.optimizer.param_groups
+        for parameter in group["params"]
+    )
+
+
+def test_residual_gu_actual_update_correction_is_optimizer_safe(
+    tmp_path,
+    monkeypatch,
+):
+    torch.manual_seed(1701)
+    final_model = TinyCausalLM()
+    retain_model = TinyCausalLM()
+    retain_model.load_state_dict(final_model.state_dict())
+    final_trainer, _ = make_uam_trainer(
+        tmp_path / "final",
+        model=final_model,
+        mode="uam_gu",
+        reflection_gamma=0.0,
+        residual_lambda=0.5,
+    )
+    retain_trainer, _ = make_uam_trainer(
+        tmp_path / "retain",
+        model=retain_model,
+        mode="uam_gu",
+        reflection_gamma=0.0,
+        residual_lambda=0.5,
+    )
+    initialize_uam_runtime(final_trainer)
+    initialize_uam_runtime(retain_trainer)
+
+    for trainer in (final_trainer, retain_trainer):
+        for group in trainer.optimizer.param_groups:
+            group["lr"] = 0.1
+            group["betas"] = (0.0, 0.999999)
+        with torch.no_grad():
+            for parameter in trainer.model.parameters():
+                parameter.zero_()
+                trainer.optimizer.state[parameter].update(
+                    step=torch.tensor(1000.0),
+                    exp_avg=torch.zeros_like(parameter),
+                    exp_avg_sq=torch.full_like(parameter, 1e8),
+                )
+
+    final_named_params = final_trainer._selected_named_parameters(final_model)
+    retain_named_params = retain_trainer._selected_named_parameters(retain_model)
+    retain_coordinates = make_sparse_selected_tensors(
+        final_named_params,
+        [[1.0, 0.0], [0.0, 2.0]],
+    )
+    residual_coordinates = make_sparse_selected_tensors(
+        final_named_params,
+        [[1.0, 4.0], [5.0, 6.0]],
+    )
+    projection = torch.tensor(13.0 / 5.0)
+    normal_coordinates = [
+        residual - projection * retain
+        for residual, retain in zip(
+            residual_coordinates,
+            retain_coordinates,
+            strict=True,
+        )
+    ]
+    forget_coordinates = [-normal for normal in normal_coordinates]
+    uam_coordinates = [
+        retain + residual
+        for retain, residual in zip(
+            retain_coordinates,
+            residual_coordinates,
+            strict=True,
+        )
+    ]
+    adapter = final_trainer._optimizer_geometry_adapter
+    groups = adapter.groups_by_parameter()
+    sqrt_denominators = [
+        adapter.sqrt_denominator(parameter, groups[id(parameter)])
+        for _, parameter in final_named_params
+    ]
+    raw_retain = [
+        coordinates * denominator
+        for coordinates, denominator in zip(
+            retain_coordinates,
+            sqrt_denominators,
+            strict=True,
+        )
+    ]
+    raw_forget = [
+        coordinates * denominator
+        for coordinates, denominator in zip(
+            forget_coordinates,
+            sqrt_denominators,
+            strict=True,
+        )
+    ]
+    raw_uam = [
+        coordinates * denominator
+        for coordinates, denominator in zip(
+            uam_coordinates,
+            sqrt_denominators,
+            strict=True,
+        )
+    ]
+    prepare_manual_uam_window(
+        final_trainer,
+        final_named_params,
+        raw_forget,
+        raw_retain,
+    )
+    install_manual_uam_replay(monkeypatch, final_trainer, raw_uam)
+
+    final_trainer._finalize_uam_gradients(final_named_params)
+    for (_, parameter), retain_gradient in zip(
+        retain_named_params,
+        raw_retain,
+        strict=True,
+    ):
+        parameter.grad = retain_gradient.clone()
+
+    final_trainer.optimizer.step()
+    retain_trainer.optimizer.step()
+
+    actual_correction = [
+        final_parameter.detach() - retain_parameter.detach()
+        for (_, final_parameter), (_, retain_parameter) in zip(
+            final_named_params,
+            retain_named_params,
+            strict=True,
+        )
+    ]
+    retain_dot = sum(
+        (retain_gradient * correction).sum()
+        for retain_gradient, correction in zip(
+            raw_retain,
+            actual_correction,
+            strict=True,
+        )
+    )
+    retain_sq = sum(gradient.square().sum() for gradient in raw_retain)
+    correction_sq = sum(correction.square().sum() for correction in actual_correction)
+    relative_retain_dot = retain_dot.abs() / (
+        retain_sq.sqrt() * correction_sq.sqrt() + final_trainer.projection_eps
+    )
+    forget_correction_derivative = sum(
+        (forget_gradient * correction).sum()
+        for forget_gradient, correction in zip(
+            raw_forget,
+            actual_correction,
+            strict=True,
+        )
+    )
+
+    assert final_trainer.last_uam_diagnostics["residual_gate_kept"] is True
+    assert correction_sq.item() > 0.0
+    assert relative_retain_dot.item() < 1e-6
+    assert forget_correction_derivative.item() > 0.0
 
 
 @pytest.mark.parametrize(
