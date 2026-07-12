@@ -1,0 +1,17 @@
+defaults:
+  - GeometricUnlearn
+  - _self_
+
+handler: UAMUnlearn
+
+method_args:
+  retain_loss_type: NLL
+  uam_config:
+    mode: uam
+    forget_signal: nll
+    perturbation_normalization: auto
+    rho: 5.0e-5
+    reflection_gamma: 2.0
+    residual_lambda: 1.0
+    sign_tau: 0.0
+    replay_device: cpu
