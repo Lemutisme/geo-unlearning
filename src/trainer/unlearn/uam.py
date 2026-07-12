@@ -621,6 +621,7 @@ class UAMUnlearn(GeometricUnlearn):
     @torch.no_grad()
     def _finalize_uam_gradients(self, named_params):
         perturbation = None
+        replay_calls_at_entry = self.replay_calls
         try:
             named_params = list(named_params)
             if not self.component_buffers.has_component("forget"):
@@ -940,6 +941,7 @@ class UAMUnlearn(GeometricUnlearn):
             self.last_uam_diagnostics = diagnostics
             self.uam_calls += 1
         except BaseException:
+            self.replay_calls = replay_calls_at_entry
             self._clear_uam_window(self.model, clear_grads=True)
             raise
         finally:

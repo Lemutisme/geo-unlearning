@@ -1889,7 +1889,7 @@ def test_finalize_residual_gu_zero_global_retain_norm_fails_atomically(
 
     assert trainer.last_uam_diagnostics is previous_diagnostics
     assert trainer.uam_calls == 3
-    assert trainer.replay_calls == 4
+    assert trainer.replay_calls == 3
     assert trainer.component_buffers.empty
     assert trainer.replay_buffer.empty
     assert trainer._uam_microsteps == 0
@@ -2230,7 +2230,7 @@ def test_finalize_uam_decision_failure_clears_window_and_all_gradients(
     assert_failed_uam_finalization_is_clean(
         trainer,
         model,
-        expected_replay_calls=1,
+        expected_replay_calls=0,
     )
 
 
@@ -2261,7 +2261,7 @@ def test_finalize_uam_mid_writeback_failure_removes_partial_gradients(
     assert_failed_uam_finalization_is_clean(
         trainer,
         model,
-        expected_replay_calls=1,
+        expected_replay_calls=0,
     )
 
 
@@ -2313,7 +2313,7 @@ def test_finalize_uam_rejects_raw_gradient_overflow_and_clears_partial_writeback
     assert_failed_uam_finalization_is_clean(
         trainer,
         model,
-        expected_replay_calls=1,
+        expected_replay_calls=0,
     )
 
 
@@ -2603,31 +2603,95 @@ def test_uam_gas_equivalence_matches_effective_batch_update(tmp_path, mode):
 
 @pytest.mark.parametrize("mode", ["uam", "uam_gu"])
 def test_uam_short_window_finalizes_actual_microsteps(tmp_path, mode):
+    torch.manual_seed(2000)
+    full_batch_model = TinyCausalLM()
+    short_window_model = copy.deepcopy(full_batch_model)
     dataset = unbatch_uam_dataset(
         make_unlearn_batch(batch_size=2, sequence_length=6, seed=2001)
     )
-    trainer, model = make_uam_trainer(
-        tmp_path,
+    full_batch_trainer, _ = make_uam_trainer(
+        tmp_path / "full",
+        model=full_batch_model,
         mode=mode,
         train_dataset=dataset,
         per_device_train_batch_size=2,
+        gradient_accumulation_steps=1,
+        max_steps=1,
+        max_grad_norm=0.0,
+    )
+    short_window_trainer, _ = make_uam_trainer(
+        tmp_path / "short",
+        model=short_window_model,
+        mode=mode,
+        train_dataset=dataset,
+        per_device_train_batch_size=1,
         gradient_accumulation_steps=4,
         max_steps=1,
+        max_grad_norm=0.0,
     )
+    seed_strongly_nonuniform_adam_state(full_batch_trainer)
+    seed_strongly_nonuniform_adam_state(short_window_trainer)
 
-    trainer.train()
+    full_batch_trainer.train()
+    short_window_trainer.train()
 
-    assert trainer.uam_calls == trainer.replay_calls == trainer.state.global_step == 1
-    assert trainer.last_uam_diagnostics["replay_microsteps"] == 1
+    assert (
+        full_batch_trainer.uam_calls
+        == full_batch_trainer.replay_calls
+        == full_batch_trainer.state.global_step
+        == 1
+    )
+    assert (
+        short_window_trainer.uam_calls
+        == short_window_trainer.replay_calls
+        == short_window_trainer.state.global_step
+        == 1
+    )
+    full_diagnostics = full_batch_trainer.last_uam_diagnostics
+    short_diagnostics = short_window_trainer.last_uam_diagnostics
+    assert full_diagnostics["replay_microsteps"] == 1
+    assert short_diagnostics["replay_microsteps"] == 2
+    for key in (
+        "residual_sign_gate_passed",
+        "residual_orthogonality_safe",
+        "residual_gate_kept",
+    ):
+        assert full_diagnostics[key] is short_diagnostics[key]
+    for key in (
+        "perturbation_coefficient",
+        "uam_projection_coefficient",
+        "residual_projection_coefficient",
+        "optimizer_forget_norm",
+        "optimizer_retain_norm",
+        "final_coordinate_norm",
+        "residual_forget_gate_dot",
+    ):
+        assert full_diagnostics[key] == pytest.approx(
+            short_diagnostics[key],
+            rel=1e-5,
+            abs=1e-6,
+        )
     assert all(
         math.isfinite(float(value))
-        for key, value in trainer.last_uam_diagnostics.items()
+        for key, value in short_diagnostics.items()
         if key != "mode"
     )
-    assert trainer.component_buffers.empty
-    assert trainer.replay_buffer.empty
-    assert trainer._uam_microsteps == 0
-    assert all(parameter.grad is None for parameter in model.parameters())
+    for full_parameter, short_parameter in zip(
+        full_batch_model.parameters(),
+        short_window_model.parameters(),
+        strict=True,
+    ):
+        torch.testing.assert_close(
+            full_parameter,
+            short_parameter,
+            rtol=1e-5,
+            atol=1e-6,
+        )
+    for trainer in (full_batch_trainer, short_window_trainer):
+        assert trainer.component_buffers.empty
+        assert trainer.replay_buffer.empty
+        assert trainer._uam_microsteps == 0
+        assert all(parameter.grad is None for parameter in trainer.model.parameters())
 
 
 def test_uam_non_selected_gradient_reaches_optimizer_step_unchanged(tmp_path):
@@ -2710,6 +2774,65 @@ def test_uam_failure_no_step_and_cleans_real_training_window(tmp_path, monkeypat
     assert optimizer_step_calls == 0
     assert trainer.state.global_step == 0
     assert trainer.uam_calls == trainer.replay_calls == 0
+    assert trainer.component_buffers.empty
+    assert trainer.replay_buffer.empty
+    assert trainer._uam_microsteps == 0
+    assert all(parameter.grad is None for parameter in model.parameters())
+    assert all(
+        parameter.grad is None
+        for group in optimizer.param_groups
+        for parameter in group["params"]
+    )
+
+
+def test_uam_post_replay_failure_no_step_is_counter_atomic(tmp_path, monkeypatch):
+    dataset = unbatch_uam_dataset(
+        make_unlearn_batch(batch_size=2, sequence_length=6, seed=2251)
+    )
+    trainer, model = make_uam_trainer(
+        tmp_path,
+        train_dataset=dataset,
+        per_device_train_batch_size=2,
+        max_steps=1,
+    )
+    optimizer = seed_strongly_nonuniform_adam_state(trainer)
+    optimizer_type = type(optimizer)
+    real_step = optimizer_type.step
+    optimizer_step_calls = 0
+    completed_replay_counts = []
+    real_replay = trainer._replay_perturbed_retain_gradients
+    previous_diagnostics = {"mode": "prior-success", "update_step": 7}
+    trainer.last_uam_diagnostics = previous_diagnostics
+
+    def record_step(optimizer_instance, *args, **kwargs):
+        nonlocal optimizer_step_calls
+        optimizer_step_calls += 1
+        return real_step(optimizer_instance, *args, **kwargs)
+
+    def record_completed_replay(*args, **kwargs):
+        result = real_replay(*args, **kwargs)
+        completed_replay_counts.append(trainer.replay_calls)
+        return result
+
+    def fail_after_replay(*_args, **_kwargs):
+        raise RuntimeError("forced post-replay decision failure")
+
+    monkeypatch.setattr(optimizer_type, "step", record_step)
+    monkeypatch.setattr(
+        trainer,
+        "_replay_perturbed_retain_gradients",
+        record_completed_replay,
+    )
+    monkeypatch.setattr(uam_module, "decide_uam", fail_after_replay)
+
+    with pytest.raises(RuntimeError, match="forced post-replay decision failure"):
+        trainer.train()
+
+    assert completed_replay_counts == [1]
+    assert optimizer_step_calls == 0
+    assert trainer.state.global_step == 0
+    assert trainer.uam_calls == trainer.replay_calls == 0
+    assert trainer.last_uam_diagnostics is previous_diagnostics
     assert trainer.component_buffers.empty
     assert trainer.replay_buffer.empty
     assert trainer._uam_microsteps == 0
