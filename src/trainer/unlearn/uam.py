@@ -46,29 +46,21 @@ class UAMUnlearn(GeometricUnlearn):
     def _validate_simnpo_signal_config(self):
         if self.loss_name != "simnpo":
             raise ValueError(
-                "UAM SimNPO forget signal requires " "geometric_config.loss='simnpo'."
+                "UAM SimNPO forget signal requires geometric_config.loss='simnpo'."
             )
         if self.simnpo_config is None:
             raise ValueError(
                 "UAM SimNPO forget signal requires a non-null simnpo_config."
             )
         beta = getattr(self.simnpo_config, "beta", None)
-        if isinstance(beta, bool):
+        if isinstance(beta, bool) or not isinstance(beta, (int, float)):
             raise ValueError("UAM SimNPO beta must be positive and finite.")
-        try:
-            beta = float(beta)
-        except (TypeError, ValueError) as error:
-            raise ValueError("UAM SimNPO beta must be positive and finite.") from error
         if beta <= 0.0 or not math.isfinite(beta):
             raise ValueError("UAM SimNPO beta must be positive and finite.")
 
         delta = getattr(self.simnpo_config, "delta", None)
-        if isinstance(delta, bool):
+        if isinstance(delta, bool) or not isinstance(delta, (int, float)):
             raise ValueError("UAM SimNPO delta must be finite.")
-        try:
-            delta = float(delta)
-        except (TypeError, ValueError) as error:
-            raise ValueError("UAM SimNPO delta must be finite.") from error
         if not math.isfinite(delta):
             raise ValueError("UAM SimNPO delta must be finite.")
 

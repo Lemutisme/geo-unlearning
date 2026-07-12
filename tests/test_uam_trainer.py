@@ -393,6 +393,50 @@ def test_simnpo_signal_direct_call_requires_config(tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("beta", "4.5", "SimNPO beta"),
+        ("beta", "not-a-number", "SimNPO beta"),
+        ("delta", "0.0", "SimNPO delta"),
+        ("delta", "not-a-number", "SimNPO delta"),
+    ],
+)
+def test_simnpo_signal_direct_call_rejects_string_settings(
+    tmp_path,
+    field,
+    value,
+    message,
+):
+    trainer, model = make_uam_trainer(tmp_path, forget_signal="simnpo")
+    setattr(trainer.simnpo_config, field, value)
+
+    with pytest.raises(ValueError, match=message):
+        trainer.compute_uam_forget_signal(model, make_forget_inputs())
+
+
+@pytest.mark.parametrize(
+    ("beta", "delta"),
+    [(2, 0), (2.0, 0.5)],
+)
+def test_simnpo_signal_accepts_real_int_and_float_settings(
+    tmp_path,
+    beta,
+    delta,
+):
+    trainer, model = make_uam_trainer(tmp_path, forget_signal="simnpo")
+    trainer.simnpo_config.beta = beta
+    trainer.simnpo_config.delta = delta
+
+    signal, _ = trainer.compute_uam_forget_signal(model, make_forget_inputs())
+
+    assert torch.isfinite(signal)
+    assert trainer.simnpo_config.beta == beta
+    assert trainer.simnpo_config.delta == delta
+    assert type(trainer.simnpo_config.beta) is type(beta)
+    assert type(trainer.simnpo_config.delta) is type(delta)
+
+
+@pytest.mark.parametrize(
     ("loss_name", "drop_config", "message"),
     [
         ("npo", False, "requires geometric_config.loss='simnpo'"),
