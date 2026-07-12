@@ -52,7 +52,7 @@ def make_orthograd_trainer(tmp_path, **overrides):
     )
     args = TrainingArguments(
         output_dir=str(tmp_path),
-        use_cpu=True,
+        use_cpu=overrides.pop("use_cpu", True),
         report_to=[],
         per_device_train_batch_size=overrides.pop(
             "per_device_train_batch_size",
@@ -64,7 +64,8 @@ def make_orthograd_trainer(tmp_path, **overrides):
         ),
         max_steps=overrides.pop("max_steps", -1),
         learning_rate=1e-3,
-        optim="adamw_torch",
+        optim=overrides.pop("optim", "adamw_torch"),
+        bf16=overrides.pop("bf16", False),
         adam_beta1=overrides.pop("adam_beta1", 0.0),
         weight_decay=overrides.pop("weight_decay", 0.0),
         remove_unused_columns=False,
