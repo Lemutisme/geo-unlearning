@@ -72,6 +72,19 @@ def test_gamma_two_uam_is_a_householder_reflection():
     torch.testing.assert_close(reflected, torch.tensor([-3.0, 4.0]))
 
 
+def test_uam_projection_uses_additive_epsilon_at_regularization_scale():
+    eps = 1e-4
+
+    decision = decide_uam(
+        forget_perturbed_retain_dot=torch.tensor(eps),
+        optimizer_forget_sq=torch.tensor(eps),
+        reflection_gamma=1.0,
+        eps=eps,
+    )
+
+    assert decision.coefficient.item() == pytest.approx(0.5)
+
+
 def test_residual_gu_uses_one_global_projection_and_negative_forget_gate():
     retain = {
         "a": torch.tensor([1.0, 0.0]),
@@ -123,6 +136,22 @@ def test_residual_gu_uses_one_global_projection_and_negative_forget_gate():
     assert global_normal_retain_dot.item() == pytest.approx(0.0, abs=1e-6)
     for name in retain:
         torch.testing.assert_close(final[name], retain[name] + 0.5 * normal[name])
+
+
+def test_residual_gu_projection_uses_additive_epsilon_at_regularization_scale():
+    eps = 1e-4
+
+    decision = decide_residual_gu(
+        residual_retain_dot=torch.tensor(eps),
+        residual_forget_dot=torch.tensor(-1.0),
+        forget_retain_dot=torch.tensor(0.0),
+        optimizer_retain_sq=torch.tensor(eps),
+        residual_lambda=0.5,
+        sign_tau=0.0,
+        eps=eps,
+    )
+
+    assert decision.projection_coefficient.item() == pytest.approx(0.5)
 
 
 def test_residual_gu_gate_off_returns_retain_gradient():

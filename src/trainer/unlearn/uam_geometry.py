@@ -70,9 +70,7 @@ def decide_uam(
     _require_finite_float("reflection_gamma", reflection_gamma)
     _require_finite_float("eps", eps)
     coefficient = (
-        reflection_gamma
-        * forget_perturbed_retain_dot
-        / optimizer_forget_sq.clamp_min(eps)
+        reflection_gamma * forget_perturbed_retain_dot / (optimizer_forget_sq + eps)
     )
     _require_finite_tensor_scalar("UAM coefficient", coefficient)
     return UAMDecision(coefficient=coefficient)
@@ -117,7 +115,7 @@ def decide_residual_gu(
     if optimizer_retain_sq.item() == 0.0:
         raise RuntimeError("Residual-GU-UAM retain gradient has zero norm")
 
-    projection_coefficient = residual_retain_dot / optimizer_retain_sq.clamp_min(eps)
+    projection_coefficient = residual_retain_dot / (optimizer_retain_sq + eps)
     _require_finite_tensor_scalar(
         "Residual-GU-UAM projection coefficient",
         projection_coefficient,
