@@ -621,7 +621,10 @@ class UAMUnlearn(GeometricUnlearn):
     @torch.no_grad()
     def _finalize_uam_gradients(self, named_params):
         perturbation = None
+        uam_calls_at_entry = self.uam_calls
         replay_calls_at_entry = self.replay_calls
+        last_uam_diagnostics_at_entry = self.last_uam_diagnostics
+        last_surgery_diagnostics_at_entry = self.last_surgery_diagnostics
         try:
             named_params = list(named_params)
             if not self.component_buffers.has_component("forget"):
@@ -632,9 +635,11 @@ class UAMUnlearn(GeometricUnlearn):
                 raise RuntimeError("UAM finalization requires selected parameters.")
 
             perturbation = self._build_uam_perturbation(named_params)
-            _, replay_microsteps = self._replay_perturbed_retain_gradients(
-                named_params,
-                perturbation.deltas,
+            perturbation_stats, replay_microsteps = (
+                self._replay_perturbed_retain_gradients(
+                    named_params,
+                    perturbation.deltas,
+                )
             )
 
             adapter = self._optimizer_geometry_adapter
@@ -646,6 +651,7 @@ class UAMUnlearn(GeometricUnlearn):
                 device=scalar_device,
             )
             optimizer_forget_sq = torch.zeros_like(forget_perturbed_retain_dot)
+            perturbed_retain_sq = torch.zeros_like(forget_perturbed_retain_dot)
 
             for name, parameter in named_params:
                 group = groups_by_parameter[id(parameter)]
@@ -671,6 +677,7 @@ class UAMUnlearn(GeometricUnlearn):
                     )
                 forget_perturbed_retain_dot.add_((forget * perturbed_retain).sum())
                 optimizer_forget_sq.add_(forget.square().sum())
+                perturbed_retain_sq.add_(perturbed_retain.square().sum())
 
             decision = decide_uam(
                 forget_perturbed_retain_dot,
@@ -683,6 +690,7 @@ class UAMUnlearn(GeometricUnlearn):
             residual_projection = None
             residual_decision = None
             diagnostic_retain_sq = torch.zeros_like(scalar64)
+            residual_tangent_sq = torch.zeros_like(scalar64)
             residual_normal_sq = torch.zeros_like(scalar64)
             residual_normal_retain_dot = torch.zeros_like(scalar64)
             residual_normal_forget_dot = torch.zeros_like(scalar64)
@@ -777,17 +785,21 @@ class UAMUnlearn(GeometricUnlearn):
                         retain,
                         residual_projection,
                     )
-                    normal64 = normal.double()
+                    tangent64 = normal.double()
                     retain64 = retain.double()
-                    residual_normal_forget_dot.add_((normal64 * forget.double()).sum())
-                    residual_normal_retain_dot.add_((normal64 * retain64).sum())
-                    residual_normal_sq.add_(normal64.square().sum())
+                    projected_normal64 = (
+                        residual_projection.projection_coefficient.double() * retain64
+                    )
+                    residual_tangent_sq.add_(tangent64.square().sum())
+                    residual_normal_sq.add_(projected_normal64.square().sum())
+                    residual_normal_forget_dot.add_((tangent64 * forget.double()).sum())
+                    residual_normal_retain_dot.add_((tangent64 * retain64).sum())
                     diagnostic_retain_sq.add_(retain64.square().sum())
 
-                if residual_normal_sq.item() != 0.0:
+                if residual_tangent_sq.item() != 0.0:
                     relative_residual_orthogonality = (
                         residual_normal_retain_dot.abs()
-                        / (diagnostic_retain_sq.sqrt() * residual_normal_sq.sqrt())
+                        / (diagnostic_retain_sq.sqrt() * residual_tangent_sq.sqrt())
                     )
                 residual_decision = decide_residual_gu_gate(
                     residual_projection,
@@ -798,6 +810,7 @@ class UAMUnlearn(GeometricUnlearn):
 
             uam_sq = torch.zeros_like(scalar64)
             final_sq = torch.zeros_like(scalar64)
+            forget_final_dot = torch.zeros_like(scalar64)
             retain_final_dot = torch.zeros_like(scalar64)
 
             for name, parameter in named_params:
@@ -849,6 +862,9 @@ class UAMUnlearn(GeometricUnlearn):
                     diagnostic_retain_sq.add_(retain.double().square().sum())
                 uam_sq.add_(uam.double().square().sum())
                 final_sq.add_(final_coordinates.double().square().sum())
+                forget_final_dot.add_(
+                    (forget.double() * final_coordinates.double()).sum()
+                )
                 retain_final_dot.add_(
                     (retain.double() * final_coordinates.double()).sum()
                 )
@@ -875,6 +891,7 @@ class UAMUnlearn(GeometricUnlearn):
                 parameter.grad.copy_(converted)
 
             retain_norm = diagnostic_retain_sq.sqrt()
+            residual_tangent_norm = residual_tangent_sq.sqrt()
             residual_normal_norm = residual_normal_sq.sqrt()
             residual_gate_kept = bool(
                 residual_decision is not None and residual_decision.keep
@@ -900,9 +917,26 @@ class UAMUnlearn(GeometricUnlearn):
                 if residual_gate_kept
                 else torch.zeros_like(forget_perturbed_retain_dot)
             )
+            update_step = uam_calls_at_entry + 1
+            if self.replay_calls != update_step:
+                raise RuntimeError(
+                    "UAM replay counter must match the proposed update step."
+                )
             diagnostics = {
+                "record_type": "uam_geometry",
                 "mode": self.uam_mode,
-                "update_step": self.uam_calls + 1,
+                "update_step": update_step,
+                "forget_signal": self.forget_signal,
+                "perturbation_normalization": self.perturbation_normalization,
+                "rho": self.rho,
+                "requested_perturbation_norm": perturbation_stats.requested_norm,
+                "effective_perturbation_norm": perturbation_stats.effective_norm,
+                "effective_perturbation_ratio": (
+                    perturbation_stats.effective_norm
+                    / perturbation_stats.requested_norm
+                    if perturbation_stats.requested_norm != 0.0
+                    else 0.0
+                ),
                 "replay_microsteps": replay_microsteps,
                 "perturbation_coefficient": float(
                     perturbation.decision.coefficient.item()
@@ -913,8 +947,13 @@ class UAMUnlearn(GeometricUnlearn):
                 ),
                 "optimizer_forget_norm": float(optimizer_forget_sq.sqrt().item()),
                 "optimizer_retain_norm": float(retain_norm.item()),
+                "forget_norm": float(optimizer_forget_sq.sqrt().item()),
+                "retain_norm": float(retain_norm.item()),
+                "perturbed_retain_norm": float(perturbed_retain_sq.sqrt().item()),
+                "uam_coefficient": float(decision.coefficient.item()),
                 "uam_coordinate_norm": float(uam_sq.sqrt().item()),
                 "final_coordinate_norm": float(final_sq.sqrt().item()),
+                "residual_tangent_norm": float(residual_tangent_norm.item()),
                 "residual_normal_norm": float(residual_normal_norm.item()),
                 "residual_sign_gate_passed": residual_sign_gate_passed,
                 "residual_orthogonality_safe": residual_orthogonality_safe,
@@ -926,22 +965,54 @@ class UAMUnlearn(GeometricUnlearn):
                 "predicted_retain_directional_derivative": float(
                     (-retain_final_dot).item()
                 ),
+                "predicted_forget_directional_derivative": float(
+                    (-forget_final_dot).item()
+                ),
                 "predicted_forget_correction_derivative": float(
                     predicted_forget_correction_derivative.item()
                 ),
+                "identity_fallback_parameters": (
+                    perturbation.identity_fallback_parameters
+                ),
+                "optimizer_geometry": adapter.name,
+                "component_buffer_device": self.component_buffer_device,
+                "uam_calls": update_step,
+                "replay_calls": update_step,
+            }
+            string_keys = {
+                "record_type",
+                "mode",
+                "forget_signal",
+                "perturbation_normalization",
+                "optimizer_geometry",
+                "component_buffer_device",
             }
             if not all(
                 math.isfinite(float(value))
                 for key, value in diagnostics.items()
-                if key != "mode"
+                if key not in string_keys
             ):
                 raise RuntimeError("UAM diagnostics contain non-finite scalars.")
 
+            self.actual_delta_callback.prepare_step(
+                update_step,
+                named_params,
+                self.component_buffers,
+                component_scale=1.0 / self._uam_microsteps,
+            )
             self._clear_uam_window()
+            self.uam_calls = update_step
+            self.replay_calls = update_step
             self.last_uam_diagnostics = diagnostics
-            self.uam_calls += 1
+            self.last_surgery_diagnostics = diagnostics.copy()
+            if self.diagnostics_writer is not None:
+                self.diagnostics_writer.write_step(diagnostics)
         except BaseException:
+            self.actual_delta_callback.cancel_step()
+            self.uam_calls = uam_calls_at_entry
             self.replay_calls = replay_calls_at_entry
+            self.last_uam_diagnostics = last_uam_diagnostics_at_entry
+            self.last_surgery_diagnostics = last_surgery_diagnostics_at_entry
             self._clear_uam_window(self.model, clear_grads=True)
             raise
         finally:

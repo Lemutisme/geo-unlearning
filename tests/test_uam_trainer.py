@@ -1,4 +1,5 @@
 import copy
+import json
 import math
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from transformers import TrainerCallback, TrainingArguments
 from trainer import TRAINER_REGISTRY
 import trainer.unlearn.uam as uam_module
 from trainer.unlearn.component_buffers import ComponentGradientBuffers
+from trainer.unlearn.gu_diagnostics import aggregate_surgery_records
 from trainer.unlearn.optimizer_geometry import (
     TorchAdamGeometryAdapter,
     unwrap_optimizer,
@@ -53,10 +55,13 @@ def make_uam_trainer(tmp_path, **overrides):
             "component_buffer_device",
             "parameter",
         ),
-        diagnostics_path=None,
-        actual_delta_mode="off",
-        actual_delta_steps=[1, 10],
-        actual_delta_sample_elements=1000,
+        diagnostics_path=overrides.pop("diagnostics_path", None),
+        actual_delta_mode=overrides.pop("actual_delta_mode", "off"),
+        actual_delta_steps=overrides.pop("actual_delta_steps", [1, 10]),
+        actual_delta_sample_elements=overrides.pop(
+            "actual_delta_sample_elements",
+            1000,
+        ),
     )
     simnpo_config = SimpleNamespace(
         delta=0.0,
@@ -1600,8 +1605,8 @@ def test_finalize_pure_uam_matches_global_optimizer_coordinate_calculation(
     assert diagnostics["predicted_forget_correction_derivative"] == 0.0
     assert all(
         math.isfinite(float(value))
-        for key, value in diagnostics.items()
-        if key != "mode"
+        for value in diagnostics.values()
+        if isinstance(value, (int, float, bool))
     )
 
 
@@ -1719,14 +1724,27 @@ def test_finalize_residual_gu_uses_one_global_projection_and_keeps_safe_normal(
     assert diagnostics["mode"] == "uam_gu"
     assert diagnostics["residual_gate_kept"] is True
     assert diagnostics["residual_projection_coefficient"] == pytest.approx(13.0 / 5.0)
+    expected_tangent_norm = sum(
+        tensor.double().square().sum() for tensor in expected_normal
+    ).sqrt()
+    expected_normal_norm = (
+        expected_projection.double().abs()
+        * sum(tensor.double().square().sum() for tensor in retain).sqrt()
+    )
+    assert diagnostics["residual_tangent_norm"] == pytest.approx(
+        expected_tangent_norm.item()
+    )
+    assert diagnostics["residual_normal_norm"] == pytest.approx(
+        expected_normal_norm.item()
+    )
     assert diagnostics["relative_residual_orthogonality"] < 1e-6
     assert diagnostics["residual_forget_gate_dot"] == pytest.approx(-44.2)
     assert diagnostics["predicted_retain_directional_derivative"] == pytest.approx(-5.0)
     assert diagnostics["predicted_forget_correction_derivative"] == pytest.approx(22.1)
     assert all(
         math.isfinite(float(value))
-        for key, value in diagnostics.items()
-        if key != "mode"
+        for value in diagnostics.values()
+        if isinstance(value, (int, float, bool))
     )
 
 
@@ -2673,8 +2691,8 @@ def test_uam_short_window_finalizes_actual_microsteps(tmp_path, mode):
         )
     assert all(
         math.isfinite(float(value))
-        for key, value in short_diagnostics.items()
-        if key != "mode"
+        for value in short_diagnostics.values()
+        if isinstance(value, (int, float, bool))
     )
     for full_parameter, short_parameter in zip(
         full_batch_model.parameters(),
@@ -2869,3 +2887,320 @@ def test_uam_loss_scaling_returns_retain_loss_divided_by_gas(tmp_path, monkeypat
     assert len(collected_inputs) == 1
     assert collected_inputs[0]["retain"]["input_ids"].device == trainer.args.device
     assert returned_loss.item() == 2.0
+
+
+REQUIRED_UAM_GEOMETRY_KEYS = {
+    "record_type",
+    "update_step",
+    "mode",
+    "forget_signal",
+    "perturbation_normalization",
+    "rho",
+    "requested_perturbation_norm",
+    "effective_perturbation_norm",
+    "effective_perturbation_ratio",
+    "forget_norm",
+    "retain_norm",
+    "perturbed_retain_norm",
+    "uam_coefficient",
+    "residual_tangent_norm",
+    "residual_normal_norm",
+    "relative_residual_orthogonality",
+    "residual_forget_gate_dot",
+    "residual_gate_kept",
+    "predicted_forget_directional_derivative",
+    "predicted_retain_directional_derivative",
+    "identity_fallback_parameters",
+    "replay_microsteps",
+    "uam_calls",
+    "replay_calls",
+}
+
+
+def read_jsonl(path):
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+@pytest.mark.parametrize("mode", ["uam", "uam_gu"])
+def test_uam_diagnostics_persist_before_actual_delta_with_complete_schema(
+    tmp_path,
+    mode,
+):
+    torch.manual_seed(2401)
+    diagnostics_path = tmp_path / mode / "steps.jsonl"
+    dataset = unbatch_uam_dataset(
+        make_unlearn_batch(batch_size=2, sequence_length=6, seed=2402)
+    )
+    trainer, _ = make_uam_trainer(
+        tmp_path / mode / "trainer",
+        mode=mode,
+        train_dataset=dataset,
+        per_device_train_batch_size=2,
+        max_steps=1,
+        max_grad_norm=0.0,
+        diagnostics_path=str(diagnostics_path),
+        actual_delta_mode="full",
+        actual_delta_steps=[1],
+    )
+
+    trainer.train()
+
+    records = read_jsonl(diagnostics_path)
+    assert [record["record_type"] for record in records] == [
+        "uam_geometry",
+        "actual_delta",
+    ]
+    geometry = records[0]
+    assert REQUIRED_UAM_GEOMETRY_KEYS <= geometry.keys()
+    assert geometry["update_step"] == geometry["uam_calls"] == 1
+    assert geometry["replay_calls"] == geometry["replay_microsteps"] == 1
+    assert geometry["mode"] == mode
+    assert geometry["forget_signal"] == "nll"
+    assert geometry["perturbation_normalization"] == (
+        "fixed_loss" if mode == "uam" else "metric_trust"
+    )
+    assert geometry["requested_perturbation_norm"] > 0.0
+    assert geometry["effective_perturbation_norm"] > 0.0
+    assert geometry["effective_perturbation_ratio"] == pytest.approx(
+        geometry["effective_perturbation_norm"]
+        / geometry["requested_perturbation_norm"]
+    )
+    assert geometry["perturbed_retain_norm"] > 0.0
+    string_keys = {
+        "record_type",
+        "mode",
+        "forget_signal",
+        "perturbation_normalization",
+        "optimizer_geometry",
+        "component_buffer_device",
+    }
+    assert all(
+        math.isfinite(float(value))
+        for key, value in geometry.items()
+        if key not in string_keys
+    )
+    if mode == "uam":
+        # Pure UAM does not construct the residual q decomposition.
+        assert geometry["residual_tangent_norm"] == 0.0
+        assert geometry["residual_normal_norm"] == 0.0
+        assert geometry["relative_residual_orthogonality"] == 0.0
+        assert geometry["residual_gate_kept"] is False
+    else:
+        assert geometry["residual_tangent_norm"] > 0.0
+        assert geometry["residual_normal_norm"] > 0.0
+    assert trainer.last_uam_diagnostics == geometry
+    assert trainer.last_surgery_diagnostics == geometry
+    assert records[1]["update_step"] == 1
+    assert not list(tmp_path.rglob("checkpoint-*"))
+
+
+def test_uam_actual_delta_uses_effective_mean_components_for_gas_two(tmp_path):
+    torch.manual_seed(2501)
+    microbatch = make_unlearn_batch(batch_size=2, sequence_length=6, seed=2502)
+    effective_batch = {
+        component: {
+            key: torch.cat([tensor, tensor.clone()], dim=0)
+            for key, tensor in component_batch.items()
+        }
+        for component, component_batch in microbatch.items()
+    }
+    model = TinyCausalLM()
+    reference_model = copy.deepcopy(model)
+    diagnostics_path = tmp_path / "steps.jsonl"
+    trainer, model = make_uam_trainer(
+        tmp_path / "trainer",
+        model=model,
+        train_dataset=unbatch_uam_dataset(effective_batch),
+        per_device_train_batch_size=2,
+        gradient_accumulation_steps=2,
+        max_steps=1,
+        max_grad_norm=0.0,
+        diagnostics_path=str(diagnostics_path),
+        actual_delta_mode="full",
+        actual_delta_steps=[1],
+    )
+    reference_params = dict(reference_model.named_parameters())
+    initial_params = {
+        name: parameter.detach().clone() for name, parameter in model.named_parameters()
+    }
+    forget_signal, _ = trainer.compute_uam_forget_signal(
+        reference_model,
+        effective_batch["forget"],
+    )
+    retain_loss = trainer.compute_retain_loss(
+        reference_model,
+        effective_batch["retain"],
+    )
+    names = [name for name, _ in trainer._selected_named_parameters(model)]
+    params = [reference_params[name] for name in names]
+    forget_grads = torch.autograd.grad(forget_signal, params, allow_unused=True)
+    retain_grads = torch.autograd.grad(retain_loss, params, allow_unused=True)
+
+    trainer.train()
+
+    actual = read_jsonl(diagnostics_path)[1]
+    forget_dot = retain_dot = forget_sq = retain_sq = delta_sq = 0.0
+    for name, forget, retain in zip(names, forget_grads, retain_grads, strict=True):
+        delta = model.get_parameter(name).detach() - initial_params[name]
+        forget = torch.zeros_like(delta) if forget is None else forget
+        retain = torch.zeros_like(delta) if retain is None else retain
+        forget_dot += float((forget * delta).sum().item())
+        retain_dot += float((retain * delta).sum().item())
+        forget_sq += float(forget.square().sum().item())
+        retain_sq += float(retain.square().sum().item())
+        delta_sq += float(delta.square().sum().item())
+
+    assert actual["forget_directional_derivative"] == pytest.approx(
+        forget_dot,
+        rel=2e-5,
+        abs=1e-8,
+    )
+    assert actual["retain_directional_derivative"] == pytest.approx(
+        retain_dot,
+        rel=2e-5,
+        abs=1e-8,
+    )
+    assert actual["forget_gradient_norm"] == pytest.approx(forget_sq**0.5, rel=2e-5)
+    assert actual["retain_gradient_norm"] == pytest.approx(retain_sq**0.5, rel=2e-5)
+    assert actual["parameter_delta_norm"] == pytest.approx(delta_sq**0.5, rel=2e-5)
+
+
+@pytest.mark.parametrize("failure_site", ["prepare", "writer"])
+def test_uam_post_replay_diagnostics_failure_is_transaction_atomic(
+    tmp_path,
+    monkeypatch,
+    failure_site,
+):
+    dataset = unbatch_uam_dataset(
+        make_unlearn_batch(batch_size=2, sequence_length=6, seed=2601)
+    )
+    diagnostics_path = tmp_path / failure_site / "steps.jsonl"
+    trainer, model = make_uam_trainer(
+        tmp_path / failure_site / "trainer",
+        train_dataset=dataset,
+        per_device_train_batch_size=2,
+        max_steps=1,
+        diagnostics_path=str(diagnostics_path),
+        actual_delta_mode="full",
+        actual_delta_steps=[1],
+    )
+    optimizer = seed_strongly_nonuniform_adam_state(trainer)
+    optimizer_type = type(optimizer)
+    real_step = optimizer_type.step
+    optimizer_steps = 0
+    previous_uam = {"mode": "previous-uam", "update_step": 0}
+    previous_surgery = {"mode": "previous-surgery", "update_step": 0}
+    trainer.last_uam_diagnostics = previous_uam
+    trainer.last_surgery_diagnostics = previous_surgery
+
+    def count_step(optimizer_instance, *args, **kwargs):
+        nonlocal optimizer_steps
+        optimizer_steps += 1
+        return real_step(optimizer_instance, *args, **kwargs)
+
+    monkeypatch.setattr(optimizer_type, "step", count_step)
+    if failure_site == "prepare":
+        real_prepare = trainer.actual_delta_callback.prepare_step
+
+        def fail_prepare(*args, **kwargs):
+            real_prepare(*args, **kwargs)
+            raise RuntimeError("forced actual-delta prepare failure")
+
+        monkeypatch.setattr(trainer.actual_delta_callback, "prepare_step", fail_prepare)
+        expected = "forced actual-delta prepare failure"
+    else:
+
+        def fail_write(_record):
+            raise RuntimeError("forced diagnostics writer failure")
+
+        monkeypatch.setattr(trainer.diagnostics_writer, "write_step", fail_write)
+        expected = "forced diagnostics writer failure"
+
+    with pytest.raises(RuntimeError, match=expected):
+        trainer.train()
+
+    assert optimizer_steps == 0
+    assert trainer.state.global_step == 0
+    assert trainer.uam_calls == trainer.replay_calls == 0
+    assert trainer.last_uam_diagnostics is previous_uam
+    assert trainer.last_surgery_diagnostics is previous_surgery
+    assert trainer.actual_delta_callback._active_step is None
+    assert trainer.actual_delta_callback._component_probes == {}
+    assert trainer.component_buffers.empty
+    assert trainer.replay_buffer.empty
+    assert trainer._uam_microsteps == 0
+    assert all(parameter.grad is None for parameter in model.parameters())
+
+
+def test_uam_and_mixed_surgery_record_aggregation_preserves_gu_semantics():
+    gu = {
+        "record_type": "geometry",
+        "conflict": True,
+        "relative_orthogonality_residual": 2e-7,
+        "relative_surgery_magnitude": 0.25,
+        "relative_pcgrad_gu_distance": 0.5,
+    }
+    legacy_gu = {
+        "conflict": False,
+        "relative_orthogonality_residual": 4e-7,
+        "relative_surgery_magnitude": 0.75,
+    }
+    uam = {
+        "record_type": "uam_geometry",
+        "effective_perturbation_ratio": 0.8,
+        "residual_gate_kept": True,
+    }
+    actual = {"record_type": "actual_delta", "effective_perturbation_ratio": 99.0}
+
+    gu_only = aggregate_surgery_records([gu, legacy_gu])
+    mixed = aggregate_surgery_records([gu, legacy_gu, uam, actual])
+    uam_only = aggregate_surgery_records([uam, actual])
+
+    assert gu_only == {
+        "surgery_count": 2,
+        "conflict_rate": 0.5,
+        "maximum_relative_orthogonality_residual": 4e-7,
+        "mean_relative_surgery_magnitude": 0.5,
+        "mean_relative_pcgrad_gu_distance": 0.5,
+        "pcgrad_gu_distance_count": 1,
+        "mean_effective_perturbation_ratio": None,
+        "residual_gate_rate": None,
+    }
+    assert mixed["surgery_count"] == 3
+    assert mixed["conflict_rate"] == gu_only["conflict_rate"]
+    assert mixed["mean_effective_perturbation_ratio"] == pytest.approx(0.8)
+    assert mixed["residual_gate_rate"] == pytest.approx(1.0)
+    assert uam_only["surgery_count"] == 1
+    assert uam_only["mean_effective_perturbation_ratio"] == pytest.approx(0.8)
+    assert uam_only["residual_gate_rate"] == pytest.approx(1.0)
+
+
+def test_uam_multiple_updates_alternate_geometry_and_delta_and_summarize(tmp_path):
+    diagnostics_path = tmp_path / "multi" / "steps.jsonl"
+    dataset = unbatch_uam_dataset(
+        make_unlearn_batch(batch_size=4, sequence_length=6, seed=2701)
+    )
+    trainer, _ = make_uam_trainer(
+        tmp_path / "multi" / "trainer",
+        train_dataset=dataset,
+        per_device_train_batch_size=2,
+        max_steps=2,
+        diagnostics_path=str(diagnostics_path),
+        actual_delta_mode="full",
+        actual_delta_steps=[1, 2],
+    )
+
+    trainer.train()
+
+    records = read_jsonl(diagnostics_path)
+    assert [record["record_type"] for record in records] == [
+        "uam_geometry",
+        "actual_delta",
+        "uam_geometry",
+        "actual_delta",
+    ]
+    assert [record["update_step"] for record in records] == [1, 1, 2, 2]
+    summary = json.loads(diagnostics_path.with_suffix(".summary.json").read_text())
+    assert summary["surgery_count"] == 2
+    assert math.isfinite(summary["mean_effective_perturbation_ratio"])
+    assert math.isfinite(summary["residual_gate_rate"])

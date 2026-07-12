@@ -17,7 +17,7 @@ def aggregate_surgery_records(records):
     geometry_records = [
         record
         for record in records
-        if record.get("record_type", "geometry") == "geometry"
+        if record.get("record_type", "geometry") in {"geometry", "uam_geometry"}
     ]
     conflicts = _present_values(geometry_records, "conflict")
     residuals = _present_values(
@@ -32,6 +32,11 @@ def aggregate_surgery_records(records):
         geometry_records,
         "relative_pcgrad_gu_distance",
     )
+    perturbation_ratios = _present_values(
+        geometry_records,
+        "effective_perturbation_ratio",
+    )
+    residual_gates = _present_values(geometry_records, "residual_gate_kept")
 
     return {
         "surgery_count": len(geometry_records),
@@ -50,6 +55,16 @@ def aggregate_surgery_records(records):
             sum(distances) / len(distances) if distances else None
         ),
         "pcgrad_gu_distance_count": len(distances),
+        "mean_effective_perturbation_ratio": (
+            sum(perturbation_ratios) / len(perturbation_ratios)
+            if perturbation_ratios
+            else None
+        ),
+        "residual_gate_rate": (
+            sum(bool(value) for value in residual_gates) / len(residual_gates)
+            if residual_gates
+            else None
+        ),
     }
 
 
@@ -166,53 +181,72 @@ class ActualDeltaCallback(TrainerCallback):
         return result
 
     @torch.no_grad()
-    def prepare_step(self, update_step, named_params, component_buffers):
+    def prepare_step(
+        self,
+        update_step,
+        named_params,
+        component_buffers,
+        component_scale=1.0,
+    ):
         if self.mode == "off" or int(update_step) not in self.steps:
             return
-        self._clear_active()
-        named_params = list(named_params)
-        self._active_step = int(update_step)
-        self._active_parameters = dict(named_params)
-        indices_by_name = (
-            self._deterministic_global_indices(named_params, self.sample_elements)
-            if self.mode == "sampled"
-            else {name: None for name, _ in named_params}
-        )
+        if isinstance(component_scale, bool):
+            raise ValueError("actual delta component_scale must be finite.")
+        component_scale = float(component_scale)
+        if not math.isfinite(component_scale):
+            raise ValueError("actual delta component_scale must be finite.")
 
-        for name, parameter in named_params:
-            if name not in indices_by_name:
-                continue
-            indices = indices_by_name[name]
-            forget = component_buffers.tensor(
-                "forget",
-                name,
-                torch.device("cpu"),
+        self.cancel_step()
+        try:
+            named_params = list(named_params)
+            self._active_step = int(update_step)
+            self._active_parameters = dict(named_params)
+            indices_by_name = (
+                self._deterministic_global_indices(
+                    named_params,
+                    self.sample_elements,
+                )
+                if self.mode == "sampled"
+                else {name: None for name, _ in named_params}
             )
-            retain = component_buffers.tensor(
-                "retain",
-                name,
-                torch.device("cpu"),
-            )
-            if forget is None:
-                forget = torch.zeros(parameter.shape, dtype=torch.float32)
-            else:
-                forget = forget.detach().float().cpu()
-            if retain is None:
-                retain = torch.zeros(parameter.shape, dtype=torch.float32)
-            else:
-                retain = retain.detach().float().cpu()
 
-            if indices is not None:
-                forget = forget.reshape(-1).index_select(0, indices)
-                retain = retain.reshape(-1).index_select(0, indices)
-            else:
-                forget = forget.reshape(-1).clone()
-                retain = retain.reshape(-1).clone()
-            self._component_probes[name] = {
-                "indices": indices,
-                "forget": forget,
-                "retain": retain,
-            }
+            for name, parameter in named_params:
+                if name not in indices_by_name:
+                    continue
+                indices = indices_by_name[name]
+                forget = component_buffers.tensor(
+                    "forget",
+                    name,
+                    torch.device("cpu"),
+                )
+                retain = component_buffers.tensor(
+                    "retain",
+                    name,
+                    torch.device("cpu"),
+                )
+                if forget is None:
+                    forget = torch.zeros(parameter.shape, dtype=torch.float32)
+                else:
+                    forget = forget.detach().float().cpu()
+                if retain is None:
+                    retain = torch.zeros(parameter.shape, dtype=torch.float32)
+                else:
+                    retain = retain.detach().float().cpu()
+
+                if indices is not None:
+                    forget = forget.reshape(-1).index_select(0, indices)
+                    retain = retain.reshape(-1).index_select(0, indices)
+                else:
+                    forget = forget.reshape(-1).clone()
+                    retain = retain.reshape(-1).clone()
+                self._component_probes[name] = {
+                    "indices": indices,
+                    "forget": forget.mul_(component_scale),
+                    "retain": retain.mul_(component_scale),
+                }
+        except BaseException:
+            self.cancel_step()
+            raise
 
     @torch.no_grad()
     def on_pre_optimizer_step(self, args, state, control, **kwargs):
@@ -284,6 +318,10 @@ class ActualDeltaCallback(TrainerCallback):
             self.writer.write_summary()
         self._clear_active()
         return control
+
+    def cancel_step(self):
+        """Discard a prepared measurement without emitting a record."""
+        self._clear_active()
 
     def _clear_active(self):
         self._active_step = None
