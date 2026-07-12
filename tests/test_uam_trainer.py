@@ -1412,3 +1412,418 @@ def test_invalid_replay_window_fails_before_parameter_mutation(tmp_path, mismatc
     assert trainer.replay_calls == 0
     for name, parameter in named_params:
         assert torch.equal(parameter, originals[name])
+
+
+def prepare_manual_uam_window(trainer, named_params, forget, retain):
+    trainer.component_buffers.add("forget", named_params, forget)
+    trainer.component_buffers.add("retain", named_params, retain)
+    trainer.replay_buffer.append({"input_ids": torch.tensor([[1, 2]])})
+    trainer._uam_microsteps = 1
+
+
+def install_manual_uam_replay(monkeypatch, trainer, perturbed_retain):
+    replayed = []
+
+    def replay(named_params, deltas):
+        replayed.append(dict(deltas))
+        trainer.component_buffers.clear_component("perturbed_retain")
+        trainer.component_buffers.add(
+            "perturbed_retain",
+            named_params,
+            perturbed_retain,
+        )
+        return SimpleNamespace(requested_norm=1.0, effective_norm=1.0), 1
+
+    monkeypatch.setattr(trainer, "_replay_perturbed_retain_gradients", replay)
+    return replayed
+
+
+def test_finalize_pure_uam_matches_global_optimizer_coordinate_calculation(
+    tmp_path,
+    monkeypatch,
+):
+    trainer, model = make_uam_trainer(tmp_path, reflection_gamma=1.75)
+    initialize_uam_runtime(trainer)
+    named_params = trainer._selected_named_parameters(model)
+    assert len(named_params) == 2
+
+    forget = []
+    retain = []
+    perturbed_retain = []
+    for index, (_, parameter) in enumerate(named_params):
+        forget_tensor = torch.linspace(
+            0.2 + index,
+            1.1 + index,
+            parameter.numel(),
+        ).reshape_as(parameter)
+        retain_tensor = torch.full_like(parameter, 3.0 + index)
+        replay_tensor = torch.linspace(
+            -0.7 + index,
+            0.9 + index,
+            parameter.numel(),
+        ).reshape_as(parameter)
+        forget.append(forget_tensor)
+        retain.append(retain_tensor)
+        perturbed_retain.append(replay_tensor)
+        trainer.optimizer.state[parameter].update(
+            step=torch.tensor(2.0 + index),
+            exp_avg_sq=torch.linspace(
+                0.01 + index,
+                0.91 + index,
+                parameter.numel(),
+            ).reshape_as(parameter),
+        )
+
+    prepare_manual_uam_window(trainer, named_params, forget, retain)
+    replayed = install_manual_uam_replay(
+        monkeypatch,
+        trainer,
+        perturbed_retain,
+    )
+    real_decide_uam = uam_module.decide_uam
+    decisions = []
+
+    def decide_once(
+        forget_perturbed_retain_dot,
+        optimizer_forget_sq,
+        reflection_gamma,
+        eps,
+    ):
+        decisions.append(
+            (
+                forget_perturbed_retain_dot.detach().clone(),
+                optimizer_forget_sq.detach().clone(),
+            )
+        )
+        return real_decide_uam(
+            forget_perturbed_retain_dot,
+            optimizer_forget_sq,
+            reflection_gamma,
+            eps,
+        )
+
+    monkeypatch.setattr(uam_module, "decide_uam", decide_once)
+    adapter = trainer._optimizer_geometry_adapter
+    groups = adapter.groups_by_parameter()
+    optimizer_forget = []
+    optimizer_replay = []
+    denominators = []
+    global_dot = torch.zeros(())
+    global_forget_sq = torch.zeros(())
+    for (_, parameter), forget_tensor, replay_tensor in zip(
+        named_params,
+        forget,
+        perturbed_retain,
+        strict=True,
+    ):
+        denominator = adapter.sqrt_denominator(
+            parameter,
+            groups[id(parameter)],
+        )
+        denominators.append(denominator)
+        forget_coordinate = forget_tensor.float() / denominator
+        replay_coordinate = replay_tensor.float() / denominator
+        optimizer_forget.append(forget_coordinate)
+        optimizer_replay.append(replay_coordinate)
+        global_dot.add_((forget_coordinate * replay_coordinate).sum())
+        global_forget_sq.add_(forget_coordinate.square().sum())
+    coefficient = trainer.reflection_gamma * global_dot / global_forget_sq
+    expected = [
+        (replay - coefficient * forget_coordinate) * denominator
+        for replay, forget_coordinate, denominator in zip(
+            optimizer_replay,
+            optimizer_forget,
+            denominators,
+            strict=True,
+        )
+    ]
+
+    trainer._finalize_uam_gradients(named_params)
+
+    assert len(replayed) == 1
+    assert len(decisions) == 1
+    torch.testing.assert_close(decisions[0][0], global_dot, rtol=0, atol=0)
+    torch.testing.assert_close(decisions[0][1], global_forget_sq, rtol=0, atol=0)
+    for (_, parameter), expected_gradient in zip(
+        named_params,
+        expected,
+        strict=True,
+    ):
+        torch.testing.assert_close(
+            parameter.grad,
+            expected_gradient.to(parameter.grad),
+            rtol=0,
+            atol=0,
+        )
+    assert trainer.uam_calls == 1
+    assert trainer.component_buffers.empty
+    assert trainer.replay_buffer.empty
+    assert trainer._uam_microsteps == 0
+
+
+def test_finalize_pure_uam_uses_one_global_not_per_tensor_coefficient(
+    tmp_path,
+    monkeypatch,
+):
+    trainer, model = make_uam_trainer(tmp_path, reflection_gamma=2.0)
+    initialize_uam_runtime(trainer)
+    named_params = trainer._selected_named_parameters(model)
+    forget = [torch.zeros_like(parameter) for _, parameter in named_params]
+    perturbed_retain = [torch.zeros_like(parameter) for _, parameter in named_params]
+    forget[0].reshape(-1)[0] = 1.0
+    forget[1].reshape(-1)[0] = 2.0
+    perturbed_retain[0].reshape(-1)[0] = 3.0
+    perturbed_retain[1].reshape(-1)[0] = -1.0
+    prepare_manual_uam_window(
+        trainer,
+        named_params,
+        forget,
+        [torch.ones_like(parameter) for _, parameter in named_params],
+    )
+    install_manual_uam_replay(monkeypatch, trainer, perturbed_retain)
+    global_coefficient = torch.tensor(2.0 * (3.0 - 2.0) / (1.0 + 4.0))
+    per_tensor_coefficients = [torch.tensor(6.0), torch.tensor(-1.0)]
+
+    trainer._finalize_uam_gradients(named_params)
+
+    for index, ((_, parameter), replay, forget_tensor) in enumerate(
+        zip(named_params, perturbed_retain, forget, strict=True)
+    ):
+        expected = replay - global_coefficient * forget_tensor
+        per_tensor = replay - per_tensor_coefficients[index] * forget_tensor
+        torch.testing.assert_close(parameter.grad, expected, rtol=0, atol=0)
+        assert not torch.equal(parameter.grad, per_tensor)
+
+
+@pytest.mark.parametrize(
+    ("present_component", "message"),
+    [
+        ("retain", "forget gradient buffer is empty"),
+        ("forget", "base retain gradient buffer is empty"),
+    ],
+)
+def test_finalize_uam_rejects_empty_base_component_and_clears_window(
+    tmp_path,
+    monkeypatch,
+    present_component,
+    message,
+):
+    trainer, model = make_uam_trainer(tmp_path)
+    initialize_uam_runtime(trainer)
+    named_params = trainer._selected_named_parameters(model)
+    trainer.component_buffers.add(
+        present_component,
+        named_params,
+        [torch.ones_like(parameter) for _, parameter in named_params],
+    )
+    trainer.replay_buffer.append({"input_ids": torch.tensor([[1]])})
+    trainer._uam_microsteps = 1
+    for parameter in model.parameters():
+        parameter.grad = torch.ones_like(parameter)
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("validation must happen before perturbation or replay")
+
+    monkeypatch.setattr(trainer, "_build_uam_perturbation", forbidden)
+    monkeypatch.setattr(trainer, "_replay_perturbed_retain_gradients", forbidden)
+
+    with pytest.raises(RuntimeError, match=message):
+        trainer._finalize_uam_gradients(named_params)
+
+    assert trainer.component_buffers.empty
+    assert trainer.replay_buffer.empty
+    assert trainer._uam_microsteps == 0
+    assert trainer.uam_calls == 0
+    assert all(parameter.grad is None for parameter in model.parameters())
+    assert all(
+        parameter.grad is None
+        for group in trainer.optimizer.param_groups
+        for parameter in group["params"]
+    )
+
+
+def make_failure_ready_uam_window(trainer, model):
+    named_params = trainer._selected_named_parameters(model)
+    forget = [torch.full_like(parameter, 0.5) for _, parameter in named_params]
+    prepare_manual_uam_window(
+        trainer,
+        named_params,
+        forget,
+        [torch.full_like(parameter, 0.25) for _, parameter in named_params],
+    )
+    for parameter in model.parameters():
+        parameter.grad = torch.full_like(parameter, 7.0)
+    return named_params, forget
+
+
+def assert_failed_uam_finalization_is_clean(trainer, model):
+    assert trainer.uam_calls == 0
+    assert trainer.component_buffers.empty
+    assert trainer.replay_buffer.empty
+    assert trainer._uam_microsteps == 0
+    assert all(parameter.grad is None for parameter in model.parameters())
+    assert all(
+        parameter.grad is None
+        for group in trainer.optimizer.param_groups
+        for parameter in group["params"]
+    )
+
+
+def test_finalize_uam_replay_failure_clears_window_and_all_gradients(
+    tmp_path,
+    monkeypatch,
+):
+    trainer, model = make_uam_trainer(tmp_path)
+    initialize_uam_runtime(trainer)
+    named_params, _ = make_failure_ready_uam_window(trainer, model)
+
+    def fail_replay(_named_params, _deltas):
+        raise RuntimeError("forced finalizer replay failure")
+
+    monkeypatch.setattr(trainer, "_replay_perturbed_retain_gradients", fail_replay)
+
+    with pytest.raises(RuntimeError, match="forced finalizer replay failure"):
+        trainer._finalize_uam_gradients(named_params)
+
+    assert_failed_uam_finalization_is_clean(trainer, model)
+
+
+def test_finalize_uam_decision_failure_clears_window_and_all_gradients(
+    tmp_path,
+    monkeypatch,
+):
+    trainer, model = make_uam_trainer(tmp_path)
+    initialize_uam_runtime(trainer)
+    named_params, forget = make_failure_ready_uam_window(trainer, model)
+    install_manual_uam_replay(monkeypatch, trainer, forget)
+
+    def fail_decision(*_args, **_kwargs):
+        raise ValueError("forced finalizer decision failure")
+
+    monkeypatch.setattr(uam_module, "decide_uam", fail_decision)
+
+    with pytest.raises(ValueError, match="forced finalizer decision failure"):
+        trainer._finalize_uam_gradients(named_params)
+
+    assert_failed_uam_finalization_is_clean(trainer, model)
+
+
+def test_finalize_uam_mid_writeback_failure_removes_partial_gradients(
+    tmp_path,
+    monkeypatch,
+):
+    trainer, model = make_uam_trainer(tmp_path)
+    initialize_uam_runtime(trainer)
+    named_params, forget = make_failure_ready_uam_window(trainer, model)
+    install_manual_uam_replay(monkeypatch, trainer, forget)
+    real_apply = uam_module.apply_uam_tensor
+    apply_calls = 0
+
+    def fail_second_apply(perturbed_retain, forget_tensor, decision):
+        nonlocal apply_calls
+        apply_calls += 1
+        if apply_calls == 2:
+            raise RuntimeError("forced finalizer writeback failure")
+        return real_apply(perturbed_retain, forget_tensor, decision)
+
+    monkeypatch.setattr(uam_module, "apply_uam_tensor", fail_second_apply)
+
+    with pytest.raises(RuntimeError, match="forced finalizer writeback failure"):
+        trainer._finalize_uam_gradients(named_params)
+
+    assert apply_calls == 2
+    assert_failed_uam_finalization_is_clean(trainer, model)
+
+
+def test_finalize_uam_preserves_non_selected_gradient_on_success(
+    tmp_path,
+    monkeypatch,
+):
+    trainer, model = make_uam_trainer(
+        tmp_path,
+        trainable_params_regex=["embed.weight"],
+    )
+    initialize_uam_runtime(trainer)
+    named_params = trainer._selected_named_parameters(model)
+    assert [name for name, _ in named_params] == ["embed.weight"]
+    selected_parameter = named_params[0][1]
+    non_selected_parameter = model.lm_head.weight
+    non_selected_parameter.grad = torch.linspace(
+        -1.0,
+        1.0,
+        non_selected_parameter.numel(),
+    ).reshape_as(non_selected_parameter)
+    non_selected_snapshot = non_selected_parameter.grad.clone()
+    forget = [torch.full_like(selected_parameter, 0.5)]
+    prepare_manual_uam_window(
+        trainer,
+        named_params,
+        forget,
+        [torch.full_like(selected_parameter, 0.25)],
+    )
+    install_manual_uam_replay(
+        monkeypatch,
+        trainer,
+        [torch.full_like(selected_parameter, -0.75)],
+    )
+
+    trainer._finalize_uam_gradients(named_params)
+
+    assert selected_parameter.grad is not None
+    torch.testing.assert_close(
+        non_selected_parameter.grad,
+        non_selected_snapshot,
+        rtol=0,
+        atol=0,
+    )
+    assert trainer.uam_calls == 1
+
+
+def test_finalize_uam_repeated_windows_are_independent(tmp_path, monkeypatch):
+    trainer, model = make_uam_trainer(tmp_path)
+    initialize_uam_runtime(trainer)
+    named_params = trainer._selected_named_parameters(model)
+    replay_gradients = []
+    replay_calls = 0
+
+    def replay(named_params_arg, _deltas):
+        nonlocal replay_calls
+        replay_calls += 1
+        trainer.component_buffers.clear_component("perturbed_retain")
+        trainer.component_buffers.add(
+            "perturbed_retain",
+            named_params_arg,
+            replay_gradients,
+        )
+        return SimpleNamespace(requested_norm=1.0, effective_norm=1.0), 1
+
+    monkeypatch.setattr(trainer, "_replay_perturbed_retain_gradients", replay)
+
+    snapshots = []
+    for window in (1.0, 2.0):
+        forget = [torch.full_like(parameter, window) for _, parameter in named_params]
+        replay_gradients[:] = [
+            torch.full_like(parameter, -window) for _, parameter in named_params
+        ]
+        prepare_manual_uam_window(
+            trainer,
+            named_params,
+            forget,
+            [torch.full_like(parameter, 0.5) for _, parameter in named_params],
+        )
+
+        trainer._finalize_uam_gradients(named_params)
+
+        snapshots.append(
+            [parameter.grad.detach().clone() for _, parameter in named_params]
+        )
+        assert trainer.component_buffers.empty
+        assert trainer.replay_buffer.empty
+        assert trainer._uam_microsteps == 0
+
+    assert replay_calls == 2
+    assert trainer.uam_calls == 2
+    assert any(
+        not torch.equal(first, second)
+        for first, second in zip(snapshots[0], snapshots[1], strict=True)
+    )

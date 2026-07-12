@@ -8,7 +8,12 @@ import torch
 from trainer.unlearn.component_buffers import ComponentGradientBuffers
 from trainer.unlearn.geometric import GeometricUnlearn
 from trainer.unlearn.optimizer_geometry import make_optimizer_geometry_adapter
-from trainer.unlearn.uam_geometry import PerturbationDecision, decide_perturbation
+from trainer.unlearn.uam_geometry import (
+    PerturbationDecision,
+    apply_uam_tensor,
+    decide_perturbation,
+    decide_uam,
+)
 from trainer.utils import compute_batch_nll
 
 
@@ -380,7 +385,16 @@ class UAMUnlearn(GeometricUnlearn):
         if clear_grads:
             if model is None:
                 raise ValueError("Clearing UAM gradients requires a model.")
-            model.zero_grad(set_to_none=True)
+            parameters = list(model.parameters())
+            optimizer = getattr(self, "optimizer", None)
+            if optimizer is not None:
+                parameters.extend(
+                    parameter
+                    for group in optimizer.param_groups
+                    for parameter in group["params"]
+                )
+            for parameter in parameters:
+                parameter.grad = None
 
     def _collect_uam_microstep(self, model, inputs):
         try:
@@ -584,6 +598,112 @@ class UAMUnlearn(GeometricUnlearn):
 
         self.replay_calls += 1
         return stats, completed_batches
+
+    @torch.no_grad()
+    def _finalize_uam_gradients(self, named_params):
+        perturbation = None
+        try:
+            named_params = list(named_params)
+            if not self.component_buffers.has_component("forget"):
+                raise RuntimeError("UAM forget gradient buffer is empty.")
+            if not self.component_buffers.has_component("retain"):
+                raise RuntimeError("UAM base retain gradient buffer is empty.")
+            if not named_params:
+                raise RuntimeError("UAM finalization requires selected parameters.")
+
+            perturbation = self._build_uam_perturbation(named_params)
+            self._replay_perturbed_retain_gradients(
+                named_params,
+                perturbation.deltas,
+            )
+
+            adapter = self._optimizer_geometry_adapter
+            groups_by_parameter = adapter.groups_by_parameter()
+            scalar_device = named_params[0][1].device
+            forget_perturbed_retain_dot = torch.zeros(
+                (),
+                dtype=torch.float32,
+                device=scalar_device,
+            )
+            optimizer_forget_sq = torch.zeros_like(forget_perturbed_retain_dot)
+
+            for name, parameter in named_params:
+                group = groups_by_parameter[id(parameter)]
+                sqrt_denominator = adapter.sqrt_denominator(parameter, group)
+                forget = self._mean_component_coordinate(
+                    "forget",
+                    name,
+                    parameter,
+                    sqrt_denominator,
+                )
+                perturbed_retain = self._mean_component_coordinate(
+                    "perturbed_retain",
+                    name,
+                    parameter,
+                    sqrt_denominator,
+                )
+                if forget is None:
+                    forget = torch.zeros_like(parameter, dtype=torch.float32)
+                if perturbed_retain is None:
+                    perturbed_retain = torch.zeros_like(
+                        parameter,
+                        dtype=torch.float32,
+                    )
+                forget_perturbed_retain_dot.add_((forget * perturbed_retain).sum())
+                optimizer_forget_sq.add_(forget.square().sum())
+
+            decision = decide_uam(
+                forget_perturbed_retain_dot,
+                optimizer_forget_sq,
+                self.reflection_gamma,
+                self.projection_eps,
+            )
+
+            for name, parameter in named_params:
+                group = groups_by_parameter[id(parameter)]
+                sqrt_denominator = adapter.sqrt_denominator(parameter, group)
+                forget = self._mean_component_coordinate(
+                    "forget",
+                    name,
+                    parameter,
+                    sqrt_denominator,
+                )
+                perturbed_retain = self._mean_component_coordinate(
+                    "perturbed_retain",
+                    name,
+                    parameter,
+                    sqrt_denominator,
+                )
+                if forget is None:
+                    forget = torch.zeros_like(parameter, dtype=torch.float32)
+                if perturbed_retain is None:
+                    perturbed_retain = torch.zeros_like(
+                        parameter,
+                        dtype=torch.float32,
+                    )
+                uam = apply_uam_tensor(
+                    perturbed_retain,
+                    forget,
+                    decision,
+                )
+                raw = self._from_adam_coordinates(uam, sqrt_denominator)
+                if parameter.grad is None:
+                    parameter.grad = torch.zeros_like(parameter)
+                parameter.grad.copy_(
+                    raw.to(
+                        device=parameter.grad.device,
+                        dtype=parameter.grad.dtype,
+                    )
+                )
+
+            self._clear_uam_window()
+            self.uam_calls += 1
+        except BaseException:
+            self._clear_uam_window(self.model, clear_grads=True)
+            raise
+        finally:
+            if perturbation is not None:
+                perturbation.deltas.clear()
 
     def _validate_uam_runtime(self):
         if self._uam_runtime_validated:
