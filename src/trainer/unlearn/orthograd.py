@@ -1,8 +1,11 @@
 import math
 import os
 
+import torch
+
 from trainer.unlearn.geometric import GeometricUnlearn
 from trainer.unlearn.orthograd_geometry import GlobalRetainBasis
+from trainer.utils import compute_batch_nll
 
 
 class OrthogradUnlearn(GeometricUnlearn):
@@ -23,6 +26,103 @@ class OrthogradUnlearn(GeometricUnlearn):
         self.orthograd_calls = 0
         self.last_orthograd_diagnostics = {}
         self._orthograd_runtime_validated = False
+
+    @staticmethod
+    def _batch_size(inputs):
+        labels = inputs.get("labels") if isinstance(inputs, dict) else None
+        if not isinstance(labels, torch.Tensor) or labels.ndim == 0:
+            raise ValueError("Orthograd retain inputs require batched labels.")
+        return int(labels.shape[0])
+
+    @classmethod
+    def _slice_tree(cls, value, index, batch_size):
+        if isinstance(value, dict):
+            return {
+                key: cls._slice_tree(item, index, batch_size)
+                for key, item in value.items()
+            }
+        if isinstance(value, tuple):
+            return tuple(cls._slice_tree(item, index, batch_size) for item in value)
+        if isinstance(value, list):
+            return [cls._slice_tree(item, index, batch_size) for item in value]
+        if isinstance(value, torch.Tensor) and value.ndim > 0:
+            if value.shape[0] != batch_size:
+                raise ValueError(
+                    "Orthograd retain tensor leading dimensions must match."
+                )
+            return value[index : index + 1]
+        return value
+
+    @classmethod
+    def _iter_batch_samples(cls, inputs):
+        batch_size = cls._batch_size(inputs)
+        for index in range(batch_size):
+            yield cls._slice_tree(inputs, index, batch_size)
+
+    def _basis_vector(self, named_params, gradients):
+        vector = {}
+        for (name, parameter), gradient in zip(named_params, gradients):
+            if gradient is None:
+                continue
+            target_device = (
+                torch.device("cpu") if self.basis_device == "cpu" else parameter.device
+            )
+            vector[name] = gradient.detach().to(
+                device=target_device,
+                dtype=torch.float32,
+            )
+        return vector
+
+    def _clear_orthograd_state(self):
+        self.component_buffers.clear()
+        self.retain_basis.clear()
+
+    def _collect_retain_gradients(self, model, retain_inputs, named_params):
+        batch_size = self._batch_size(retain_inputs)
+        labels = retain_inputs["labels"]
+        answer_counts = labels[..., 1:].ne(-100).sum(dim=-1)
+        if (answer_counts == 0).any():
+            self._clear_orthograd_state()
+            raise RuntimeError("Orthograd retain sample contains an empty answer mask.")
+        total_answer_tokens = int(answer_counts.sum().item())
+        params = [parameter for _, parameter in named_params]
+        reconstructed_loss = torch.zeros((), device=labels.device)
+
+        try:
+            for sample in self._iter_batch_samples(retain_inputs):
+                sequence_nll, _ = compute_batch_nll(model, sample)
+                sample_loss = sequence_nll.sum() * (
+                    float(batch_size) / float(total_answer_tokens)
+                )
+                gradients = torch.autograd.grad(
+                    sample_loss,
+                    params,
+                    retain_graph=False,
+                    create_graph=False,
+                    allow_unused=True,
+                )
+                scaled_gradients = tuple(
+                    None if gradient is None else gradient / batch_size
+                    for gradient in gradients
+                )
+                self.component_buffers.add(
+                    "retain",
+                    named_params,
+                    scaled_gradients,
+                )
+                self.retain_basis.add(self._basis_vector(named_params, gradients))
+                reconstructed_loss = (
+                    reconstructed_loss + sample_loss.detach() / batch_size
+                )
+                del gradients, scaled_gradients
+        except Exception:
+            self._clear_orthograd_state()
+            raise
+
+        if self.retain_basis.empty:
+            self._clear_orthograd_state()
+            raise RuntimeError("Orthograd retain gradient basis is empty.")
+        return reconstructed_loss, batch_size
 
     @staticmethod
     def _required_vector_storage_bytes(selected_numel, vector_count, headroom=1.2):

@@ -1,12 +1,13 @@
 from types import SimpleNamespace
 
 import pytest
+import torch
 from omegaconf import OmegaConf
 from transformers import TrainingArguments
 
 from trainer import TRAINER_REGISTRY
 from trainer.unlearn.orthograd import OrthogradUnlearn
-from tests.helpers import TinyCausalLM
+from tests.helpers import TinyCausalLM, make_unlearn_batch
 
 
 def make_orthograd_trainer(tmp_path, **overrides):
@@ -130,3 +131,62 @@ def test_orthograd_runtime_validation_accepts_cpu_and_parameter_basis(tmp_path):
         trainer.create_optimizer()
 
         trainer._validate_orthograd_runtime(retain_batch_size=2)
+
+
+def test_nested_batch_slicing_preserves_leading_dimension_and_metadata(tmp_path):
+    trainer, _ = make_orthograd_trainer(tmp_path)
+    batch = make_unlearn_batch(batch_size=3, sequence_length=6, seed=17)["retain"]
+    batch["nested"] = (batch["attention_mask"].clone(), ["constant"])
+    batch["metadata"] = "retain"
+
+    samples = list(trainer._iter_batch_samples(batch))
+
+    assert len(samples) == 3
+    assert samples[0]["input_ids"].shape == (1, 6)
+    assert samples[0]["nested"][0].shape == (1, 6)
+    assert samples[0]["nested"][1] == ["constant"]
+    assert samples[0]["metadata"] == "retain"
+    assert batch["input_ids"].shape == (3, 6)
+
+
+def test_per_sample_retain_mean_reconstructs_token_weighted_batch_gradient(tmp_path):
+    trainer, model = make_orthograd_trainer(tmp_path)
+    retain = make_unlearn_batch(batch_size=3, sequence_length=6, seed=19)["retain"]
+    retain["labels"][1, 2:4] = -100
+    named_params = trainer._selected_named_parameters()
+    params = [parameter for _, parameter in named_params]
+
+    batch_loss = trainer.compute_retain_loss(model, retain)
+    batch_gradients = torch.autograd.grad(
+        batch_loss,
+        params,
+        allow_unused=True,
+    )
+    reconstructed_loss, sample_count = trainer._collect_retain_gradients(
+        model,
+        retain,
+        named_params,
+    )
+
+    assert sample_count == 3
+    torch.testing.assert_close(reconstructed_loss, batch_loss.detach())
+    for (name, parameter), expected in zip(named_params, batch_gradients):
+        observed = trainer.component_buffers.tensor("retain", name, parameter.device)
+        if expected is None:
+            assert observed is None
+        else:
+            torch.testing.assert_close(observed, expected.float(), rtol=1e-5, atol=1e-6)
+    assert trainer.retain_basis.requested_rank == 3
+
+
+def test_per_sample_collection_rejects_empty_answer_masks_and_clears_state(tmp_path):
+    trainer, model = make_orthograd_trainer(tmp_path)
+    retain = make_unlearn_batch(batch_size=2, sequence_length=6, seed=23)["retain"]
+    retain["labels"][1].fill_(-100)
+    named_params = trainer._selected_named_parameters()
+
+    with pytest.raises(RuntimeError, match="empty answer mask"):
+        trainer._collect_retain_gradients(model, retain, named_params)
+
+    assert trainer.component_buffers.empty
+    assert trainer.retain_basis.empty
