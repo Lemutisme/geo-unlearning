@@ -446,7 +446,7 @@ def test_trainer_persists_geometry_and_post_step_delta_without_checkpoint(tmp_pa
     assert not list(tmp_path.rglob("checkpoint-*"))
 
 
-@pytest.mark.parametrize("failure_site", ["prepare", "writer"])
+@pytest.mark.parametrize("failure_site", ["prepare", "logger", "writer"])
 def test_gu_diagnostics_failure_is_transaction_atomic(
     tmp_path,
     monkeypatch,
@@ -497,6 +497,13 @@ def test_gu_diagnostics_failure_is_transaction_atomic(
             staticmethod(fail_preflight),
         )
         expected = "forced GU actual-delta preflight failure"
+    elif failure_site == "logger":
+
+        def fail_log(*_args, **_kwargs):
+            raise RuntimeError("forced GU diagnostics logging failure")
+
+        monkeypatch.setattr("trainer.unlearn.geometric.logger.info", fail_log)
+        expected = "forced GU diagnostics logging failure"
     else:
 
         def fail_fsync(_descriptor):

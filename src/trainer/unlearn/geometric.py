@@ -270,7 +270,7 @@ class GeometricUnlearn(GradDiff):
         last_surgery_diagnostics_at_entry = self.last_surgery_diagnostics
         update_step = surgery_calls_at_entry + 1
         try:
-            diagnostics = self._finalize_gu_gradients_transaction(
+            self._finalize_gu_gradients_transaction(
                 named_params,
                 update_step,
             )
@@ -282,16 +282,6 @@ class GeometricUnlearn(GradDiff):
             self.last_surgery_diagnostics = last_surgery_diagnostics_at_entry
             self._clear_gu_failure_state()
             raise
-
-        logger.info(
-            "Gradient surgery step=%d mode=%s coefficient=%.8e residual=%.8e "
-            "identity_fallback_parameters=%d",
-            update_step,
-            diagnostics["mode"],
-            diagnostics["coefficient"],
-            diagnostics["relative_orthogonality_residual"],
-            diagnostics["identity_fallback_parameters"],
-        )
 
     @torch.no_grad()
     def _finalize_gu_gradients_transaction(self, named_params, update_step):
@@ -468,6 +458,15 @@ class GeometricUnlearn(GradDiff):
         self.gu_projection_calls = update_step
         self.last_surgery_diagnostics = diagnostics
         self.last_gu_diagnostics = diagnostics
+        logger.info(
+            "Gradient surgery step=%d mode=%s coefficient=%.8e residual=%.8e "
+            "identity_fallback_parameters=%d",
+            update_step,
+            diagnostics["mode"],
+            diagnostics["coefficient"],
+            diagnostics["relative_orthogonality_residual"],
+            diagnostics["identity_fallback_parameters"],
+        )
         if self.diagnostics_writer is not None:
             self.diagnostics_writer.write_step(diagnostics)
         return diagnostics
