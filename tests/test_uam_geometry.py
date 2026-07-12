@@ -34,7 +34,7 @@ def test_fixed_loss_perturbation_has_requested_linearized_increase():
 def test_metric_trust_perturbation_has_requested_metric_radius():
     forget = torch.tensor([2.0, -1.0])
     denominator = torch.tensor([4.0, 0.25])
-    optimizer_forget_sq = (forget / denominator).square().sum()
+    optimizer_forget_sq = (forget / denominator.sqrt()).square().sum()
     rho = 0.3
 
     decision = decide_perturbation(
@@ -45,9 +45,10 @@ def test_metric_trust_perturbation_has_requested_metric_radius():
         1e-12,
     )
     perturbation = decision.coefficient * forget / denominator
+    metric_radius = (denominator * perturbation.square()).sum().sqrt()
 
     assert decision.mode == "metric_trust"
-    assert perturbation.norm().item() == pytest.approx(rho)
+    assert metric_radius.item() == pytest.approx(rho)
 
 
 def test_gamma_two_uam_is_a_householder_reflection():
@@ -227,3 +228,95 @@ def test_unknown_perturbation_normalization_fails_closed():
             rho=0.2,
             eps=1e-12,
         )
+
+
+@pytest.mark.parametrize("non_finite", [float("nan"), float("inf")])
+@pytest.mark.parametrize(
+    "field",
+    ["raw_forget_sq", "optimizer_forget_sq", "rho", "eps"],
+)
+def test_perturbation_non_finite_geometry_fails_closed(field, non_finite):
+    values = {
+        "raw_forget_sq": torch.tensor(1.0),
+        "optimizer_forget_sq": torch.tensor(1.0),
+        "rho": 0.2,
+        "eps": 1e-12,
+    }
+    values[field] = (
+        torch.tensor(non_finite)
+        if field in {"raw_forget_sq", "optimizer_forget_sq"}
+        else non_finite
+    )
+
+    with pytest.raises((ValueError, RuntimeError), match="finite"):
+        decide_perturbation("metric_trust", **values)
+
+
+@pytest.mark.parametrize("non_finite", [float("nan"), float("inf")])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "forget_perturbed_retain_dot",
+        "optimizer_forget_sq",
+        "reflection_gamma",
+        "eps",
+    ],
+)
+def test_uam_non_finite_geometry_fails_closed(field, non_finite):
+    values = {
+        "forget_perturbed_retain_dot": torch.tensor(1.0),
+        "optimizer_forget_sq": torch.tensor(1.0),
+        "reflection_gamma": 2.0,
+        "eps": 1e-12,
+    }
+    values[field] = (
+        torch.tensor(non_finite)
+        if field
+        in {
+            "forget_perturbed_retain_dot",
+            "optimizer_forget_sq",
+        }
+        else non_finite
+    )
+
+    with pytest.raises((ValueError, RuntimeError), match="finite"):
+        decide_uam(**values)
+
+
+@pytest.mark.parametrize("non_finite", [float("nan"), float("inf")])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "residual_retain_dot",
+        "residual_forget_dot",
+        "forget_retain_dot",
+        "optimizer_retain_sq",
+        "residual_lambda",
+        "sign_tau",
+        "eps",
+    ],
+)
+def test_residual_gu_non_finite_geometry_fails_closed(field, non_finite):
+    values = {
+        "residual_retain_dot": torch.tensor(1.0),
+        "residual_forget_dot": torch.tensor(-1.0),
+        "forget_retain_dot": torch.tensor(0.5),
+        "optimizer_retain_sq": torch.tensor(2.0),
+        "residual_lambda": 0.5,
+        "sign_tau": 1e-8,
+        "eps": 1e-12,
+    }
+    values[field] = (
+        torch.tensor(non_finite)
+        if field
+        in {
+            "residual_retain_dot",
+            "residual_forget_dot",
+            "forget_retain_dot",
+            "optimizer_retain_sq",
+        }
+        else non_finite
+    )
+
+    with pytest.raises((ValueError, RuntimeError), match="finite"):
+        decide_residual_gu(**values)
