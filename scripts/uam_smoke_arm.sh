@@ -242,6 +242,7 @@ if [[ ! "${arm_term_grace_seconds}" =~ ^[0-9]+$ ]]; then
 fi
 arm_term_grace_seconds=$((10#${arm_term_grace_seconds}))
 smoke_rho=${UAM_SMOKE_RHO:-0.05}
+base_model=open-unlearning/tofu_Llama-3.2-1B-Instruct_full
 local_root=${UAM_LOCAL_ROOT:-/tmp/uam_smoke}
 local_arm_dir="${local_root}/${timestamp}/${method}"
 if ! validate_local_staging_path "${local_root}" "${local_arm_dir}"; then
@@ -308,6 +309,7 @@ command=(
     "task_name=${task_name}"
     model=Llama-3.2-1B-Instruct
     model.model_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.2-1B-Instruct_full
+    "model.tokenizer_args.pretrained_model_name_or_path=${base_model}"
     model.model_args.torch_dtype=bfloat16
     model.model_args.attn_implementation=flash_attention_2
     retain_logs_path=saves/eval/tofu_Llama-3.2-1B-Instruct_retain99/TOFU_EVAL.json
