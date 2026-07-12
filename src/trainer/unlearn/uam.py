@@ -373,46 +373,50 @@ class UAMUnlearn(GeometricUnlearn):
             return signal, outputs
         raise ValueError(f"Unsupported UAM forget signal: {self.forget_signal}")
 
-    def _clear_uam_window(self):
+    def _clear_uam_window(self, model=None, clear_grads=False):
         self.component_buffers.clear()
         self.replay_buffer.clear()
         self._uam_microsteps = 0
+        if clear_grads:
+            if model is None:
+                raise ValueError("Clearing UAM gradients requires a model.")
+            model.zero_grad(set_to_none=True)
 
     def _collect_uam_microstep(self, model, inputs):
-        with self.compute_loss_context_manager():
-            forget_signal, _ = self.compute_uam_forget_signal(
-                model,
-                inputs["forget"],
-            )
-            retain_loss = self.compute_retain_loss(model, inputs["retain"])
-
-        named_params = self._selected_named_parameters(model)
-        params = [parameter for _, parameter in named_params]
-        forget_grads = torch.autograd.grad(
-            forget_signal,
-            params,
-            retain_graph=True,
-            create_graph=False,
-            allow_unused=True,
-        )
-        retain_grads = torch.autograd.grad(
-            retain_loss,
-            params,
-            retain_graph=True,
-            create_graph=False,
-            allow_unused=True,
-        )
-
         try:
+            with self.compute_loss_context_manager():
+                forget_signal, _ = self.compute_uam_forget_signal(
+                    model,
+                    inputs["forget"],
+                )
+                retain_loss = self.compute_retain_loss(model, inputs["retain"])
+
+            named_params = self._selected_named_parameters(model)
+            params = [parameter for _, parameter in named_params]
+            forget_grads = torch.autograd.grad(
+                forget_signal,
+                params,
+                retain_graph=True,
+                create_graph=False,
+                allow_unused=True,
+            )
+            retain_grads = torch.autograd.grad(
+                retain_loss,
+                params,
+                retain_graph=True,
+                create_graph=False,
+                allow_unused=True,
+            )
+
             self.component_buffers.add("forget", named_params, forget_grads)
             self.component_buffers.add("retain", named_params, retain_grads)
             self.replay_buffer.append(inputs["retain"])
+            self._uam_microsteps += 1
+            self.accelerator.backward(retain_loss)
         except BaseException:
-            self._clear_uam_window()
+            self._clear_uam_window(model, clear_grads=True)
             raise
 
-        self._uam_microsteps += 1
-        self.accelerator.backward(retain_loss)
         return retain_loss.detach()
 
     def _mean_component_coordinate(

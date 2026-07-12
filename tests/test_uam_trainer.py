@@ -1001,6 +1001,45 @@ def test_collect_component_add_failure_clears_entire_uam_window(
     assert trainer._uam_microsteps == 0
 
 
+def test_collect_backward_failure_clears_window_and_parameter_gradients(
+    tmp_path,
+    monkeypatch,
+):
+    trainer, model = make_uam_trainer(tmp_path)
+    initialize_uam_runtime(trainer)
+    named_params = trainer._selected_named_parameters(model)
+    trainer._collect_uam_microstep(model, prepared_unlearn_batch(trainer, 351))
+    trainer.component_buffers.add(
+        "perturbed_retain",
+        named_params,
+        [torch.ones_like(parameter) for _, parameter in named_params],
+    )
+    assert trainer._uam_microsteps == 1
+    assert len(trainer.replay_buffer) == 1
+    assert any(parameter.grad is not None for parameter in model.parameters())
+
+    def fail_backward(_loss):
+        raise RuntimeError("forced accelerator backward failure")
+
+    monkeypatch.setattr(trainer.accelerator, "backward", fail_backward)
+
+    with pytest.raises(RuntimeError, match="forced accelerator backward failure"):
+        trainer._collect_uam_microstep(
+            model,
+            prepared_unlearn_batch(trainer, 352),
+        )
+
+    assert trainer._uam_microsteps == 0
+    assert trainer.replay_buffer.empty
+    assert trainer.component_buffers.empty
+    assert all(parameter.grad is None for parameter in model.parameters())
+    assert all(
+        parameter.grad is None
+        for group in trainer.optimizer.param_groups
+        for parameter in group["params"]
+    )
+
+
 def test_mean_component_requires_microsteps_and_returns_none_for_unused_parameter(
     tmp_path,
 ):
@@ -1110,6 +1149,7 @@ def test_build_uam_perturbations_obey_fixed_loss_and_metric_trust_invariants(
 
 def test_replay_shared_perturbation_matches_concatenated_retain_gradient(
     tmp_path,
+    monkeypatch,
 ):
     torch.manual_seed(607)
     trainer, model = make_uam_trainer(tmp_path)
@@ -1140,6 +1180,23 @@ def test_replay_shared_perturbation_matches_concatenated_retain_gradient(
             allow_unused=True,
         )
 
+    perturbation_events = []
+
+    class CountingPerturbation(TemporaryParameterPerturbation):
+        def __enter__(self):
+            perturbation_events.append("enter")
+            return super().__enter__()
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            perturbation_events.append("exit")
+            return super().__exit__(exc_type, exc_value, traceback)
+
+    monkeypatch.setattr(
+        uam_module,
+        "TemporaryParameterPerturbation",
+        CountingPerturbation,
+    )
+
     stats, replayed_batches = trainer._replay_perturbed_retain_gradients(
         named_params,
         deltas,
@@ -1147,6 +1204,7 @@ def test_replay_shared_perturbation_matches_concatenated_retain_gradient(
 
     assert replayed_batches == 2
     assert trainer.replay_calls == 1
+    assert perturbation_events == ["enter", "exit"]
     assert stats.requested_norm > 0.0
     assert stats.effective_norm > 0.0
     for (name, parameter), explicit, grad_snapshot in zip(
