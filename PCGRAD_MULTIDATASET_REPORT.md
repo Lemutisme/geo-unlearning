@@ -2,6 +2,16 @@
 
 Each arm uses one seed and ten optimizer updates. These are mechanism checks, not final performance claims.
 
+## Provenance
+
+Matrix root: `saves/exp/PCGRAD_SMOKE/0711204008`
+
+Manifest: **17/17** successful arms.
+
+Hydra configs: matched across control, GU, and PCGrad after excluding method-only fields.
+
+Checkpoint payloads: **0**.
+
 | Dataset | Conflict rate | Mean PCGrad–GU distance | Degenerate | Advance |
 |---|---:|---:|:---:|:---:|
 | tofu01 | 1 | 0 | yes | no |
@@ -140,14 +150,21 @@ Cross-dataset stop: **no**.
 | tofu01/pcgrad/torch_flash | privleak | -98.819362 | 0 |
 | tofu01/pcgrad/torch_flash | retain_extraction_strength | 0.71889399 | 0.0015140298 |
 
-### Actual update probes
+## Actual update probes
 
 | Arm | Step | Coverage | Delta norm | Forget dot | Retain dot |
 |---|---:|---|---:|---:|---:|
 | tofu01/pcgrad/production | 1 | full | 0 | 0 | 0 |
 | tofu01/pcgrad/production | 10 | full | 0.0080112976 | -0.000380106 | -0.0063224049 |
+| muse_news/gu/production | 1 | sampled | 0.0051261138 | -2.092458e-08 | -2.1694606e-05 |
+| muse_news/gu/production | 10 | sampled | 0.00388074 | -8.4299176e-08 | -1.867337e-05 |
+| muse_news/pcgrad/production | 1 | sampled | 0.0051254614 | -2.8432849e-08 | -2.169745e-05 |
+| muse_news/pcgrad/production | 10 | sampled | 0.0053528518 | -2.1980926e-07 | -2.75481e-05 |
+| muse_books/gu/production | 1 | sampled | 0.0046396762 | -4.2525026e-07 | -3.2901297e-06 |
+| muse_books/gu/production | 10 | sampled | 0.0062643066 | -2.8040072e-07 | -7.6223046e-06 |
+| muse_books/pcgrad/production | 1 | sampled | 0.0046399035 | -4.2559886e-07 | -3.2902597e-06 |
+| muse_books/pcgrad/production | 10 | sampled | 0.006270913 | -2.7504138e-07 | -7.6723402e-06 |
 | tofu01/pcgrad/torch_eager_fp32 | 1 | full | 0 | 0 | 0 |
 | tofu01/pcgrad/torch_eager_fp32 | 10 | full | 0.038128065 | 0.0002619618 | -0.19293046 |
 | tofu01/pcgrad/torch_flash | 1 | full | 0 | 0 | 0 |
 | tofu01/pcgrad/torch_flash | 10 | full | 0.0080253407 | -0.0003744963 | -0.0063326845 |
-

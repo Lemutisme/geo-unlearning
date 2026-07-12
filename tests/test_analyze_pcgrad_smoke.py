@@ -254,9 +254,42 @@ def test_markdown_and_json_outputs_are_written(tmp_path):
 
     analyzer.write_outputs(result, markdown_path, json_path)
 
-    assert "# PCGrad Multi-Dataset Smoke Analysis" in markdown_path.read_text()
-    assert "tofu01" in markdown_path.read_text()
+    markdown = markdown_path.read_text()
+    assert "# PCGrad Multi-Dataset Smoke Analysis" in markdown
+    assert "tofu01" in markdown
+    assert markdown.endswith("\n")
+    assert not markdown.endswith("\n\n")
     assert json.loads(json_path.read_text())["datasets"]["muse_books"]
+
+
+def test_report_records_provenance_and_muse_actual_delta_probes(tmp_path):
+    analyzer = load_analyzer()
+    root = make_matrix(tmp_path)
+    diagnostics_path = root / "muse_books_pcgrad_production" / "gu_diagnostics.jsonl"
+    with diagnostics_path.open("a") as handle:
+        handle.write(
+            json.dumps(
+                {
+                    "record_type": "actual_delta",
+                    "update_step": 1,
+                    "coverage": "sampled",
+                    "parameter_delta_norm": 0.01,
+                    "forget_directional_derivative": -0.02,
+                    "retain_directional_derivative": -0.03,
+                }
+            )
+            + "\n"
+        )
+
+    result = analyzer.analyze_matrix(root)
+    markdown = analyzer.render_markdown(result)
+
+    assert result["provenance"]["manifest_rows"] == 15
+    assert result["provenance"]["checkpoint_payload_count"] == 0
+    assert f"Matrix root: `{root}`" in markdown
+    assert "Hydra configs: matched" in markdown
+    assert "Checkpoint payloads: **0**" in markdown
+    assert "| muse_books/pcgrad/production | 1 | sampled |" in markdown
 
 
 def test_system_isolation_reports_metric_deltas_and_actual_updates(tmp_path):

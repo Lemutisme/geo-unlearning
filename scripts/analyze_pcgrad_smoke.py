@@ -19,6 +19,7 @@ ALLOWED_METHOD_DIFFERENCES = {
     "trainer.method_args.geometric_config.diagnostics_path",
     "trainer.method_args.geometric_config.actual_delta_mode",
 }
+CHECKPOINT_PAYLOAD_PATTERNS = ("*.safetensors", "*.bin", "*.pt", "*.pth")
 
 
 def load_json(path):
@@ -175,6 +176,17 @@ def read_manifest(root):
     return rows
 
 
+def checkpoint_payloads(root):
+    return sorted(
+        {
+            str(path)
+            for pattern in CHECKPOINT_PAYLOAD_PATTERNS
+            for path in root.rglob(pattern)
+            if path.is_file()
+        }
+    )
+
+
 def arm_directory(root, row):
     return root / f"{row['dataset']}_{row['method']}_{row['system_mode']}"
 
@@ -209,6 +221,13 @@ def analyze_matrix(matrix_root):
     }
     result = {
         "matrix_root": str(root),
+        "provenance": {
+            "manifest_path": str(root / "RUN_MANIFEST.tsv"),
+            "manifest_rows": len(rows),
+            "successful_rows": len(rows),
+            "matched_hydra_configs": True,
+            "checkpoint_payload_count": len(checkpoint_payloads(root)),
+        },
         "datasets": {},
         "systems": {},
     }
@@ -320,6 +339,18 @@ def render_markdown(result):
         "Each arm uses one seed and ten optimizer updates. These are mechanism "
         "checks, not final performance claims.",
         "",
+        "## Provenance",
+        "",
+        f"Matrix root: `{result['matrix_root']}`",
+        "",
+        f"Manifest: **{result['provenance']['successful_rows']}/"
+        f"{result['provenance']['manifest_rows']}** successful arms.",
+        "",
+        "Hydra configs: matched across control, GU, and PCGrad after excluding "
+        "method-only fields.",
+        "",
+        f"Checkpoint payloads: **{result['provenance']['checkpoint_payload_count']}**.",
+        "",
         "| Dataset | Conflict rate | Mean PCGrad–GU distance | Degenerate | Advance |",
         "|---|---:|---:|:---:|:---:|",
     ]
@@ -389,35 +420,34 @@ def render_markdown(result):
                     f"{format_number(row['delta_from_production'][metric])} |"
                 )
 
-        lines.extend(
-            [
-                "",
-                "### Actual update probes",
-                "",
-                "| Arm | Step | Coverage | Delta norm | Forget dot | Retain dot |",
-                "|---|---:|---|---:|---:|---:|",
-            ]
-        )
-        production_deltas = result["datasets"]["tofu01"]["actual_deltas"].get(
-            "pcgrad", []
-        )
-        for record in production_deltas:
-            lines.append(
-                "| tofu01/pcgrad/production | "
-                f"{record['update_step']} | {record['coverage']} | "
-                f"{format_number(record['parameter_delta_norm'])} | "
-                f"{format_number(record['forget_directional_derivative'])} | "
-                f"{format_number(record['retain_directional_derivative'])} |"
-            )
-        for name, row in sorted(result["systems"].items()):
-            for record in row["actual_deltas"]:
+        lines.append("")
+
+    lines.extend(
+        [
+            "## Actual update probes",
+            "",
+            "| Arm | Step | Coverage | Delta norm | Forget dot | Retain dot |",
+            "|---|---:|---|---:|---:|---:|",
+        ]
+    )
+    for dataset, row in result["datasets"].items():
+        for method, records in row["actual_deltas"].items():
+            for record in records:
                 lines.append(
-                    f"| {name} | {record['update_step']} | {record['coverage']} | "
+                    f"| {dataset}/{method}/production | "
+                    f"{record['update_step']} | {record['coverage']} | "
                     f"{format_number(record['parameter_delta_norm'])} | "
                     f"{format_number(record['forget_directional_derivative'])} | "
                     f"{format_number(record['retain_directional_derivative'])} |"
                 )
-        lines.append("")
+    for name, row in sorted(result["systems"].items()):
+        for record in row["actual_deltas"]:
+            lines.append(
+                f"| {name} | {record['update_step']} | {record['coverage']} | "
+                f"{format_number(record['parameter_delta_norm'])} | "
+                f"{format_number(record['forget_directional_derivative'])} | "
+                f"{format_number(record['retain_directional_derivative'])} |"
+            )
     return "\n".join(lines)
 
 
@@ -426,7 +456,7 @@ def write_outputs(result, markdown_path, json_path):
     json_path = Path(json_path)
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.parent.mkdir(parents=True, exist_ok=True)
-    markdown_path.write_text(render_markdown(result) + "\n")
+    markdown_path.write_text(render_markdown(result).rstrip() + "\n")
     json_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
 
 
