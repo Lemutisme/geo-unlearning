@@ -3,6 +3,8 @@ from dataclasses import dataclass
 
 import torch
 
+MAX_RELATIVE_RESIDUAL_ORTHOGONALITY = 1e-6
+
 
 def _require_finite_tensor(name: str, value: torch.Tensor) -> None:
     if not torch.isfinite(value).all().item():
@@ -89,28 +91,20 @@ def apply_uam_tensor(
 
 
 @dataclass(frozen=True)
-class ResidualGUDecision:
+class ResidualGUProjection:
     projection_coefficient: torch.Tensor
     residual_lambda: float
-    gate_dot: torch.Tensor
-    keep: bool
 
 
 def decide_residual_gu(
     residual_retain_dot: torch.Tensor,
-    residual_forget_dot: torch.Tensor,
-    forget_retain_dot: torch.Tensor,
     optimizer_retain_sq: torch.Tensor,
     residual_lambda: float,
-    sign_tau: float,
     eps: float,
-) -> ResidualGUDecision:
+) -> ResidualGUProjection:
     _require_finite_tensor_scalar("residual_retain_dot", residual_retain_dot)
-    _require_finite_tensor_scalar("residual_forget_dot", residual_forget_dot)
-    _require_finite_tensor_scalar("forget_retain_dot", forget_retain_dot)
     _require_finite_tensor_scalar("optimizer_retain_sq", optimizer_retain_sq)
     _require_finite_float("residual_lambda", residual_lambda)
-    _require_finite_float("sign_tau", sign_tau)
     _require_finite_float("eps", eps)
     if optimizer_retain_sq.item() == 0.0:
         raise RuntimeError("Residual-GU-UAM retain gradient has zero norm")
@@ -120,14 +114,70 @@ def decide_residual_gu(
         "Residual-GU-UAM projection coefficient",
         projection_coefficient,
     )
-    gate_dot = residual_forget_dot - projection_coefficient * forget_retain_dot
-    _require_finite_tensor_scalar("Residual-GU-UAM gate dot", gate_dot)
-    keep = bool(gate_dot.item() < -sign_tau)
-    return ResidualGUDecision(
+    return ResidualGUProjection(
         projection_coefficient=projection_coefficient,
         residual_lambda=residual_lambda,
-        gate_dot=gate_dot,
-        keep=keep,
+    )
+
+
+def project_residual_gu_tensor(
+    uam: torch.Tensor,
+    retain: torch.Tensor,
+    projection: ResidualGUProjection,
+) -> torch.Tensor:
+    _require_finite_tensor("uam", uam)
+    _require_finite_tensor("retain", retain)
+    retain_fp32 = retain.float()
+    residual = uam.float() - retain_fp32
+    _require_finite_tensor("Residual-GU-UAM residual", residual)
+    normal = residual - projection.projection_coefficient.float() * retain_fp32
+    _require_finite_tensor("Residual-GU-UAM normal", normal)
+    return normal
+
+
+@dataclass(frozen=True)
+class ResidualGUDecision:
+    projection: ResidualGUProjection
+    gate_dot: torch.Tensor
+    relative_orthogonality: torch.Tensor
+    sign_gate_passed: bool
+    orthogonality_safe: bool
+
+    @property
+    def projection_coefficient(self) -> torch.Tensor:
+        return self.projection.projection_coefficient
+
+    @property
+    def residual_lambda(self) -> float:
+        return self.projection.residual_lambda
+
+    @property
+    def keep(self) -> bool:
+        return self.sign_gate_passed and self.orthogonality_safe
+
+
+def decide_residual_gu_gate(
+    projection: ResidualGUProjection,
+    normal_forget_dot: torch.Tensor,
+    relative_orthogonality: torch.Tensor,
+    sign_tau: float,
+) -> ResidualGUDecision:
+    _require_finite_tensor_scalar("normal_forget_dot", normal_forget_dot)
+    _require_finite_tensor_scalar(
+        "relative_orthogonality",
+        relative_orthogonality,
+    )
+    _require_finite_float("sign_tau", sign_tau)
+    sign_gate_passed = bool(normal_forget_dot.item() < -sign_tau)
+    orthogonality_safe = bool(
+        relative_orthogonality.item() <= MAX_RELATIVE_RESIDUAL_ORTHOGONALITY
+    )
+    return ResidualGUDecision(
+        projection=projection,
+        gate_dot=normal_forget_dot,
+        relative_orthogonality=relative_orthogonality,
+        sign_gate_passed=sign_gate_passed,
+        orthogonality_safe=orthogonality_safe,
     )
 
 
@@ -136,17 +186,13 @@ def apply_residual_gu_tensor(
     retain: torch.Tensor,
     decision: ResidualGUDecision,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    _require_finite_tensor("uam", uam)
-    _require_finite_tensor("retain", retain)
     retain_fp32 = retain.float()
-    residual = uam.float() - retain_fp32
-    _require_finite_tensor("Residual-GU-UAM residual", residual)
-    normal = residual - decision.projection_coefficient.float() * retain_fp32
-    _require_finite_tensor("Residual-GU-UAM normal", normal)
-    correction = (
-        decision.residual_lambda * normal if decision.keep else torch.zeros_like(normal)
-    )
-    _require_finite_tensor("Residual-GU-UAM correction", correction)
-    final = retain_fp32 + correction
+    normal = project_residual_gu_tensor(uam, retain, decision.projection)
+    if decision.keep:
+        correction = decision.residual_lambda * normal
+        _require_finite_tensor("Residual-GU-UAM correction", correction)
+        final = retain_fp32 + correction
+    else:
+        final = retain_fp32.clone()
     _require_finite_tensor("final Residual-GU-UAM tensor", final)
     return final, normal

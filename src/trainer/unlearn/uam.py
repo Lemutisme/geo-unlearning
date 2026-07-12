@@ -14,7 +14,9 @@ from trainer.unlearn.uam_geometry import (
     apply_uam_tensor,
     decide_perturbation,
     decide_residual_gu,
+    decide_residual_gu_gate,
     decide_uam,
+    project_residual_gu_tensor,
 )
 from trainer.utils import compute_batch_nll
 
@@ -661,11 +663,16 @@ class UAMUnlearn(GeometricUnlearn):
                 self.projection_eps,
             )
 
+            scalar64 = torch.zeros((), dtype=torch.float64, device=scalar_device)
+            residual_projection = None
             residual_decision = None
+            diagnostic_retain_sq = torch.zeros_like(scalar64)
+            residual_normal_sq = torch.zeros_like(scalar64)
+            residual_normal_retain_dot = torch.zeros_like(scalar64)
+            residual_normal_forget_dot = torch.zeros_like(scalar64)
+            relative_residual_orthogonality = torch.zeros_like(scalar64)
             if self.uam_mode == "uam_gu":
                 residual_retain_dot = torch.zeros_like(forget_perturbed_retain_dot)
-                residual_forget_dot = torch.zeros_like(forget_perturbed_retain_dot)
-                forget_retain_dot = torch.zeros_like(forget_perturbed_retain_dot)
                 optimizer_retain_sq = torch.zeros_like(forget_perturbed_retain_dot)
 
                 for name, parameter in named_params:
@@ -705,27 +712,77 @@ class UAMUnlearn(GeometricUnlearn):
                     )
                     residual = uam - retain
                     residual_retain_dot.add_((residual * retain).sum())
-                    residual_forget_dot.add_((residual * forget).sum())
-                    forget_retain_dot.add_((forget * retain).sum())
                     optimizer_retain_sq.add_(retain.square().sum())
 
-                residual_decision = decide_residual_gu(
+                residual_projection = decide_residual_gu(
                     residual_retain_dot,
-                    residual_forget_dot,
-                    forget_retain_dot,
                     optimizer_retain_sq,
                     self.residual_lambda,
-                    self.sign_tau,
                     self.projection_eps,
                 )
 
-            diagnostic_retain_sq = torch.zeros_like(forget_perturbed_retain_dot)
-            uam_sq = torch.zeros_like(forget_perturbed_retain_dot)
-            final_sq = torch.zeros_like(forget_perturbed_retain_dot)
-            residual_normal_sq = torch.zeros_like(forget_perturbed_retain_dot)
-            residual_normal_retain_dot = torch.zeros_like(forget_perturbed_retain_dot)
-            residual_normal_forget_dot = torch.zeros_like(forget_perturbed_retain_dot)
-            retain_final_dot = torch.zeros_like(forget_perturbed_retain_dot)
+                for name, parameter in named_params:
+                    group = groups_by_parameter[id(parameter)]
+                    sqrt_denominator = adapter.sqrt_denominator(parameter, group)
+                    forget = self._mean_component_coordinate(
+                        "forget",
+                        name,
+                        parameter,
+                        sqrt_denominator,
+                    )
+                    retain = self._mean_component_coordinate(
+                        "retain",
+                        name,
+                        parameter,
+                        sqrt_denominator,
+                    )
+                    perturbed_retain = self._mean_component_coordinate(
+                        "perturbed_retain",
+                        name,
+                        parameter,
+                        sqrt_denominator,
+                    )
+                    if forget is None:
+                        forget = torch.zeros_like(parameter, dtype=torch.float32)
+                    if retain is None:
+                        retain = torch.zeros_like(parameter, dtype=torch.float32)
+                    if perturbed_retain is None:
+                        perturbed_retain = torch.zeros_like(
+                            parameter,
+                            dtype=torch.float32,
+                        )
+                    uam = apply_uam_tensor(
+                        perturbed_retain,
+                        forget,
+                        decision,
+                    )
+                    normal = project_residual_gu_tensor(
+                        uam,
+                        retain,
+                        residual_projection,
+                    )
+                    normal64 = normal.double()
+                    retain64 = retain.double()
+                    residual_normal_forget_dot.add_((normal64 * forget.double()).sum())
+                    residual_normal_retain_dot.add_((normal64 * retain64).sum())
+                    residual_normal_sq.add_(normal64.square().sum())
+                    diagnostic_retain_sq.add_(retain64.square().sum())
+
+                if residual_normal_sq.item() != 0.0:
+                    relative_residual_orthogonality = (
+                        residual_normal_retain_dot.abs()
+                        / (diagnostic_retain_sq.sqrt() * residual_normal_sq.sqrt())
+                    )
+                residual_decision = decide_residual_gu_gate(
+                    residual_projection,
+                    residual_normal_forget_dot,
+                    relative_residual_orthogonality,
+                    self.sign_tau,
+                )
+
+            uam_sq = torch.zeros_like(scalar64)
+            final_sq = torch.zeros_like(scalar64)
+            retain_final_dot = torch.zeros_like(scalar64)
 
             for name, parameter in named_params:
                 group = groups_by_parameter[id(parameter)]
@@ -772,13 +829,13 @@ class UAMUnlearn(GeometricUnlearn):
                         residual_decision,
                     )
 
-                diagnostic_retain_sq.add_(retain.square().sum())
-                uam_sq.add_(uam.square().sum())
-                final_sq.add_(final_coordinates.square().sum())
-                residual_normal_sq.add_(normal.square().sum())
-                residual_normal_retain_dot.add_((normal * retain).sum())
-                residual_normal_forget_dot.add_((normal * forget).sum())
-                retain_final_dot.add_((retain * final_coordinates).sum())
+                if residual_projection is None:
+                    diagnostic_retain_sq.add_(retain.double().square().sum())
+                uam_sq.add_(uam.double().square().sum())
+                final_sq.add_(final_coordinates.double().square().sum())
+                retain_final_dot.add_(
+                    (retain.double() * final_coordinates.double()).sum()
+                )
 
                 raw = self._from_adam_coordinates(
                     final_coordinates,
@@ -803,11 +860,14 @@ class UAMUnlearn(GeometricUnlearn):
 
             retain_norm = diagnostic_retain_sq.sqrt()
             residual_normal_norm = residual_normal_sq.sqrt()
-            relative_residual_orthogonality = residual_normal_retain_dot.abs() / (
-                retain_norm * residual_normal_norm + self.projection_eps
-            )
             residual_gate_kept = bool(
                 residual_decision is not None and residual_decision.keep
+            )
+            residual_sign_gate_passed = bool(
+                residual_decision is not None and residual_decision.sign_gate_passed
+            )
+            residual_orthogonality_safe = bool(
+                residual_decision is None or residual_decision.orthogonality_safe
             )
             residual_projection_coefficient = (
                 residual_decision.projection_coefficient
@@ -839,6 +899,8 @@ class UAMUnlearn(GeometricUnlearn):
                 "uam_coordinate_norm": float(uam_sq.sqrt().item()),
                 "final_coordinate_norm": float(final_sq.sqrt().item()),
                 "residual_normal_norm": float(residual_normal_norm.item()),
+                "residual_sign_gate_passed": residual_sign_gate_passed,
+                "residual_orthogonality_safe": residual_orthogonality_safe,
                 "residual_gate_kept": residual_gate_kept,
                 "relative_residual_orthogonality": float(
                     relative_residual_orthogonality.item()
@@ -893,6 +955,8 @@ class UAMUnlearn(GeometricUnlearn):
             raise ValueError("UAM residual_lambda must be non-negative and finite.")
         if self.sign_tau < 0.0 or not math.isfinite(self.sign_tau):
             raise ValueError("UAM sign_tau must be non-negative and finite.")
+        if self.projection_eps <= 0.0 or not math.isfinite(self.projection_eps):
+            raise ValueError("UAM projection_eps must be positive and finite.")
         if str(self.retain_loss_type).upper() != "NLL":
             raise NotImplementedError("UAM v1 requires NLL retain loss.")
 
