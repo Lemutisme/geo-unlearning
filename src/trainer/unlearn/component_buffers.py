@@ -5,18 +5,18 @@ import torch
 
 
 class ComponentGradientBuffers:
-    _COMPONENTS = {"forget", "retain"}
+    _COMPONENTS = {"forget", "retain", "perturbed_retain"}
 
     def __init__(self, device_mode: str, pin_memory: bool = True):
         if device_mode not in {"cpu", "parameter"}:
             raise ValueError(f"Unsupported component buffer device: {device_mode}")
         self.device_mode = device_mode
         self.pin_memory = bool(pin_memory)
-        self._data = {"forget": {}, "retain": {}}
+        self._data = {"forget": {}, "retain": {}, "perturbed_retain": {}}
 
     @property
     def empty(self) -> bool:
-        return not self._data["forget"] and not self._data["retain"]
+        return not any(self._data.values())
 
     @classmethod
     def _validate_component(cls, component: str) -> None:
@@ -91,13 +91,23 @@ class ComponentGradientBuffers:
             self._data[component].clear()
 
     @staticmethod
-    def required_host_bytes(selected_numel: int, headroom: float = 1.2) -> int:
+    def required_host_bytes(
+        selected_numel: int,
+        headroom: float = 1.2,
+        component_count: int = 2,
+    ) -> int:
         if selected_numel < 0:
             raise ValueError("selected_numel must be non-negative.")
         if headroom < 1.0 or not math.isfinite(headroom):
             raise ValueError("headroom must be finite and at least 1.0.")
+        if component_count <= 0:
+            raise ValueError("component_count must be positive.")
         return math.ceil(
-            2 * selected_numel * torch.finfo(torch.float32).bits / 8 * headroom
+            component_count
+            * selected_numel
+            * torch.finfo(torch.float32).bits
+            / 8
+            * headroom
         )
 
     @classmethod
@@ -106,8 +116,13 @@ class ComponentGradientBuffers:
         selected_numel: int,
         headroom: float = 1.2,
         available_bytes: int | None = None,
+        component_count: int = 2,
     ) -> int:
-        required = cls.required_host_bytes(selected_numel, headroom)
+        required = cls.required_host_bytes(
+            selected_numel,
+            headroom,
+            component_count,
+        )
         if available_bytes is None:
             available_bytes = os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
         if available_bytes < required:

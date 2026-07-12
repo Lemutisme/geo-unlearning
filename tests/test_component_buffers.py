@@ -60,6 +60,41 @@ def test_parameter_and_cpu_buffers_are_equivalent():
             )
 
 
+def test_perturbed_retain_buffer_is_independent_from_existing_components():
+    named_params = make_named_parameters()
+    buffers = ComponentGradientBuffers("cpu", pin_memory=False)
+
+    buffers.add(
+        "forget",
+        named_params,
+        [torch.full_like(parameter, 1.0) for _, parameter in named_params],
+    )
+    buffers.add(
+        "retain",
+        named_params,
+        [torch.full_like(parameter, 2.0) for _, parameter in named_params],
+    )
+    buffers.add(
+        "perturbed_retain",
+        named_params,
+        [torch.full_like(parameter, 3.0) for _, parameter in named_params],
+    )
+
+    assert buffers.has_component("perturbed_retain")
+    torch.testing.assert_close(
+        buffers.tensor("forget", "a", torch.device("cpu")),
+        torch.full((2,), 1.0),
+    )
+    torch.testing.assert_close(
+        buffers.tensor("retain", "a", torch.device("cpu")),
+        torch.full((2,), 2.0),
+    )
+    torch.testing.assert_close(
+        buffers.tensor("perturbed_retain", "a", torch.device("cpu")),
+        torch.full((2,), 3.0),
+    )
+
+
 def test_component_buffer_lifecycle_releases_entries():
     named_params = make_named_parameters()
     buffers = ComponentGradientBuffers("cpu", pin_memory=False)
@@ -77,11 +112,70 @@ def test_component_buffer_lifecycle_releases_entries():
     assert buffers.empty
 
 
+def test_perturbed_retain_buffer_lifecycle_is_independent():
+    named_params = make_named_parameters()
+    buffers = ComponentGradientBuffers("cpu", pin_memory=False)
+    gradients = [torch.ones_like(parameter) for _, parameter in named_params]
+    for component in ("forget", "retain", "perturbed_retain"):
+        buffers.add(component, named_params, gradients)
+
+    buffers.clear_component("perturbed_retain")
+
+    assert buffers.has_component("forget")
+    assert buffers.has_component("retain")
+    assert not buffers.has_component("perturbed_retain")
+    assert buffers.tensor("perturbed_retain", "a", torch.device("cpu")) is None
+
+    buffers.add("perturbed_retain", named_params, gradients)
+    buffers.clear()
+
+    assert buffers.empty
+    assert not buffers.has_component("forget")
+    assert not buffers.has_component("retain")
+    assert not buffers.has_component("perturbed_retain")
+
+
 def test_host_memory_requirement_accounts_for_two_fp32_components():
     selected_numel = 101
     expected = math.ceil(2 * selected_numel * 4 * 1.2)
 
     assert ComponentGradientBuffers.required_host_bytes(selected_numel) == expected
+
+
+def test_host_memory_requirement_accounts_for_three_fp32_components():
+    assert (
+        ComponentGradientBuffers.required_host_bytes(
+            selected_numel=10,
+            headroom=1,
+            component_count=3,
+        )
+        == 120
+    )
+
+
+def test_host_memory_requirement_defaults_to_two_components():
+    default = ComponentGradientBuffers.required_host_bytes(
+        selected_numel=101,
+        headroom=1.2,
+    )
+    explicit = ComponentGradientBuffers.required_host_bytes(
+        selected_numel=101,
+        headroom=1.2,
+        component_count=2,
+    )
+
+    assert default == explicit
+
+
+@pytest.mark.parametrize("component_count", [0, -1])
+def test_host_memory_requirement_rejects_non_positive_component_count(
+    component_count,
+):
+    with pytest.raises(ValueError, match="component_count must be positive"):
+        ComponentGradientBuffers.required_host_bytes(
+            selected_numel=10,
+            component_count=component_count,
+        )
 
 
 def test_host_memory_preflight_fails_one_byte_below_requirement():
@@ -106,6 +200,31 @@ def test_host_memory_preflight_accepts_exact_requirement():
         ComponentGradientBuffers.validate_host_memory(
             selected_numel,
             available_bytes=required,
+        )
+        == required
+    )
+
+
+def test_host_memory_preflight_uses_three_component_requirement():
+    required = 120
+
+    with pytest.raises(
+        RuntimeError,
+        match=f"requires {required} bytes, found {required - 1} bytes",
+    ):
+        ComponentGradientBuffers.validate_host_memory(
+            selected_numel=10,
+            headroom=1,
+            available_bytes=required - 1,
+            component_count=3,
+        )
+
+    assert (
+        ComponentGradientBuffers.validate_host_memory(
+            selected_numel=10,
+            headroom=1,
+            available_bytes=required,
+            component_count=3,
         )
         == required
     )
