@@ -198,6 +198,50 @@ def test_all_zero_perturbation_leaves_parameters_unchanged():
     assert torch.equal(parameter, original)
 
 
+@pytest.mark.parametrize("invalid_delta", [None, [1.0], 1.0])
+def test_explicit_non_tensor_delta_is_rejected_before_mutation(invalid_delta):
+    module = TwoParameterModule()
+    named_params = list(module.named_parameters())
+    originals = clone_parameters(named_params)
+    context = TemporaryParameterPerturbation(
+        named_params,
+        {
+            "first": torch.ones_like(module.first),
+            "second": invalid_delta,
+        },
+    )
+
+    with pytest.raises(TypeError, match="delta.*second.*tensor"):
+        with context:
+            pytest.fail("invalid deltas must fail before entering the body")
+
+    for name, parameter in module.named_parameters():
+        assert torch.equal(parameter, originals[name])
+    assert context.originals == {}
+    assert context._requested == {}
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_large_finite_perturbation_norms_and_ratio_do_not_overflow(dtype):
+    parameter = torch.nn.Parameter(torch.zeros(2, dtype=dtype))
+    original = parameter.detach().clone()
+    delta = torch.full((2,), 1e20, dtype=torch.float32)
+
+    with TemporaryParameterPerturbation(
+        [("weight", parameter)],
+        {"weight": delta},
+    ) as stats:
+        assert torch.isfinite(parameter).all()
+        assert math.isfinite(stats.requested_norm)
+        assert math.isfinite(stats.effective_norm)
+        assert math.isfinite(stats.ratio)
+        assert stats.requested_norm == pytest.approx(math.sqrt(2.0) * 1e20)
+        assert stats.effective_norm > 0.0
+        assert stats.ratio > 0.0
+
+    assert torch.equal(parameter, original)
+
+
 def validation_cases():
     return [
         pytest.param(

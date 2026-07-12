@@ -108,9 +108,9 @@ class TemporaryParameterPerturbation:
             if not torch.isfinite(parameter.detach()).all().item():
                 raise ValueError(f"UAM parameter {name!r} must be finite.")
 
-            delta = self.deltas.get(name)
-            if delta is None:
+            if name not in self.deltas:
                 continue
+            delta = self.deltas[name]
             if not isinstance(delta, torch.Tensor):
                 raise TypeError(f"UAM delta for parameter {name!r} must be a tensor.")
             if delta.shape != parameter.shape:
@@ -135,7 +135,12 @@ class TemporaryParameterPerturbation:
         for requested in self._requested.values():
             requested_norm = math.hypot(
                 requested_norm,
-                float(torch.linalg.vector_norm(requested).item()),
+                float(
+                    torch.linalg.vector_norm(
+                        requested,
+                        dtype=torch.float64,
+                    ).item()
+                ),
             )
         self.stats.requested_norm = requested_norm
 
@@ -208,7 +213,12 @@ class TemporaryParameterPerturbation:
 
                 effective_norm = math.hypot(
                     effective_norm,
-                    float(torch.linalg.vector_norm(effective).item()),
+                    float(
+                        torch.linalg.vector_norm(
+                            effective,
+                            dtype=torch.float64,
+                        ).item()
+                    ),
                 )
                 self._mutated_names.append(name)
                 parameter.copy_(perturbed)
