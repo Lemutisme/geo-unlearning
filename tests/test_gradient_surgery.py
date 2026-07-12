@@ -70,9 +70,10 @@ def test_global_surgery_differs_from_blockwise_projection():
     decision = decide_global_surgery("pcgrad", dot, retain_sq, 1e-12)
 
     global_a = apply_surgery_tensor(forget["a"], retain["a"], decision)
-    block_a = forget["a"] - (
-        (forget["a"] * retain["a"]).sum() / retain["a"].square().sum()
-    ) * retain["a"]
+    block_a = (
+        forget["a"]
+        - ((forget["a"] * retain["a"]).sum() / retain["a"].square().sum()) * retain["a"]
+    )
 
     assert global_a.item() == pytest.approx(1.5)
     assert block_a.item() == pytest.approx(0.0)

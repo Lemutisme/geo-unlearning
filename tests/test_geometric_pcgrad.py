@@ -85,9 +85,7 @@ def test_positive_dot_pcgrad_leaves_forget_component_unprojected(tmp_path):
         2.0
     )
     assert pcgrad_trainer.last_surgery_diagnostics["conflict"] is False
-    assert pcgrad_trainer.last_surgery_diagnostics[
-        "relative_pcgrad_gu_distance"
-    ] > 0.0
+    assert pcgrad_trainer.last_surgery_diagnostics["relative_pcgrad_gu_distance"] > 0.0
     assert not torch.equal(gu_gradients[0], pcgrad_gradients[0])
     expected_first_coordinate = 0.125 * 2.0 + 1.0
     assert pcgrad_gradients[0].reshape(-1)[0].item() == pytest.approx(
@@ -307,8 +305,6 @@ def test_trainer_persists_geometry_and_post_step_delta_without_checkpoint(tmp_pa
     ]
     assert records[0]["update_step"] == records[1]["update_step"] == 1
     assert records[1]["coverage"] == "full"
-    summary = json.loads(
-        diagnostics_path.with_suffix(".summary.json").read_text()
-    )
+    summary = json.loads(diagnostics_path.with_suffix(".summary.json").read_text())
     assert summary["surgery_count"] == 1
     assert not list(tmp_path.rglob("checkpoint-*"))

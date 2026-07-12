@@ -150,8 +150,7 @@ class ActualDeltaCallback(TrainerCallback):
                 stride = 1
 
         global_indices = (
-            start
-            + torch.arange(count, dtype=torch.int64) * stride
+            start + torch.arange(count, dtype=torch.int64) * stride
         ).remainder(total)
         global_indices = global_indices.sort().values
         result = {}

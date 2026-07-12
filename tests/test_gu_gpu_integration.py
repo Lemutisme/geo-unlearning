@@ -75,7 +75,9 @@ def make_llama(attention_implementation, state_dict=None):
 def component_losses_and_gradients(model, forget_batch, retain_batch):
     forget_loss = model(**forget_batch).loss
     retain_loss = model(**retain_batch).loss
-    parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
+    parameters = [
+        parameter for parameter in model.parameters() if parameter.requires_grad
+    ]
     forget_grads = torch.autograd.grad(
         forget_loss,
         parameters,

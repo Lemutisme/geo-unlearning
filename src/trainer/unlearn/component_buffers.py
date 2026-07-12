@@ -43,7 +43,9 @@ class ComponentGradientBuffers:
         named_params = list(named_params)
         gradients = list(gradients)
         if len(named_params) != len(gradients):
-            raise ValueError("Named parameters and gradients must have the same length.")
+            raise ValueError(
+                "Named parameters and gradients must have the same length."
+            )
 
         for (name, _), gradient in zip(named_params, gradients):
             if gradient is None:
@@ -94,7 +96,9 @@ class ComponentGradientBuffers:
             raise ValueError("selected_numel must be non-negative.")
         if headroom < 1.0 or not math.isfinite(headroom):
             raise ValueError("headroom must be finite and at least 1.0.")
-        return math.ceil(2 * selected_numel * torch.finfo(torch.float32).bits / 8 * headroom)
+        return math.ceil(
+            2 * selected_numel * torch.finfo(torch.float32).bits / 8 * headroom
+        )
 
     @classmethod
     def validate_host_memory(
@@ -105,9 +109,7 @@ class ComponentGradientBuffers:
     ) -> int:
         required = cls.required_host_bytes(selected_numel, headroom)
         if available_bytes is None:
-            available_bytes = os.sysconf("SC_AVPHYS_PAGES") * os.sysconf(
-                "SC_PAGE_SIZE"
-            )
+            available_bytes = os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
         if available_bytes < required:
             raise RuntimeError(
                 "Insufficient host memory for GU component buffers: "

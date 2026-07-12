@@ -112,10 +112,13 @@ class OptimizerGeometryAdapter:
         if beta2 < 0.0 or beta2 >= 1.0 or not math.isfinite(beta2):
             raise ValueError("Adam beta2 must be finite and in [0, 1).")
         bias_correction = 1.0 - beta2**step
-        v_hat = second_moment.to(
-            device=parameter.device,
-            dtype=torch.float32,
-        ) / bias_correction
+        v_hat = (
+            second_moment.to(
+                device=parameter.device,
+                dtype=torch.float32,
+            )
+            / bias_correction
+        )
         sqrt_denominator = (v_hat.sqrt() + float(group["eps"])).sqrt()
         if not torch.isfinite(sqrt_denominator).all():
             raise RuntimeError("Adam square-root denominator is non-finite.")
@@ -162,6 +165,5 @@ def make_optimizer_geometry_adapter(optimizer):
 
     class_name = optimizer.__class__.__name__
     raise NotImplementedError(
-        "Approximate Adam gradient surgery does not support optimizer "
-        f"{class_name}."
+        "Approximate Adam gradient surgery does not support optimizer " f"{class_name}."
     )

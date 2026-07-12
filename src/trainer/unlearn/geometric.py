@@ -131,18 +131,14 @@ class GeometricUnlearn(GradDiff):
             None,
         )
         self.diagnostics_writer = (
-            SurgeryDiagnosticsWriter(diagnostics_path)
-            if diagnostics_path
-            else None
+            SurgeryDiagnosticsWriter(diagnostics_path) if diagnostics_path else None
         )
         actual_delta_mode = str(
             getattr(self.geometric_config, "actual_delta_mode", "off")
         ).lower()
         self.actual_delta_callback = ActualDeltaCallback(
             mode=actual_delta_mode,
-            steps=list(
-                getattr(self.geometric_config, "actual_delta_steps", [1, 10])
-            ),
+            steps=list(getattr(self.geometric_config, "actual_delta_steps", [1, 10])),
             sample_elements=int(
                 getattr(
                     self.geometric_config,
@@ -348,9 +344,7 @@ class GeometricUnlearn(GradDiff):
                 retain,
                 gu_decision,
             )
-            final_coordinates = (
-                self.gamma * projected_forget + self.alpha * retain
-            )
+            final_coordinates = self.gamma * projected_forget + self.alpha * retain
             gu_final_coordinates = (
                 self.gamma * gu_projected_forget + self.alpha * retain
             )
@@ -378,15 +372,11 @@ class GeometricUnlearn(GradDiff):
         relative_residual = dot_after.abs() / (
             projected_norm * retain_norm + self.projection_eps
         )
-        cosine_before = dot_before / (
-            forget_norm * retain_norm + self.projection_eps
+        cosine_before = dot_before / (forget_norm * retain_norm + self.projection_eps)
+        cosine_after = dot_after / (projected_norm * retain_norm + self.projection_eps)
+        relative_surgery_magnitude = (decision.coefficient.abs() * retain_norm) / (
+            forget_norm + self.projection_eps
         )
-        cosine_after = dot_after / (
-            projected_norm * retain_norm + self.projection_eps
-        )
-        relative_surgery_magnitude = (
-            decision.coefficient.abs() * retain_norm
-        ) / (forget_norm + self.projection_eps)
         relative_pcgrad_gu_distance = None
         if self.gradient_surgery == "pcgrad":
             relative_pcgrad_gu_distance = float(
@@ -418,9 +408,7 @@ class GeometricUnlearn(GradDiff):
             "cosine_before": float(cosine_before.item()),
             "cosine_after": float(cosine_after.item()),
             "relative_orthogonality_residual": float(relative_residual.item()),
-            "relative_surgery_magnitude": float(
-                relative_surgery_magnitude.item()
-            ),
+            "relative_surgery_magnitude": float(relative_surgery_magnitude.item()),
             "relative_pcgrad_gu_distance": relative_pcgrad_gu_distance,
             "predicted_forget_directional_derivative": float(
                 (-forget_final_dot).item()
