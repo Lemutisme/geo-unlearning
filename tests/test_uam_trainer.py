@@ -11,7 +11,7 @@ from trainer import TRAINER_REGISTRY
 import trainer.unlearn.uam as uam_module
 from trainer.unlearn.component_buffers import ComponentGradientBuffers
 from trainer.unlearn.optimizer_geometry import TorchAdamGeometryAdapter
-from trainer.unlearn.uam import UAMUnlearn
+from trainer.unlearn.uam import RetainReplayBuffer, UAMUnlearn
 from trainer.utils import compute_batch_nll
 from tests.helpers import TinyCausalLM, nested_collator
 
@@ -179,7 +179,8 @@ def test_uam_initialization_resolves_values_and_empty_state(tmp_path):
     assert trainer.last_uam_diagnostics == {}
     assert trainer._uam_runtime_validated is False
     assert trainer._uam_microsteps == 0
-    assert trainer._retain_replay_batches == []
+    assert isinstance(trainer.replay_buffer, RetainReplayBuffer)
+    assert trainer.replay_buffer.empty
 
 
 def test_nll_forget_signal_is_mean_per_sequence_answer_nll(tmp_path):

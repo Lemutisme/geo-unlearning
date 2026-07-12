@@ -1,9 +1,249 @@
+import copy
 import math
+from dataclasses import dataclass
+
+import torch
 
 from trainer.unlearn.component_buffers import ComponentGradientBuffers
 from trainer.unlearn.geometric import GeometricUnlearn
 from trainer.unlearn.optimizer_geometry import make_optimizer_geometry_adapter
 from trainer.utils import compute_batch_nll
+
+
+class RetainReplayBuffer:
+    _SUPPORTED_DEVICE_MODES = {"cpu", "parameter"}
+
+    def __init__(self, device_mode):
+        if device_mode not in self._SUPPORTED_DEVICE_MODES:
+            raise ValueError(
+                "Retain replay device mode must be 'cpu' or 'parameter', "
+                f"got {device_mode!r}."
+            )
+        self.device_mode = device_mode
+        self._batches = []
+
+    @classmethod
+    def _map_tensors(cls, value, function):
+        if isinstance(value, dict):
+            return {
+                key: cls._map_tensors(item, function) for key, item in value.items()
+            }
+        if isinstance(value, list):
+            return [cls._map_tensors(item, function) for item in value]
+        if isinstance(value, tuple):
+            return tuple(cls._map_tensors(item, function) for item in value)
+        if isinstance(value, torch.Tensor):
+            return function(value)
+        return copy.deepcopy(value)
+
+    def append(self, inputs):
+        target_device = torch.device("cpu") if self.device_mode == "cpu" else None
+
+        def snapshot(tensor):
+            device = tensor.device if target_device is None else target_device
+            return tensor.detach().to(device).clone()
+
+        with torch.no_grad():
+            self._batches.append(self._map_tensors(inputs, snapshot))
+
+    def batches(self, device):
+        target_device = torch.device(device)
+        for batch in self._batches:
+            with torch.no_grad():
+                replayed = self._map_tensors(
+                    batch,
+                    lambda tensor: tensor.detach().to(target_device).clone(),
+                )
+            yield replayed
+
+    @property
+    def empty(self):
+        return not self._batches
+
+    def __len__(self):
+        return len(self._batches)
+
+    def clear(self):
+        self._batches.clear()
+
+
+@dataclass
+class PerturbationStats:
+    requested_norm: float = 0.0
+    effective_norm: float = 0.0
+
+    @property
+    def ratio(self):
+        if self.requested_norm == 0.0:
+            return 0.0
+        return self.effective_norm / self.requested_norm
+
+
+class TemporaryParameterPerturbation:
+    def __init__(self, named_params, deltas, storage_device="cpu"):
+        self.named_params = list(named_params)
+        self.deltas = dict(deltas)
+        self.storage_device = torch.device(storage_device)
+        self.originals = {}
+        self.stats = PerturbationStats()
+        self._requested = {}
+        self._mutated_names = []
+        self._state = "new"
+
+    def _validate_and_prepare(self):
+        parameters_by_name = {}
+        for name, parameter in self.named_params:
+            if name in parameters_by_name:
+                raise ValueError(f"Duplicate parameter name: {name!r}.")
+            if not isinstance(parameter, torch.Tensor):
+                raise TypeError(f"UAM parameter {name!r} must be a tensor.")
+            parameters_by_name[name] = parameter
+
+        unknown_names = set(self.deltas).difference(parameters_by_name)
+        if unknown_names:
+            unknown = ", ".join(repr(name) for name in sorted(unknown_names))
+            raise ValueError(f"UAM deltas contain unknown parameter names: {unknown}.")
+
+        for name, parameter in self.named_params:
+            if not torch.isfinite(parameter.detach()).all().item():
+                raise ValueError(f"UAM parameter {name!r} must be finite.")
+
+            delta = self.deltas.get(name)
+            if delta is None:
+                continue
+            if not isinstance(delta, torch.Tensor):
+                raise TypeError(f"UAM delta for parameter {name!r} must be a tensor.")
+            if delta.shape != parameter.shape:
+                raise ValueError(
+                    f"UAM delta shape for parameter {name!r} is {tuple(delta.shape)}, "
+                    f"expected {tuple(parameter.shape)}."
+                )
+            if not torch.isfinite(delta.detach()).all().item():
+                raise ValueError(f"UAM delta for parameter {name!r} must be finite.")
+
+            requested = delta.detach().to(
+                device=parameter.device,
+                dtype=torch.float32,
+            )
+            if not torch.isfinite(requested).all().item():
+                raise ValueError(
+                    f"UAM FP32 delta for parameter {name!r} must be finite."
+                )
+            self._requested[name] = requested
+
+        requested_norm = 0.0
+        for requested in self._requested.values():
+            requested_norm = math.hypot(
+                requested_norm,
+                float(torch.linalg.vector_norm(requested).item()),
+            )
+        self.stats.requested_norm = requested_norm
+
+    def _snapshot_originals(self):
+        for name, parameter in self.named_params:
+            if name in self._requested:
+                self.originals[name] = (
+                    parameter.detach().to(self.storage_device).clone()
+                )
+
+    @torch.no_grad()
+    def _restore_originals(self):
+        errors = []
+        mutated_names = set(self._mutated_names)
+        for name, parameter in self.named_params:
+            if name not in mutated_names:
+                continue
+            original = self.originals[name]
+            try:
+                expected = original.to(parameter.device)
+                parameter.copy_(expected)
+                if not torch.equal(parameter.detach(), expected):
+                    raise RuntimeError("restored value differs from snapshot")
+            except Exception as error:
+                errors.append((name, error))
+
+        if errors:
+            names = ", ".join(repr(name) for name, _ in errors)
+            raise RuntimeError(
+                f"UAM failed to restore parameter(s) {names} exactly."
+            ) from errors[0][1]
+
+    def _clear_snapshots(self):
+        self.originals.clear()
+        self._requested.clear()
+        self._mutated_names.clear()
+
+    @torch.no_grad()
+    def __enter__(self):
+        if self._state == "active":
+            raise RuntimeError("Temporary parameter perturbation is already active.")
+        if self._state != "new":
+            raise RuntimeError(
+                "Temporary parameter perturbation cannot be reused after exit."
+            )
+
+        self._state = "active"
+        try:
+            self._validate_and_prepare()
+            self._snapshot_originals()
+
+            effective_norm = 0.0
+            for name, parameter in self.named_params:
+                requested = self._requested.get(name)
+                if requested is None or not torch.count_nonzero(requested).item():
+                    continue
+
+                original_fp32 = parameter.detach().float()
+                perturbed = (original_fp32 + requested).to(parameter.dtype)
+                if not torch.isfinite(perturbed).all().item():
+                    raise RuntimeError(
+                        f"UAM perturbed parameter {name!r} is non-finite."
+                    )
+                effective = perturbed.float() - original_fp32
+                if not torch.isfinite(effective).all().item():
+                    raise RuntimeError(
+                        f"UAM effective perturbation for parameter {name!r} "
+                        "is non-finite."
+                    )
+
+                effective_norm = math.hypot(
+                    effective_norm,
+                    float(torch.linalg.vector_norm(effective).item()),
+                )
+                self._mutated_names.append(name)
+                parameter.copy_(perturbed)
+
+            self.stats.effective_norm = effective_norm
+            if self.stats.requested_norm > 0.0 and effective_norm == 0.0:
+                raise RuntimeError(
+                    "UAM perturbation rounded entirely to zero; increase rho "
+                    "or use FP32."
+                )
+            return self.stats
+        except BaseException as enter_error:
+            try:
+                self._restore_originals()
+            except BaseException as restoration_error:
+                raise restoration_error from enter_error
+            finally:
+                self._clear_snapshots()
+                self._state = "used"
+            raise
+
+    @torch.no_grad()
+    def __exit__(self, exc_type, exc_value, traceback):
+        if self._state != "active":
+            raise RuntimeError("Temporary parameter perturbation is not active.")
+        try:
+            self._restore_originals()
+        except BaseException as restoration_error:
+            if exc_value is not None:
+                raise restoration_error from exc_value
+            raise
+        finally:
+            self._clear_snapshots()
+            self._state = "used"
+        return False
 
 
 class UAMUnlearn(GeometricUnlearn):
@@ -41,7 +281,7 @@ class UAMUnlearn(GeometricUnlearn):
         self.last_uam_diagnostics = {}
         self._uam_runtime_validated = False
         self._uam_microsteps = 0
-        self._retain_replay_batches = []
+        self.replay_buffer = RetainReplayBuffer(self.replay_device)
 
     def _validate_simnpo_signal_config(self):
         if self.loss_name != "simnpo":
