@@ -74,6 +74,7 @@ mkdir -p "${arm_dir}/.hydra" "${local_arm_dir}"
 export CUDA_VISIBLE_DEVICES=${physical_gpu}
 export HF_HOME=${ORTHOGRAD_HF_HOME:-${HF_HOME:-/root/.cache/huggingface}}
 export TOKENIZERS_PARALLELISM=false
+export OMP_NUM_THREADS=${ORTHOGRAD_CPU_THREADS:-16}
 
 method_overrides=()
 case "${method}" in
@@ -116,6 +117,7 @@ component_buffer_device=parameter
 basis_device=parameter
 model_name=
 base_model=
+tokenizer_model=
 experiment=
 retain_logs_path=null
 summary_name=
@@ -129,6 +131,7 @@ case "${benchmark}" in
         holdout_split="holdout${suffix}"
         model_name=Llama-3.2-1B-Instruct
         base_model=open-unlearning/tofu_Llama-3.2-1B-Instruct_full
+        tokenizer_model=${base_model}
         experiment=unlearn/tofu/default
         retain_logs_path="${shared_root}/saves/eval/tofu_${model_name}_${retain_split}/TOFU_EVAL.json"
         summary_name=TOFU_SUMMARY.json
@@ -143,6 +146,7 @@ case "${benchmark}" in
         [[ "${benchmark}" == muse_books ]] && data_split=Books
         model_name=Llama-2-7b-hf
         base_model="muse-bench/MUSE-${data_split}_target"
+        tokenizer_model=NousResearch/Llama-2-7b-hf
         experiment=unlearn/muse/default
         retain_logs_path="${shared_root}/saves/eval/muse_${model_name}_${data_split}_retrain/MUSE_EVAL.json"
         summary_name=MUSE_SUMMARY.json
@@ -152,12 +156,14 @@ case "${benchmark}" in
         dataset_overrides=(
             eval=muse_mvp
             "data_split=${data_split}"
+            ++model.tokenizer_args.revision=8efe6c9b93655b934e27bd9981e3ec13e55aee9d
         )
         ;;
     wmdp_cyber|wmdp_bio)
         data_split=${benchmark#wmdp_}
         model_name=zephyr-7b-beta
         base_model=HuggingFaceH4/zephyr-7b-beta
+        tokenizer_model=${base_model}
         experiment=unlearn/wmdp/default
         summary_name=LMEval_SUMMARY.json
         per_device_batch_size=2
@@ -208,7 +214,7 @@ command=(
     "task_name=${task_name}"
     "model=${model_name}"
     "model.model_args.pretrained_model_name_or_path=${base_model}"
-    "model.tokenizer_args.pretrained_model_name_or_path=${base_model}"
+    "model.tokenizer_args.pretrained_model_name_or_path=${tokenizer_model}"
     model.model_args.attn_implementation=flash_attention_2
     model.model_args.torch_dtype=bfloat16
     "retain_logs_path=${retain_logs_path}"
@@ -221,7 +227,7 @@ command=(
     trainer.args.optim=paged_adamw_32bit
     trainer.args.adam_beta1=0.0
     trainer.args.weight_decay=0.0
-    trainer.args.warmup_epochs=0
+    ++trainer.args.warmup_epochs=0
     trainer.args.fp16=false
     trainer.args.bf16=true
     trainer.args.bf16_full_eval=true

@@ -134,6 +134,7 @@ def test_arm_has_matched_no_checkpoint_production_contract():
         "trainer.args.save_strategy=no",
     ):
         assert token in text
+    assert "++trainer.args.warmup_epochs=0" in text
     assert "profile_process_tree.py" in text
     assert "training_resource_profile.json" in text
     assert "process_resource_profile.json" in text
@@ -146,7 +147,13 @@ def test_arm_preserves_shared_hf_cache_and_uses_the_public_model_tokenizer():
         "export HF_HOME=${ORTHOGRAD_HF_HOME:-${HF_HOME:-/root/.cache/huggingface}}"
         in text
     )
-    assert '"model.tokenizer_args.pretrained_model_name_or_path=${base_model}"' in text
+    assert (
+        '"model.tokenizer_args.pretrained_model_name_or_path=${tokenizer_model}"'
+        in text
+    )
+    assert "tokenizer_model=NousResearch/Llama-2-7b-hf" in text
+    assert "8efe6c9b93655b934e27bd9981e3ec13e55aee9d" in text
+    assert "export OMP_NUM_THREADS=${ORTHOGRAD_CPU_THREADS:-16}" in text
 
 
 def test_arm_maps_four_methods_and_family_memory_contracts():
