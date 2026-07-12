@@ -135,6 +135,7 @@ def test_arm_has_matched_no_checkpoint_production_contract():
     ):
         assert token in text
     assert "++trainer.args.warmup_epochs=0" in text
+    assert '"++retain_logs_path=${retain_logs_path}"' in text
     assert "profile_process_tree.py" in text
     assert "training_resource_profile.json" in text
     assert "process_resource_profile.json" in text
