@@ -112,7 +112,7 @@ def test_arm_uses_approved_tofu_production_stack_and_smoke_rho_override():
         "trainer.args.per_device_train_batch_size=4",
         "trainer.args.gradient_accumulation_steps=8",
         "trainer.args.max_steps=10",
-        "trainer.args.learning_rate=1e-5",
+        "trainer.args.learning_rate=${smoke_learning_rate}",
         "trainer.args.optim=paged_adamw_32bit",
         "trainer.args.adam_beta1=0.0",
         "trainer.args.weight_decay=0.0",
@@ -132,6 +132,7 @@ def test_arm_uses_approved_tofu_production_stack_and_smoke_rho_override():
         "trainer.method_args.uam_config.perturbation_normalization=${normalization}",
         "trainer.method_args.uam_config.rho=${smoke_rho}",
         "smoke_rho=${UAM_SMOKE_RHO:-0.05}",
+        "smoke_learning_rate=${UAM_SMOKE_LEARNING_RATE:-1e-4}",
         "trainer.method_args.geometric_config.actual_delta_mode=full",
         "trainer.method_args.geometric_config.actual_delta_steps=[1,10]",
     ):
@@ -434,6 +435,7 @@ def test_arm_normalizes_eval_container_and_persists_only_allowlist(tmp_path):
     environment["FAKE_LOCAL_ARM"] = str(local_arm)
     argv_log = tmp_path / "accelerate.argv"
     environment["FAKE_ACCELERATE_ARGV"] = str(argv_log)
+    environment["UAM_SMOKE_LEARNING_RATE"] = "2e-4"
 
     result = subprocess.run(
         ["bash", str(ARM), "uam_nll", "0", "stamp"],
@@ -481,6 +483,7 @@ def test_arm_normalizes_eval_container_and_persists_only_allowlist(tmp_path):
         "retain_split=retain99",
         "holdout_split=holdout01",
         "trainer.args.max_steps=10",
+        "trainer.args.learning_rate=2e-4",
         "trainer.args.optim=paged_adamw_32bit",
         "trainer.method_args.geometric_config.actual_delta_mode=full",
         "trainer.method_args.geometric_config.actual_delta_steps=[1,10]",
@@ -549,6 +552,38 @@ def test_arm_rejects_nonpositive_nonfinite_or_boolean_rho_before_accelerate(
 
     assert result.returncode == 2
     assert "Invalid UAM_SMOKE_RHO" in result.stderr
+    assert not argv_log.exists()
+
+
+@pytest.mark.parametrize("learning_rate", ["0", "-0.0001", "nan", "inf", "true"])
+def test_arm_rejects_nonpositive_nonfinite_or_boolean_learning_rate_before_accelerate(
+    tmp_path,
+    learning_rate,
+):
+    matrix_root = tmp_path / "saves/exp/UAM_SMOKE/stamp"
+    matrix_root.mkdir(parents=True)
+    local_arm = tmp_path / "local/stamp/uam_nll"
+    fake_accelerate = _write_fake_accelerate(tmp_path)
+    argv_log = tmp_path / "accelerate.argv"
+    environment = os.environ.copy()
+    environment["CONDA_EXE"] = str(_write_fake_conda(tmp_path))
+    environment["PATH"] = f"{fake_accelerate.parent}:{environment['PATH']}"
+    environment["UAM_LOCAL_ROOT"] = str(tmp_path / "local")
+    environment["FAKE_LOCAL_ARM"] = str(local_arm)
+    environment["FAKE_ACCELERATE_ARGV"] = str(argv_log)
+    environment["UAM_SMOKE_LEARNING_RATE"] = learning_rate
+
+    result = subprocess.run(
+        ["bash", str(ARM), "uam_nll", "0", "stamp"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert "Invalid UAM_SMOKE_LEARNING_RATE" in result.stderr
     assert not argv_log.exists()
 
 

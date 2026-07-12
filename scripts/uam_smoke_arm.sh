@@ -242,6 +242,7 @@ if [[ ! "${arm_term_grace_seconds}" =~ ^[0-9]+$ ]]; then
 fi
 arm_term_grace_seconds=$((10#${arm_term_grace_seconds}))
 smoke_rho=${UAM_SMOKE_RHO:-0.05}
+smoke_learning_rate=${UAM_SMOKE_LEARNING_RATE:-1e-4}
 base_model=open-unlearning/tofu_Llama-3.2-1B-Instruct_full
 local_root=${UAM_LOCAL_ROOT:-/tmp/uam_smoke}
 local_arm_dir="${local_root}/${timestamp}/${method}"
@@ -268,6 +269,12 @@ if ! python -c \
     'import math, sys; value = float(sys.argv[1]); raise SystemExit(not (math.isfinite(value) and value > 0.0))' \
     "${smoke_rho}" 2>/dev/null; then
     echo "Invalid UAM_SMOKE_RHO: ${smoke_rho}" >&2
+    exit 2
+fi
+if ! python -c \
+    'import math, sys; value = float(sys.argv[1]); raise SystemExit(not (math.isfinite(value) and value > 0.0))' \
+    "${smoke_learning_rate}" 2>/dev/null; then
+    echo "Invalid UAM_SMOKE_LEARNING_RATE: ${smoke_learning_rate}" >&2
     exit 2
 fi
 
@@ -321,7 +328,7 @@ command=(
     trainer.args.per_device_train_batch_size=4
     trainer.args.gradient_accumulation_steps=8
     trainer.args.max_steps=10
-    trainer.args.learning_rate=1e-5
+    "trainer.args.learning_rate=${smoke_learning_rate}"
     trainer.args.optim=paged_adamw_32bit
     trainer.args.adam_beta1=0.0
     trainer.args.weight_decay=0.0
