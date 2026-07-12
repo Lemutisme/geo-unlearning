@@ -3,10 +3,14 @@ import json
 import math
 import os
 import tempfile
+from builtins import BaseExceptionGroup, ExceptionGroup
+from numbers import Real
 from pathlib import Path
 
 import torch
 from transformers import TrainerCallback
+
+from trainer.unlearn.component_buffers import ComponentGradientBuffers
 
 
 def _present_values(records, key):
@@ -80,10 +84,38 @@ class SurgeryDiagnosticsWriter:
         self.summary_path.parent.mkdir(parents=True, exist_ok=True)
 
     def write_step(self, record):
-        with self.path.open("a", encoding="utf-8") as handle:
-            json.dump(record, handle, sort_keys=True, allow_nan=False)
-            handle.write("\n")
-            handle.flush()
+        encoded_line = (
+            json.dumps(record, sort_keys=True, allow_nan=False) + "\n"
+        ).encode("utf-8")
+        with self.path.open("a+b", buffering=0) as handle:
+            handle.seek(0, os.SEEK_END)
+            original_length = handle.tell()
+            try:
+                written = handle.write(encoded_line)
+                if written != len(encoded_line):
+                    raise OSError(
+                        "Diagnostics JSONL append wrote fewer bytes than expected."
+                    )
+                handle.flush()
+                os.fsync(handle.fileno())
+            except BaseException as write_error:
+                try:
+                    os.ftruncate(handle.fileno(), original_length)
+                except BaseException as rollback_error:
+                    message = "Diagnostics append and byte rollback both failed."
+                    if isinstance(write_error, Exception) and isinstance(
+                        rollback_error,
+                        Exception,
+                    ):
+                        raise ExceptionGroup(
+                            message,
+                            [write_error, rollback_error],
+                        )
+                    raise BaseExceptionGroup(
+                        message,
+                        [write_error, rollback_error],
+                    )
+                raise
 
     def read_records(self):
         if not self.path.exists():
@@ -141,6 +173,7 @@ class ActualDeltaCallback(TrainerCallback):
         self._active_parameters = {}
         self._component_probes = {}
         self._snapshots = {}
+        self._pending_record = None
         self.last_record = None
 
     @staticmethod
@@ -188,17 +221,27 @@ class ActualDeltaCallback(TrainerCallback):
         component_buffers,
         component_scale=1.0,
     ):
+        self.cancel_step()
         if self.mode == "off" or int(update_step) not in self.steps:
             return
-        if isinstance(component_scale, bool):
-            raise ValueError("actual delta component_scale must be finite.")
+        if (
+            isinstance(component_scale, bool)
+            or not isinstance(component_scale, Real)
+            or not math.isfinite(component_scale)
+            or component_scale <= 0.0
+        ):
+            raise ValueError(
+                "actual delta component_scale must be a positive finite real."
+            )
         component_scale = float(component_scale)
-        if not math.isfinite(component_scale):
-            raise ValueError("actual delta component_scale must be finite.")
 
-        self.cancel_step()
         try:
             named_params = list(named_params)
+            if self.mode == "full":
+                ComponentGradientBuffers.validate_host_memory(
+                    sum(parameter.numel() for _, parameter in named_params),
+                    component_count=3,
+                )
             self._active_step = int(update_step)
             self._active_parameters = dict(named_params)
             indices_by_name = (
@@ -214,31 +257,38 @@ class ActualDeltaCallback(TrainerCallback):
                 if name not in indices_by_name:
                     continue
                 indices = indices_by_name[name]
-                forget = component_buffers.tensor(
-                    "forget",
-                    name,
-                    torch.device("cpu"),
-                )
-                retain = component_buffers.tensor(
-                    "retain",
-                    name,
-                    torch.device("cpu"),
-                )
-                if forget is None:
-                    forget = torch.zeros(parameter.shape, dtype=torch.float32)
-                else:
-                    forget = forget.detach().float().cpu()
-                if retain is None:
-                    retain = torch.zeros(parameter.shape, dtype=torch.float32)
-                else:
-                    retain = retain.detach().float().cpu()
-
                 if indices is not None:
-                    forget = forget.reshape(-1).index_select(0, indices)
-                    retain = retain.reshape(-1).index_select(0, indices)
+                    forget = self._sample_component_to_cpu(
+                        component_buffers,
+                        "forget",
+                        name,
+                        indices,
+                    )
+                    retain = self._sample_component_to_cpu(
+                        component_buffers,
+                        "retain",
+                        name,
+                        indices,
+                    )
                 else:
-                    forget = forget.reshape(-1).clone()
-                    retain = retain.reshape(-1).clone()
+                    forget = component_buffers.tensor(
+                        "forget",
+                        name,
+                        torch.device("cpu"),
+                    )
+                    retain = component_buffers.tensor(
+                        "retain",
+                        name,
+                        torch.device("cpu"),
+                    )
+                    if forget is None:
+                        forget = torch.zeros(parameter.numel(), dtype=torch.float32)
+                    else:
+                        forget = forget.reshape(-1).clone()
+                    if retain is None:
+                        retain = torch.zeros(parameter.numel(), dtype=torch.float32)
+                    else:
+                        retain = retain.reshape(-1).clone()
                 self._component_probes[name] = {
                     "indices": indices,
                     "forget": forget.mul_(component_scale),
@@ -247,6 +297,26 @@ class ActualDeltaCallback(TrainerCallback):
         except BaseException:
             self.cancel_step()
             raise
+
+    @staticmethod
+    def _to_cpu_probe(tensor):
+        return tensor.detach().to(device="cpu", dtype=torch.float32).clone()
+
+    def _sample_component_to_cpu(
+        self,
+        component_buffers,
+        component,
+        name,
+        indices,
+    ):
+        storage = component_buffers.storage_tensor(component, name)
+        if storage is None:
+            return torch.zeros(indices.numel(), dtype=torch.float32)
+        selected = storage.reshape(-1).index_select(
+            0,
+            indices.to(storage.device),
+        )
+        return self._to_cpu_probe(selected)
 
     @torch.no_grad()
     def on_pre_optimizer_step(self, args, state, control, **kwargs):
@@ -308,20 +378,36 @@ class ActualDeltaCallback(TrainerCallback):
             }
             self.last_record = record
             if self.writer is not None:
-                self.writer.write_step(record)
+                self._pending_record = record
         finally:
             self._clear_active()
         return control
 
+    def on_step_end(self, args, state, control, **kwargs):
+        if self._pending_record is None:
+            return control
+        try:
+            if self._pending_record["update_step"] != int(state.global_step):
+                raise RuntimeError(
+                    "Pending actual delta step does not match committed global step."
+                )
+            self.writer.write_step(self._pending_record)
+        finally:
+            self._pending_record = None
+        return control
+
     def on_train_end(self, args, state, control, **kwargs):
-        if self.writer is not None:
-            self.writer.write_summary()
-        self._clear_active()
+        try:
+            if self.writer is not None:
+                self.writer.write_summary()
+        finally:
+            self.cancel_step()
         return control
 
     def cancel_step(self):
         """Discard a prepared measurement without emitting a record."""
         self._clear_active()
+        self._pending_record = None
 
     def _clear_active(self):
         self._active_step = None

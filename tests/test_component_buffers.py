@@ -112,6 +112,21 @@ def test_component_buffer_lifecycle_releases_entries():
     assert buffers.empty
 
 
+def test_storage_tensor_exposes_existing_storage_without_device_copy():
+    named_params = make_named_parameters()
+    buffers = ComponentGradientBuffers("parameter", pin_memory=False)
+    buffers.add(
+        "forget",
+        named_params,
+        [torch.ones_like(parameter) for _, parameter in named_params],
+    )
+
+    storage = buffers.storage_tensor("forget", "a")
+
+    assert storage is buffers._data["forget"]["a"]
+    assert buffers.storage_tensor("retain", "a") is None
+
+
 def test_perturbed_retain_buffer_lifecycle_is_independent():
     named_params = make_named_parameters()
     buffers = ComponentGradientBuffers("cpu", pin_memory=False)

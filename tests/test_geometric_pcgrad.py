@@ -1,5 +1,6 @@
 import copy
 import json
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -213,6 +214,28 @@ def test_diagnostics_writer_appends_sorted_jsonl_and_atomically_summarizes(tmp_p
     assert summary["pcgrad_gu_distance_count"] == 1
 
 
+def test_diagnostics_writer_rolls_back_bytes_when_fsync_fails(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "transactional.jsonl"
+    writer = SurgeryDiagnosticsWriter(path)
+    first = {"record_type": "geometry", "update_step": 1}
+    writer.write_step(first)
+    original_bytes = path.read_bytes()
+
+    def fail_fsync(_descriptor):
+        raise OSError("forced diagnostics fsync failure")
+
+    monkeypatch.setattr("trainer.unlearn.gu_diagnostics.os.fsync", fail_fsync)
+
+    with pytest.raises(OSError, match="forced diagnostics fsync failure"):
+        writer.write_step({"record_type": "geometry", "update_step": 2})
+
+    assert path.read_bytes() == original_bytes
+    assert writer.read_records() == [first]
+
+
 def test_full_actual_delta_callback_reports_exact_component_derivatives():
     parameter = torch.nn.Parameter(torch.tensor([1.0, 2.0, 3.0]))
     named_params = [("weight", parameter)]
@@ -288,6 +311,108 @@ def test_sampled_actual_delta_indices_are_deterministic_and_labeled():
 
     assert callbacks[0].last_record["coverage"] == "sampled"
     assert callbacks[0].last_record["sampled_elements"] == 5
+
+
+def test_sampled_actual_delta_indexes_before_cpu_probe_transfer(monkeypatch):
+    parameter = torch.nn.Parameter(torch.zeros(1_000_003))
+    named_params = [("large", parameter)]
+    buffers = ComponentGradientBuffers("parameter", pin_memory=False)
+    buffers.add("forget", named_params, [torch.ones_like(parameter)])
+    callback = ActualDeltaCallback(mode="sampled", steps=[1], sample_elements=7)
+    cpu_transfer_sizes = []
+
+    def track_cpu_probe(tensor):
+        cpu_transfer_sizes.append(tensor.numel())
+        return tensor.detach().float().cpu().clone()
+
+    monkeypatch.setattr(
+        callback,
+        "_to_cpu_probe",
+        track_cpu_probe,
+        raising=False,
+    )
+
+    callback.prepare_step(1, named_params, buffers)
+
+    assert cpu_transfer_sizes
+    assert sum(cpu_transfer_sizes) <= 7
+    assert callback._component_probes["large"]["forget"].numel() == 7
+    assert callback._component_probes["large"]["retain"].numel() == 7
+
+
+def test_full_actual_delta_preflights_three_fp32_host_copies(monkeypatch):
+    named_params = [
+        ("first", torch.nn.Parameter(torch.zeros(8))),
+        ("second", torch.nn.Parameter(torch.zeros(12))),
+    ]
+    buffers = ComponentGradientBuffers("parameter", pin_memory=False)
+    buffers.add(
+        "forget",
+        named_params,
+        [torch.ones_like(parameter) for _, parameter in named_params],
+    )
+    buffers.add(
+        "retain",
+        named_params,
+        [torch.ones_like(parameter) for _, parameter in named_params],
+    )
+    callback = ActualDeltaCallback(mode="full", steps=[1])
+    preflights = []
+
+    def capture_preflight(selected_numel, **kwargs):
+        preflights.append((selected_numel, kwargs))
+        return 0
+
+    monkeypatch.setattr(
+        ComponentGradientBuffers,
+        "validate_host_memory",
+        staticmethod(capture_preflight),
+    )
+
+    callback.prepare_step(1, named_params, buffers)
+
+    assert preflights == [(20, {"component_count": 3})]
+
+
+def test_prepare_unselected_step_cancels_prior_active_measurement():
+    parameter = torch.nn.Parameter(torch.ones(3))
+    named_params = [("weight", parameter)]
+    buffers = ComponentGradientBuffers("parameter", pin_memory=False)
+    buffers.add("forget", named_params, [torch.ones_like(parameter)])
+    buffers.add("retain", named_params, [torch.ones_like(parameter)])
+    callback = ActualDeltaCallback(mode="full", steps=[1])
+    callback.prepare_step(1, named_params, buffers)
+    assert callback._active_step == 1
+
+    callback.prepare_step(2, named_params, buffers, component_scale="not-real")
+
+    assert callback._active_step is None
+    assert callback._component_probes == {}
+
+
+@pytest.mark.parametrize(
+    "component_scale",
+    [False, 0.0, -1.0, math.nan, math.inf, -math.inf, "1.0"],
+)
+def test_prepare_selected_step_rejects_nonpositive_or_nonreal_scale(
+    component_scale,
+):
+    parameter = torch.nn.Parameter(torch.ones(3))
+    named_params = [("weight", parameter)]
+    buffers = ComponentGradientBuffers("parameter", pin_memory=False)
+    buffers.add("forget", named_params, [torch.ones_like(parameter)])
+    callback = ActualDeltaCallback(mode="full", steps=[1])
+
+    with pytest.raises(ValueError, match="positive finite real"):
+        callback.prepare_step(
+            1,
+            named_params,
+            buffers,
+            component_scale=component_scale,
+        )
+
+    assert callback._active_step is None
+    assert callback._component_probes == {}
 
 
 def test_trainer_persists_geometry_and_post_step_delta_without_checkpoint(tmp_path):

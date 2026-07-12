@@ -78,6 +78,11 @@ class ComponentGradientBuffers:
             non_blocking=tensor.device.type == "cpu" and tensor.is_pinned(),
         )
 
+    def storage_tensor(self, component, name):
+        """Return the buffer's existing tensor for read-only indexed access."""
+        self._validate_component(component)
+        return self._data[component].get(name)
+
     def has_component(self, component) -> bool:
         self._validate_component(component)
         return bool(self._data[component])

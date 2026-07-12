@@ -299,12 +299,42 @@ class TemporaryParameterPerturbation:
 
 
 class UAMUnlearn(GeometricUnlearn):
+    _FP64_REDUCTION_CHUNK_SIZE = 1_048_576
+
     @staticmethod
     def _config_float(config, field):
         value = getattr(config, field)
         if isinstance(value, bool):
             raise ValueError(f"UAM {field} must be numeric, not bool.")
         return float(value)
+
+    @staticmethod
+    def _chunked_fp64_dot(
+        left,
+        right=None,
+        chunk_size=_FP64_REDUCTION_CHUNK_SIZE,
+    ):
+        if (
+            not isinstance(chunk_size, int)
+            or isinstance(chunk_size, bool)
+            or chunk_size <= 0
+        ):
+            raise ValueError("FP64 reduction chunk_size must be a positive integer.")
+        if right is not None and right.shape != left.shape:
+            raise ValueError("FP64 reduction tensors must have matching shapes.")
+
+        left_flat = left.reshape(-1)
+        right_flat = None if right is None else right.reshape(-1)
+        total = torch.zeros((), dtype=torch.float64, device=left.device)
+        for start in range(0, left_flat.numel(), chunk_size):
+            stop = min(start + chunk_size, left_flat.numel())
+            left_chunk = left_flat[start:stop].to(dtype=torch.float64)
+            if right_flat is None:
+                total.add_(left_chunk.square().sum())
+            else:
+                right_chunk = right_flat[start:stop].to(dtype=torch.float64)
+                total.add_((left_chunk * right_chunk).sum())
+        return total
 
     def __init__(self, *args, **kwargs):
         self.uam_config = kwargs.pop("uam_config")
@@ -785,21 +815,25 @@ class UAMUnlearn(GeometricUnlearn):
                         retain,
                         residual_projection,
                     )
-                    tangent64 = normal.double()
-                    retain64 = retain.double()
-                    projected_normal64 = (
-                        residual_projection.projection_coefficient.double() * retain64
+                    residual_normal_sq.add_(self._chunked_fp64_dot(normal))
+                    residual_normal_forget_dot.add_(
+                        self._chunked_fp64_dot(normal, forget)
                     )
-                    residual_tangent_sq.add_(tangent64.square().sum())
-                    residual_normal_sq.add_(projected_normal64.square().sum())
-                    residual_normal_forget_dot.add_((tangent64 * forget.double()).sum())
-                    residual_normal_retain_dot.add_((tangent64 * retain64).sum())
-                    diagnostic_retain_sq.add_(retain64.square().sum())
+                    residual_normal_retain_dot.add_(
+                        self._chunked_fp64_dot(normal, retain)
+                    )
+                    diagnostic_retain_sq.add_(self._chunked_fp64_dot(retain))
 
-                if residual_tangent_sq.item() != 0.0:
+                residual_tangent_sq.copy_(
+                    residual_projection.projection_coefficient.to(
+                        dtype=torch.float64
+                    ).square()
+                    * diagnostic_retain_sq
+                )
+                if residual_normal_sq.item() != 0.0:
                     relative_residual_orthogonality = (
                         residual_normal_retain_dot.abs()
-                        / (diagnostic_retain_sq.sqrt() * residual_tangent_sq.sqrt())
+                        / (diagnostic_retain_sq.sqrt() * residual_normal_sq.sqrt())
                     )
                 residual_decision = decide_residual_gu_gate(
                     residual_projection,
@@ -859,15 +893,11 @@ class UAMUnlearn(GeometricUnlearn):
                     )
 
                 if residual_projection is None:
-                    diagnostic_retain_sq.add_(retain.double().square().sum())
-                uam_sq.add_(uam.double().square().sum())
-                final_sq.add_(final_coordinates.double().square().sum())
-                forget_final_dot.add_(
-                    (forget.double() * final_coordinates.double()).sum()
-                )
-                retain_final_dot.add_(
-                    (retain.double() * final_coordinates.double()).sum()
-                )
+                    diagnostic_retain_sq.add_(self._chunked_fp64_dot(retain))
+                uam_sq.add_(self._chunked_fp64_dot(uam))
+                final_sq.add_(self._chunked_fp64_dot(final_coordinates))
+                forget_final_dot.add_(self._chunked_fp64_dot(forget, final_coordinates))
+                retain_final_dot.add_(self._chunked_fp64_dot(retain, final_coordinates))
 
                 raw = self._from_adam_coordinates(
                     final_coordinates,

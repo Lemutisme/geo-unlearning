@@ -1475,6 +1475,39 @@ def make_sparse_selected_tensors(named_params, blocks):
     return tensors
 
 
+def test_chunked_fp64_dot_bounds_conversions_across_chunk_boundaries(monkeypatch):
+    left = torch.tensor(
+        [1e10, 1.0, -1e10, 3.0, -4.0, 5.0, 6.0, -7.0],
+        dtype=torch.float32,
+    )
+    right = torch.tensor(
+        [1.0, -2.0, 1.0, 0.5, -0.25, 2.0, -3.0, 4.0],
+        dtype=torch.float32,
+    )
+    expected_dot = (left.to(torch.float64) * right.to(torch.float64)).sum()
+    expected_norm_sq = left.to(torch.float64).square().sum()
+    real_to = torch.Tensor.to
+    fp64_conversion_sizes = []
+
+    def track_to(tensor, *args, **kwargs):
+        dtype = kwargs.get("dtype")
+        if args and isinstance(args[0], torch.dtype):
+            dtype = args[0]
+        if dtype is torch.float64:
+            fp64_conversion_sizes.append(tensor.numel())
+        return real_to(tensor, *args, **kwargs)
+
+    monkeypatch.setattr(torch.Tensor, "to", track_to)
+
+    actual_dot = UAMUnlearn._chunked_fp64_dot(left, right, chunk_size=3)
+    actual_norm_sq = UAMUnlearn._chunked_fp64_dot(left, chunk_size=3)
+
+    torch.testing.assert_close(actual_dot, expected_dot)
+    torch.testing.assert_close(actual_norm_sq, expected_norm_sq)
+    assert fp64_conversion_sizes
+    assert max(fp64_conversion_sizes) <= 3
+
+
 def test_finalize_pure_uam_matches_global_optimizer_coordinate_calculation(
     tmp_path,
     monkeypatch,
@@ -1724,18 +1757,18 @@ def test_finalize_residual_gu_uses_one_global_projection_and_keeps_safe_normal(
     assert diagnostics["mode"] == "uam_gu"
     assert diagnostics["residual_gate_kept"] is True
     assert diagnostics["residual_projection_coefficient"] == pytest.approx(13.0 / 5.0)
-    expected_tangent_norm = sum(
+    expected_safe_normal_norm = sum(
         tensor.double().square().sum() for tensor in expected_normal
     ).sqrt()
-    expected_normal_norm = (
+    expected_retain_tangent_norm = (
         expected_projection.double().abs()
         * sum(tensor.double().square().sum() for tensor in retain).sqrt()
     )
-    assert diagnostics["residual_tangent_norm"] == pytest.approx(
-        expected_tangent_norm.item()
-    )
     assert diagnostics["residual_normal_norm"] == pytest.approx(
-        expected_normal_norm.item()
+        expected_safe_normal_norm.item()
+    )
+    assert diagnostics["residual_tangent_norm"] == pytest.approx(
+        expected_retain_tangent_norm.item()
     )
     assert diagnostics["relative_residual_orthogonality"] < 1e-6
     assert diagnostics["residual_forget_gate_dot"] == pytest.approx(-44.2)
@@ -3204,3 +3237,101 @@ def test_uam_multiple_updates_alternate_geometry_and_delta_and_summarize(tmp_pat
     assert summary["surgery_count"] == 2
     assert math.isfinite(summary["mean_effective_perturbation_ratio"])
     assert math.isfinite(summary["residual_gate_rate"])
+
+
+def test_actual_delta_writer_failure_occurs_after_optimizer_state_commit(
+    tmp_path,
+    monkeypatch,
+):
+    diagnostics_path = tmp_path / "post-step" / "steps.jsonl"
+    dataset = unbatch_uam_dataset(
+        make_unlearn_batch(batch_size=2, sequence_length=6, seed=2801)
+    )
+    trainer, model = make_uam_trainer(
+        tmp_path / "post-step" / "trainer",
+        train_dataset=dataset,
+        per_device_train_batch_size=2,
+        max_steps=1,
+        diagnostics_path=str(diagnostics_path),
+        actual_delta_mode="full",
+        actual_delta_steps=[1],
+    )
+    initial = [parameter.detach().clone() for parameter in model.parameters()]
+    real_write = trainer.diagnostics_writer.write_step
+
+    def fail_actual_delta(record):
+        if record["record_type"] == "actual_delta":
+            raise RuntimeError("forced committed actual-delta writer failure")
+        real_write(record)
+
+    monkeypatch.setattr(trainer.diagnostics_writer, "write_step", fail_actual_delta)
+
+    with pytest.raises(
+        RuntimeError,
+        match="forced committed actual-delta writer failure",
+    ):
+        trainer.train()
+
+    assert trainer.state.global_step == 1
+    assert trainer.uam_calls == trainer.replay_calls == 1
+    assert any(
+        not torch.equal(before, after)
+        for before, after in zip(initial, model.parameters(), strict=True)
+    )
+    assert trainer.actual_delta_callback.last_record["record_type"] == "actual_delta"
+    assert trainer.actual_delta_callback._active_step is None
+    assert trainer.actual_delta_callback._pending_record is None
+    assert [record["record_type"] for record in read_jsonl(diagnostics_path)] == [
+        "uam_geometry"
+    ]
+
+
+def test_geometry_fsync_failure_rolls_back_file_and_uam_transaction(
+    tmp_path,
+    monkeypatch,
+):
+    diagnostics_path = tmp_path / "geometry-fsync" / "steps.jsonl"
+    dataset = unbatch_uam_dataset(
+        make_unlearn_batch(batch_size=2, sequence_length=6, seed=2901)
+    )
+    trainer, model = make_uam_trainer(
+        tmp_path / "geometry-fsync" / "trainer",
+        train_dataset=dataset,
+        per_device_train_batch_size=2,
+        max_steps=1,
+        diagnostics_path=str(diagnostics_path),
+        actual_delta_mode="full",
+        actual_delta_steps=[1],
+    )
+    initial = [parameter.detach().clone() for parameter in model.parameters()]
+    previous_uam = {"mode": "previous-uam", "update_step": 0}
+    previous_surgery = {"mode": "previous-surgery", "update_step": 0}
+    trainer.last_uam_diagnostics = previous_uam
+    trainer.last_surgery_diagnostics = previous_surgery
+
+    def fail_fsync(_descriptor):
+        raise OSError("forced pre-optimizer geometry fsync failure")
+
+    monkeypatch.setattr("trainer.unlearn.gu_diagnostics.os.fsync", fail_fsync)
+
+    with pytest.raises(
+        OSError,
+        match="forced pre-optimizer geometry fsync failure",
+    ):
+        trainer.train()
+
+    assert trainer.state.global_step == 0
+    assert trainer.uam_calls == trainer.replay_calls == 0
+    assert trainer.last_uam_diagnostics is previous_uam
+    assert trainer.last_surgery_diagnostics is previous_surgery
+    assert all(
+        torch.equal(before, after)
+        for before, after in zip(initial, model.parameters(), strict=True)
+    )
+    assert trainer.diagnostics_writer.read_records() == []
+    assert trainer.actual_delta_callback._active_step is None
+    assert trainer.actual_delta_callback._pending_record is None
+    assert trainer.component_buffers.empty
+    assert trainer.replay_buffer.empty
+    assert trainer._uam_microsteps == 0
+    assert all(parameter.grad is None for parameter in model.parameters())
