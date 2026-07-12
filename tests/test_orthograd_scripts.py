@@ -7,6 +7,7 @@ import sys
 
 import pytest
 import yaml
+from hydra import compose, initialize_config_dir
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -162,6 +163,28 @@ def test_arm_maps_four_methods_and_family_memory_contracts():
     assert "geometric_config.component_buffer_device=cpu" in text
     assert "per_device_batch_size=4" in text
     assert "per_device_batch_size=2" in text
+
+
+def test_muse_mvp_eval_contains_only_the_four_selected_native_metrics():
+    text = ARM.read_text()
+    assert "eval=muse_mvp" in text
+
+    with initialize_config_dir(version_base=None, config_dir=str(ROOT / "configs")):
+        config = compose(
+            config_name="unlearn.yaml",
+            overrides=[
+                "experiment=unlearn/muse/default",
+                "eval=muse_mvp",
+                "task_name=orthograd_muse_metric_test",
+            ],
+        )
+
+    assert set(config.eval.muse.metrics) == {
+        "forget_knowmem_ROUGE",
+        "forget_verbmem_ROUGE",
+        "privleak",
+        "retain_knowmem_ROUGE",
+    }
 
 
 def test_matrix_contains_seven_benchmarks_and_four_sequential_methods():

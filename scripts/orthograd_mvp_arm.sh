@@ -149,7 +149,10 @@ case "${benchmark}" in
         per_device_batch_size=2
         component_buffer_device=cpu
         basis_device=cpu
-        dataset_overrides=("data_split=${data_split}")
+        dataset_overrides=(
+            eval=muse_mvp
+            "data_split=${data_split}"
+        )
         ;;
     wmdp_cyber|wmdp_bio)
         data_split=${benchmark#wmdp_}
