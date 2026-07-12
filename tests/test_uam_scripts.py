@@ -284,11 +284,21 @@ def _write_fake_conda(tmp_path):
     return executable
 
 
-def _write_failing_conda_spy(tmp_path):
+def _write_conda_spy(tmp_path):
     marker = tmp_path / "conda-spy-called"
+    conda_root = tmp_path / "conda-spy-root"
+    profile = conda_root / "etc/profile.d/conda.sh"
+    profile.parent.mkdir(parents=True)
+    profile.write_text("conda() { return 0; }\n")
     executable = tmp_path / "conda-spy"
     executable.write_text(
-        "#!/usr/bin/env bash\n" f"printf 'called\\n' >> '{marker}'\n" "exit 99\n"
+        "#!/usr/bin/env bash\n"
+        f"printf 'called\\n' >> '{marker}'\n"
+        "if [[ $1 == info && $2 == --base ]]; then\n"
+        f"    printf '%s\\n' '{conda_root}'\n"
+        "    exit 0\n"
+        "fi\n"
+        "exit 1\n"
     )
     executable.chmod(0o755)
     return executable, marker
@@ -489,24 +499,36 @@ def test_matrix_fail_fast_waits_active_and_schedules_no_new_arm(tmp_path):
 
 
 def test_matrix_rejects_unsafe_timestamp_before_conda_or_path_writes(tmp_path):
-    conda_spy, marker = _write_failing_conda_spy(tmp_path)
+    conda_spy, marker = _write_conda_spy(tmp_path)
     environment = os.environ.copy()
     environment["CONDA_EXE"] = str(conda_spy)
+    escape_name = f"uam-matrix-traversal-{tmp_path.name}"
+    unsafe_timestamp = f"../../{escape_name}"
+    escaped_manifest = (
+        tmp_path / "saves/exp/UAM_SMOKE" / unsafe_timestamp / "RUN_MANIFEST.tsv"
+    ).resolve()
+    escaped_root = escaped_manifest.parent
+    assert escaped_root.parent == (tmp_path / "saves").resolve()
+    if escaped_root.exists():
+        shutil.rmtree(escaped_root)
 
-    result = subprocess.run(
-        ["bash", str(MATRIX), "../../escape"],
-        cwd=tmp_path,
-        env=environment,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    try:
+        result = subprocess.run(
+            ["bash", str(MATRIX), unsafe_timestamp],
+            cwd=tmp_path,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
 
-    escaped_manifest = tmp_path / "saves/exp/escape/RUN_MANIFEST.tsv"
-    assert result.returncode == 2
-    assert "Invalid timestamp" in result.stderr
-    assert not marker.exists()
-    assert not escaped_manifest.exists()
+        assert result.returncode == 2
+        assert "Invalid timestamp" in result.stderr
+        assert not marker.exists()
+        assert not escaped_manifest.exists()
+    finally:
+        if escaped_root.exists():
+            shutil.rmtree(escaped_root)
 
 
 def test_matrix_observes_fast_slot_one_failure_before_scheduling_third_arm(tmp_path):
