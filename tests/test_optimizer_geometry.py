@@ -147,7 +147,7 @@ def test_unsupported_optimizer_names_its_class():
 
 
 class FakePagedAdamW:
-    __module__ = "bitsandbytes.optim.fake"
+    __module__ = "bitsandbytes.optim.adamw"
 
     def __init__(self, parameter, *, optim_bits=32, is_paged=True):
         self.is_paged = is_paged
@@ -166,6 +166,10 @@ class FakePagedAdamW:
 
     def prefetch_state(self, parameter):
         self.prefetched.append(parameter)
+
+
+class FakePagedLion(FakePagedAdamW):
+    __module__ = "bitsandbytes.optim.lion"
 
 
 def test_paged_adamw32_reads_state2_after_prefetch():
@@ -209,6 +213,29 @@ def test_paged_uint8_state_is_rejected_as_paged_adamw8():
 
     with pytest.raises(NotImplementedError, match="PagedAdamW8"):
         adapter.sqrt_denominator(parameter, optimizer.param_groups[0])
+
+
+@pytest.mark.parametrize("state_dtype", [torch.float16, torch.bfloat16])
+def test_paged_adamw32_rejects_non_fp32_state2(state_dtype):
+    parameter = torch.nn.Parameter(torch.tensor([1.0, 2.0]))
+    optimizer = FakePagedAdamW(parameter)
+    optimizer.state[parameter] = {
+        "step": 1,
+        "state1": torch.zeros(2, dtype=state_dtype),
+        "state2": torch.zeros(2, dtype=state_dtype),
+    }
+    adapter = make_optimizer_geometry_adapter(optimizer)
+
+    with pytest.raises(NotImplementedError, match="FP32 state2"):
+        adapter.sqrt_denominator(parameter, optimizer.param_groups[0])
+
+
+def test_paged_non_adamw_optimizer_is_rejected_before_training():
+    parameter = torch.nn.Parameter(torch.ones(1))
+    optimizer = FakePagedLion(parameter)
+
+    with pytest.raises(NotImplementedError, match="FakePagedLion"):
+        make_optimizer_geometry_adapter(optimizer)
 
 
 @pytest.mark.parametrize(

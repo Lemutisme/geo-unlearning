@@ -146,6 +146,10 @@ class PagedAdamW32GeometryAdapter(OptimizerGeometryAdapter):
             raise NotImplementedError(
                 "PagedAdamW8 optimizer state is unsupported; use PagedAdamW32."
             )
+        if state2 is not None and state2.dtype != torch.float32:
+            raise NotImplementedError(
+                f"PagedAdamW32 requires FP32 state2; received {state2.dtype}."
+            )
         return super()._initialized_second_moment(parameter)
 
 
@@ -157,7 +161,7 @@ def make_optimizer_geometry_adapter(optimizer):
     module = optimizer.__class__.__module__
     optim_bits = getattr(getattr(optimizer, "args", None), "optim_bits", None)
     if (
-        module.startswith("bitsandbytes")
+        module.startswith("bitsandbytes.optim.adamw")
         and bool(getattr(optimizer, "is_paged", False))
         and int(optim_bits or 0) == 32
     ):
