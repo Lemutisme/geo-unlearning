@@ -158,6 +158,35 @@ def test_uam_initialization_resolves_values_and_empty_state(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "field",
+    ["rho", "reflection_gamma", "residual_lambda", "sign_tau"],
+)
+@pytest.mark.parametrize("value", [True, False])
+def test_boolean_numeric_config_is_rejected_before_coercion(
+    tmp_path,
+    field,
+    value,
+):
+    with pytest.raises(ValueError, match=field):
+        make_uam_trainer(tmp_path, **{field: value})
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("rho", 1),
+        ("reflection_gamma", 0),
+        ("residual_lambda", 0.5),
+        ("sign_tau", 0),
+    ],
+)
+def test_normal_numeric_config_remains_supported(tmp_path, field, value):
+    trainer, _ = make_uam_trainer(tmp_path, **{field: value})
+
+    assert getattr(trainer, field) == float(value)
+
+
+@pytest.mark.parametrize(
     ("mode", "expected"),
     [("uam", "fixed_loss"), ("uam_gu", "metric_trust")],
 )
@@ -305,14 +334,32 @@ def test_multi_gpu_runtime_fails_closed(tmp_path, monkeypatch):
         trainer._validate_uam_runtime()
 
 
-def test_reentrant_checkpointing_fails_closed(tmp_path):
+@pytest.mark.parametrize(
+    "checkpointing_kwargs",
+    [{}, {"use_reentrant": None}, {"use_reentrant": True}],
+)
+def test_ambiguous_or_reentrant_checkpointing_fails_closed(
+    tmp_path,
+    checkpointing_kwargs,
+):
     trainer, _ = make_uam_trainer(tmp_path)
     trainer.create_optimizer()
     trainer.args.gradient_checkpointing = True
-    trainer.args.gradient_checkpointing_kwargs = {"use_reentrant": True}
+    trainer.args.gradient_checkpointing_kwargs = checkpointing_kwargs
 
     with pytest.raises(NotImplementedError, match="use_reentrant=false"):
         trainer._validate_uam_runtime()
+
+
+def test_explicit_nonreentrant_checkpointing_is_supported(tmp_path):
+    trainer, _ = make_uam_trainer(tmp_path)
+    trainer.create_optimizer()
+    trainer.args.gradient_checkpointing = True
+    trainer.args.gradient_checkpointing_kwargs = {"use_reentrant": False}
+
+    trainer._validate_uam_runtime()
+
+    assert trainer._uam_runtime_validated is True
 
 
 def test_empty_parameter_selection_fails_closed(tmp_path):

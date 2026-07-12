@@ -6,6 +6,13 @@ from trainer.unlearn.optimizer_geometry import make_optimizer_geometry_adapter
 
 
 class UAMUnlearn(GeometricUnlearn):
+    @staticmethod
+    def _config_float(config, field):
+        value = getattr(config, field)
+        if isinstance(value, bool):
+            raise ValueError(f"UAM {field} must be numeric, not bool.")
+        return float(value)
+
     def __init__(self, *args, **kwargs):
         self.uam_config = kwargs.pop("uam_config")
         super().__init__(*args, **kwargs)
@@ -16,10 +23,16 @@ class UAMUnlearn(GeometricUnlearn):
         if normalization == "auto":
             normalization = "fixed_loss" if self.uam_mode == "uam" else "metric_trust"
         self.perturbation_normalization = normalization
-        self.rho = float(self.uam_config.rho)
-        self.reflection_gamma = float(self.uam_config.reflection_gamma)
-        self.residual_lambda = float(self.uam_config.residual_lambda)
-        self.sign_tau = float(self.uam_config.sign_tau)
+        self.rho = self._config_float(self.uam_config, "rho")
+        self.reflection_gamma = self._config_float(
+            self.uam_config,
+            "reflection_gamma",
+        )
+        self.residual_lambda = self._config_float(
+            self.uam_config,
+            "residual_lambda",
+        )
+        self.sign_tau = self._config_float(self.uam_config, "sign_tau")
         self.replay_device = str(self.uam_config.replay_device).lower()
 
         self.uam_calls = 0
@@ -71,7 +84,7 @@ class UAMUnlearn(GeometricUnlearn):
             )
         if self.args.gradient_checkpointing:
             checkpointing_kwargs = self.args.gradient_checkpointing_kwargs or {}
-            if checkpointing_kwargs.get("use_reentrant", True):
+            if checkpointing_kwargs.get("use_reentrant") is not False:
                 raise NotImplementedError(
                     "Approximate Adam UAM requires use_reentrant=false."
                 )
