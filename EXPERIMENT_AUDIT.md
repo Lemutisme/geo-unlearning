@@ -1,8 +1,8 @@
 # Experiment Audit Report
 
-**Date:** 2026-07-12  
-**Auditor:** Independent Codex reviewer (read-only)  
-**Project:** UAM / Residual-GU-UAM TOFU smoke  
+**Date:** 2026-07-12
+**Auditor:** Independent Codex reviewer (read-only)
+**Project:** UAM / Residual-GU-UAM TOFU smoke
 **Run:** `0712145130`
 
 ## Overall Verdict: WARN
@@ -29,7 +29,7 @@ No fabricated ground truth, phantom result, hidden checkpoint payload, or perfor
 
 - All four manifest arms exist and completed with exit code zero.
 - All 52 metric rows, four diagnostic rows, and eight actual-delta rows match `analysis.json` and the underlying arm artifacts at reported precision.
-- The report records code commit `3fd6347`, but the manifest and `analysis.json` do not cryptographically bind the run to that commit.
+- The manifest, `analysis.json`, and generated report do not cryptographically bind the run to a code revision.
 - A recomputed floating-point mean differs from the stored value only at the final binary rounding digit and renders identically.
 
 ### D. Dead Code / Execution Path: WARN

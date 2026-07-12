@@ -1,8 +1,8 @@
 # UAM and Residual-GU-UAM Design
 
-**Date:** 2026-07-12  
-**Branch:** `feat/uam-gu`  
-**Base:** `dev0@abfe95f`  
+**Date:** 2026-07-12
+**Branch:** `feat/uam-gu`
+**Base:** `dev0@abfe95f`
 **Status:** Approved for implementation
 
 ## 1. Goal

@@ -10,15 +10,6 @@ Manifest: **4/4** successful arms.
 
 Checkpoint payloads: **0**.
 
-Code provenance: `feat/uam-gu` at `3fd6347`.
-
-Resolved smoke configuration: BF16, Flash Attention 2, PagedAdamW32,
-learning rate `1e-5`, rho `0.05`, warmup epochs `0`, seed `0`, and ten
-optimizer updates. Disabling warmup ensures the first optimizer update uses
-the configured learning rate; all four step-1 full actual-delta probes are
-therefore positive. This is a mechanism/provenance observation, not evidence
-of method superiority.
-
 ## Method diagnostics
 
 | Method | Mean effective ratio | Mean residual gate rate | Max kept residual orthogonality | Finalizers | Replays | Delta probes |
