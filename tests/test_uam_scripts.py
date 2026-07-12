@@ -490,7 +490,7 @@ def test_arm_normalizes_eval_container_and_persists_only_allowlist(tmp_path):
         assert exact_override in argv
 
 
-@pytest.mark.parametrize("gpu", ["-1", "gpu0", "1.5"])
+@pytest.mark.parametrize("gpu", ["-1", "gpu0", "1.5", "2"])
 def test_arm_rejects_invalid_gpu_before_accelerate(tmp_path, gpu):
     matrix_root = tmp_path / "saves/exp/UAM_SMOKE/stamp"
     matrix_root.mkdir(parents=True)
@@ -719,6 +719,67 @@ def test_arm_rejects_symlinked_persistent_ancestor_before_training(tmp_path):
     assert not (matrix_root / "uam_nll").exists()
 
 
+def test_arm_rejects_relative_local_root_before_conda_or_writes(tmp_path):
+    (tmp_path / "saves/exp/UAM_SMOKE/stamp").mkdir(parents=True)
+    conda_spy, marker = _write_conda_spy(tmp_path)
+    fake_accelerate = _write_fake_accelerate(tmp_path)
+    environment = os.environ.copy()
+    environment["CONDA_EXE"] = str(conda_spy)
+    environment["PATH"] = f"{fake_accelerate.parent}:{environment['PATH']}"
+    environment["UAM_LOCAL_ROOT"] = "relative-local"
+    environment["FAKE_LOCAL_ARM"] = str(tmp_path / "relative-local/stamp/uam_nll")
+
+    result = subprocess.run(
+        ["bash", str(ARM), "uam_nll", "0", "stamp"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert "UAM_LOCAL_ROOT" in result.stderr
+    assert "absolute" in result.stderr.lower()
+    assert not marker.exists()
+    assert not (tmp_path / "relative-local").exists()
+
+
+@pytest.mark.parametrize("nested_suffix", ["", "nested"])
+def test_arm_rejects_symlink_component_in_local_root_before_conda_or_writes(
+    tmp_path,
+    nested_suffix,
+):
+    (tmp_path / "saves/exp/UAM_SMOKE/stamp").mkdir(parents=True)
+    outside = tmp_path / "outside-local"
+    outside.mkdir()
+    linked = tmp_path / "linked-local"
+    linked.symlink_to(outside, target_is_directory=True)
+    local_root = linked / nested_suffix if nested_suffix else linked
+    local_arm = outside / nested_suffix / "stamp/uam_nll"
+    conda_spy, marker = _write_conda_spy(tmp_path)
+    fake_accelerate = _write_fake_accelerate(tmp_path)
+    environment = os.environ.copy()
+    environment["CONDA_EXE"] = str(conda_spy)
+    environment["PATH"] = f"{fake_accelerate.parent}:{environment['PATH']}"
+    environment["UAM_LOCAL_ROOT"] = str(local_root)
+    environment["FAKE_LOCAL_ARM"] = str(local_arm)
+
+    result = subprocess.run(
+        ["bash", str(ARM), "uam_nll", "0", "stamp"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert "symlink" in result.stderr.lower()
+    assert not marker.exists()
+    assert not (outside / nested_suffix / "stamp").exists()
+
+
 def test_arm_rejects_unsafe_timestamp_before_environment_bootstrap(tmp_path):
     environment = os.environ.copy()
     environment["CONDA_EXE"] = str(tmp_path / "must-not-run-conda")
@@ -788,6 +849,58 @@ def test_arm_rejects_symlink_before_deleting_eval_container(tmp_path):
     assert "Unexpected symlink" in result.stderr
     assert link.is_symlink()
     assert not (local_arm / "evals/TOFU_SUMMARY.json").exists()
+
+
+def test_arm_deletes_newline_checkpoint_as_one_path_without_touching_sentinel(
+    tmp_path,
+):
+    (tmp_path / "saves/exp/UAM_SMOKE/stamp").mkdir(parents=True)
+    local_arm = tmp_path / "local/stamp/uam_nll"
+    checkpoint_name = "checkpoint-10\n--preserve-root"
+    checkpoint_dir = local_arm / checkpoint_name
+    sentinel = tmp_path / "--preserve-root/sentinel.txt"
+    sentinel.parent.mkdir()
+    sentinel.write_text("keep me\n")
+    executable = tmp_path / "bin/accelerate"
+    executable.parent.mkdir()
+    executable.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "root=${FAKE_LOCAL_ARM:?}\n"
+        "checkpoint_name=${FAKE_CHECKPOINT_NAME:?}\n"
+        'mkdir -p "${root}/.hydra" "${root}/evals" '
+        '"${root}/${checkpoint_name}"\n'
+        "printf 'config: fake\\n' > \"${root}/.hydra/config.yaml\"\n"
+        "printf '{\"metric\": 1.0}\\n' > "
+        '"${root}/evals/TOFU_SUMMARY.json"\n'
+        "printf '{\"detail\": true}\\n' > "
+        '"${root}/${checkpoint_name}/details.json"\n'
+        'printf \'{"record_type": "uam_geometry"}\\n\' > '
+        '"${root}/uam_diagnostics.jsonl"\n'
+        "printf '{\"surgery_count\": 1}\\n' > "
+        '"${root}/uam_diagnostics.summary.json"\n'
+    )
+    executable.chmod(0o755)
+    environment = os.environ.copy()
+    environment["CONDA_EXE"] = str(_write_fake_conda(tmp_path))
+    environment["PATH"] = f"{executable.parent}:{environment['PATH']}"
+    environment["UAM_LOCAL_ROOT"] = str(tmp_path / "local")
+    environment["FAKE_LOCAL_ARM"] = str(local_arm)
+    environment["FAKE_CHECKPOINT_NAME"] = checkpoint_name
+
+    result = subprocess.run(
+        ["bash", str(ARM), "uam_nll", "0", "stamp"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert not checkpoint_dir.exists()
+    assert sentinel.read_text() == "keep me\n"
+    assert (tmp_path / "saves/exp/UAM_SMOKE/stamp/uam_nll").is_dir()
 
 
 def test_arm_final_allowlist_rejects_junk_created_after_initial_cleanup(tmp_path):
@@ -1027,6 +1140,141 @@ def test_matrix_term_reaps_active_arms_and_their_descendants(tmp_path):
             "uam_nll",
             "uam_simnpo",
         }
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+        _cleanup_pids(pid_paths)
+
+
+@pytest.mark.parametrize("grace", ["-1", "1.5", "invalid"])
+def test_arm_rejects_invalid_term_grace_before_conda(tmp_path, grace):
+    conda_spy, marker = _write_conda_spy(tmp_path)
+    environment = os.environ.copy()
+    environment["CONDA_EXE"] = str(conda_spy)
+    environment["UAM_ARM_TERM_GRACE_SECONDS"] = grace
+
+    result = subprocess.run(
+        ["bash", str(ARM), "uam_nll", "0", "bad-grace"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert "UAM_ARM_TERM_GRACE_SECONDS" in result.stderr
+    assert not marker.exists()
+    assert not (tmp_path / "saves").exists()
+
+
+@pytest.mark.parametrize(
+    ("arm_grace", "matrix_grace"),
+    [
+        ("-1", "3"),
+        ("1.5", "3"),
+        ("invalid", "3"),
+        ("1", "-1"),
+        ("1", "3.5"),
+        ("1", "invalid"),
+        ("1", "1"),
+        ("3", "1"),
+    ],
+)
+def test_matrix_rejects_invalid_or_nonhierarchical_term_graces_before_conda(
+    tmp_path,
+    arm_grace,
+    matrix_grace,
+):
+    conda_spy, marker = _write_conda_spy(tmp_path)
+    environment = os.environ.copy()
+    environment["CONDA_EXE"] = str(conda_spy)
+    environment["UAM_ARM_TERM_GRACE_SECONDS"] = arm_grace
+    environment["UAM_MATRIX_TERM_GRACE_SECONDS"] = matrix_grace
+
+    result = subprocess.run(
+        ["bash", str(MATRIX), "bad-grace"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert "grace" in result.stderr.lower()
+    assert not marker.exists()
+    assert not (tmp_path / "saves").exists()
+
+
+def test_matrix_term_allows_arm_to_kill_and_reap_term_resistant_training_group(
+    tmp_path,
+):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copy2(MATRIX, scripts / MATRIX.name)
+    shutil.copy2(ARM, scripts / ARM.name)
+    executable = tmp_path / "bin/accelerate"
+    executable.parent.mkdir()
+    executable.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "output_dir=\n"
+        'for argument in "$@"; do\n'
+        "    case ${argument} in\n"
+        "        paths.output_dir=*) output_dir=${argument#*=} ;;\n"
+        "    esac\n"
+        "done\n"
+        "method=${output_dir##*/}\n"
+        'printf \'%s\\n\' "$PPID" > "${FAKE_PID_ROOT}/${method}.arm.pid"\n'
+        'printf \'%s\\n\' "$$" > "${FAKE_PID_ROOT}/${method}.trainer.pid"\n'
+        "trap '' TERM\n"
+        "sleep 60 &\n"
+        "child=$!\n"
+        "printf '%s\\n' \"${child}\" > "
+        '"${FAKE_PID_ROOT}/${method}.child.pid"\n'
+        'wait "${child}"\n'
+    )
+    executable.chmod(0o755)
+    environment = os.environ.copy()
+    environment["CONDA_EXE"] = str(_write_fake_conda(tmp_path))
+    environment["PATH"] = f"{executable.parent}:{environment['PATH']}"
+    environment["UAM_LOCAL_ROOT"] = str(tmp_path / "local")
+    environment["UAM_ARM_TERM_GRACE_SECONDS"] = "1"
+    environment["UAM_MATRIX_TERM_GRACE_SECONDS"] = "3"
+    environment["FAKE_PID_ROOT"] = str(tmp_path)
+    pid_paths = [
+        tmp_path / f"{method}.{kind}.pid"
+        for method in ("uam_nll", "uam_simnpo")
+        for kind in ("arm", "trainer", "child")
+    ]
+    process = subprocess.Popen(
+        ["bash", f"scripts/{MATRIX.name}", "grace-hierarchy"],
+        cwd=tmp_path,
+        env=environment,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        assert _wait_until(lambda: all(path.is_file() for path in pid_paths))
+        process.terminate()
+        assert process.wait(timeout=2.5) != 0
+        pids = [int(path.read_text()) for path in pid_paths]
+        assert _wait_until(lambda: not any(_process_running(pid) for pid in pids))
+        manifest = (
+            (tmp_path / "saves/exp/UAM_SMOKE/grace-hierarchy/RUN_MANIFEST.tsv")
+            .read_text()
+            .splitlines()
+        )
+        rows = [line.split("\t") for line in manifest[1:]]
+        assert len(rows) == 2
+        assert len({row[0] for row in rows}) == 2
+        assert {row[2] for row in rows} == {"uam_nll", "uam_simnpo"}
     finally:
         if process.poll() is None:
             process.terminate()
@@ -1532,6 +1780,62 @@ def test_write_outputs_temp_fsync_failure_preserves_both_sentinels(
     }
 
 
+@pytest.mark.parametrize(
+    ("markdown_before", "json_before"),
+    [
+        (b"old markdown\n", b"old json\n"),
+        (None, b"old json\n"),
+        (b"old markdown\n", None),
+        (None, None),
+    ],
+)
+def test_write_outputs_second_replace_failure_restores_exact_prior_state(
+    tmp_path,
+    monkeypatch,
+    markdown_before,
+    json_before,
+):
+    analyzer = load_analyzer()
+    root, _ = make_matrix(tmp_path)
+    result = analyzer.analyze_matrix(root)
+    markdown_path = tmp_path / "report.md"
+    json_path = tmp_path / "analysis.json"
+    if markdown_before is not None:
+        markdown_path.write_bytes(markdown_before)
+    if json_before is not None:
+        json_path.write_bytes(json_before)
+    real_replace = os.replace
+    calls = 0
+
+    def fail_second_replace(source, destination):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("forced second publication replace failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(os, "replace", fail_second_replace)
+
+    with pytest.raises(OSError, match="forced second publication replace failure"):
+        analyzer.write_outputs(result, markdown_path, json_path)
+
+    assert calls >= 2
+    if markdown_before is None:
+        assert not markdown_path.exists()
+    else:
+        assert markdown_path.read_bytes() == markdown_before
+    if json_before is None:
+        assert not json_path.exists()
+    else:
+        assert json_path.read_bytes() == json_before
+    expected_names = {"stamp"}
+    if markdown_before is not None:
+        expected_names.add("report.md")
+    if json_before is not None:
+        expected_names.add("analysis.json")
+    assert {path.name for path in tmp_path.iterdir()} == expected_names
+
+
 def test_diagnostics_rejects_malformed_json(tmp_path):
     analyzer = load_analyzer()
     root, _ = make_matrix(tmp_path)
@@ -1610,6 +1914,33 @@ def test_diagnostics_rejects_nonpositive_perturbation_fields(tmp_path, field):
         analyzer.read_diagnostics(path)
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "requested_perturbation_norm",
+        "effective_perturbation_norm",
+        "forget_norm",
+        "retain_norm",
+        "perturbed_retain_norm",
+        "residual_tangent_norm",
+        "residual_normal_norm",
+    ],
+)
+def test_diagnostics_rejects_negative_geometry_norms(tmp_path, field):
+    analyzer = load_analyzer()
+    root, _ = make_matrix(tmp_path)
+    path = root / "uam_gu_nll/uam_diagnostics.jsonl"
+    records = read_jsonl(path)
+    geometry = next(
+        record for record in records if record["record_type"] == "uam_geometry"
+    )
+    geometry[field] = -0.1
+    write_jsonl(path, records)
+
+    with pytest.raises(ValueError, match="nonnegative|positive"):
+        analyzer.read_diagnostics(path)
+
+
 def test_diagnostics_requires_eight_replay_microsteps_per_update(tmp_path):
     analyzer = load_analyzer()
     root, _ = make_matrix(tmp_path)
@@ -1656,6 +1987,35 @@ def test_diagnostics_rejects_missing_or_nonfinite_actual_fields(tmp_path):
     write_jsonl(path, records)
 
     with pytest.raises(ValueError):
+        analyzer.read_diagnostics(path)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("forget_gradient_norm", -0.1, "nonnegative"),
+        ("retain_gradient_norm", -0.1, "nonnegative"),
+        ("parameter_delta_norm", -0.1, "positive"),
+        ("parameter_delta_norm", 0.0, "positive"),
+    ],
+)
+def test_diagnostics_rejects_invalid_actual_delta_norms(
+    tmp_path,
+    field,
+    value,
+    message,
+):
+    analyzer = load_analyzer()
+    root, _ = make_matrix(tmp_path)
+    path = root / "uam_gu_nll/uam_diagnostics.jsonl"
+    records = read_jsonl(path)
+    actual = next(
+        record for record in records if record["record_type"] == "actual_delta"
+    )
+    actual[field] = value
+    write_jsonl(path, records)
+
+    with pytest.raises(ValueError, match=message):
         analyzer.read_diagnostics(path)
 
 

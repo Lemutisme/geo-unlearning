@@ -2,6 +2,49 @@
 
 set -euo pipefail
 
+validate_local_staging_path() {
+    local candidate_root=$1
+    local candidate_arm=$2
+    if [[ "${candidate_root}" != /* ]]; then
+        echo "UAM_LOCAL_ROOT must be absolute: ${candidate_root}" >&2
+        return 1
+    fi
+
+    local current="/"
+    local remaining=${candidate_arm#/}
+    local component
+    while [[ -n "${remaining}" ]]; do
+        if [[ "${remaining}" == */* ]]; then
+            component=${remaining%%/*}
+            remaining=${remaining#*/}
+        else
+            component=${remaining}
+            remaining=""
+        fi
+        [[ -n "${component}" ]] || continue
+        current="${current%/}/${component}"
+        if [[ -L "${current}" ]]; then
+            echo "Local staging path contains symlink: ${current}" >&2
+            return 1
+        fi
+        if [[ -e "${current}" && ! -d "${current}" ]]; then
+            echo "Local staging path component is not a directory: ${current}" >&2
+            return 1
+        fi
+    done
+
+    local canonical_root canonical_arm root_prefix
+    canonical_root=$(realpath -m -- "${candidate_root}")
+    canonical_arm=$(realpath -m -- "${candidate_arm}")
+    root_prefix="${canonical_root%/}/"
+    if [[ "${canonical_arm}" != "${root_prefix}"* ]]; then
+        echo "Local staging path escapes UAM_LOCAL_ROOT: ${canonical_arm}" >&2
+        return 1
+    fi
+    local_root=${canonical_root}
+    local_arm_dir=${canonical_arm}
+}
+
 checkpoint_file_payload() {
     local audit_root=$1
     find "${audit_root}" -type f \( \
@@ -127,7 +170,7 @@ terminate_training_group() {
     if training_group_is_running; then
         kill -TERM -- "-${training_pid}" 2>/dev/null || true
     fi
-    local deadline=$((SECONDS + 5))
+    local deadline=$((SECONDS + arm_term_grace_seconds))
     while (( SECONDS < deadline )) && training_group_is_running; do
         sleep 0.05
     done
@@ -188,11 +231,22 @@ if [[ ! "${timestamp}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
     echo "Unsafe timestamp: ${timestamp}" >&2
     exit 2
 fi
-if [[ ! "${gpu}" =~ ^[0-9]+$ ]]; then
+if [[ ! "${gpu}" =~ ^[01]$ ]]; then
     echo "Invalid GPU: ${gpu}" >&2
     exit 2
 fi
+arm_term_grace_seconds=${UAM_ARM_TERM_GRACE_SECONDS:-5}
+if [[ ! "${arm_term_grace_seconds}" =~ ^[0-9]+$ ]]; then
+    echo "Invalid UAM_ARM_TERM_GRACE_SECONDS: ${arm_term_grace_seconds}" >&2
+    exit 2
+fi
+arm_term_grace_seconds=$((10#${arm_term_grace_seconds}))
 smoke_rho=${UAM_SMOKE_RHO:-0.05}
+local_root=${UAM_LOCAL_ROOT:-/tmp/uam_smoke}
+local_arm_dir="${local_root}/${timestamp}/${method}"
+if ! validate_local_staging_path "${local_root}" "${local_arm_dir}"; then
+    exit 2
+fi
 
 conda_exe=${CONDA_EXE:-}
 if [[ -z "${conda_exe}" ]]; then
@@ -222,8 +276,6 @@ export TOKENIZERS_PARALLELISM=false
 
 matrix_root="saves/exp/UAM_SMOKE/${timestamp}"
 arm_dir="${matrix_root}/${method}"
-local_root=${UAM_LOCAL_ROOT:-/tmp/uam_smoke}
-local_arm_dir="${local_root}/${timestamp}/${method}"
 task_name="uam_smoke_${method}_${timestamp}"
 diagnostics_path="${local_arm_dir}/uam_diagnostics.jsonl"
 
@@ -326,8 +378,8 @@ normalized_summary="${local_arm_dir}/evals/TOFU_SUMMARY.json"
 if [[ "${summary_path}" != "${normalized_summary}" ]]; then
     cp "${summary_path}" "${normalized_summary}"
 fi
-mapfile -t evaluation_checkpoint_dirs < <(
-    find "${local_arm_dir}" -depth -type d -name 'checkpoint-*' -print
+mapfile -d '' -t evaluation_checkpoint_dirs < <(
+    find "${local_arm_dir}" -depth -type d -name 'checkpoint-*' -print0
 )
 for checkpoint_dir in "${evaluation_checkpoint_dirs[@]}"; do
     rm -rf -- "${checkpoint_dir}"

@@ -39,6 +39,23 @@ if [[ ! "${timestamp}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
     echo "Invalid timestamp: ${timestamp}" >&2
     exit 2
 fi
+arm_term_grace_seconds=${UAM_ARM_TERM_GRACE_SECONDS:-5}
+matrix_term_grace_seconds=${UAM_MATRIX_TERM_GRACE_SECONDS:-15}
+if [[ ! "${arm_term_grace_seconds}" =~ ^[0-9]+$ ]]; then
+    echo "Invalid UAM_ARM_TERM_GRACE_SECONDS: ${arm_term_grace_seconds}" >&2
+    exit 2
+fi
+if [[ ! "${matrix_term_grace_seconds}" =~ ^[0-9]+$ ]]; then
+    echo "Invalid UAM_MATRIX_TERM_GRACE_SECONDS: ${matrix_term_grace_seconds}" >&2
+    exit 2
+fi
+arm_term_grace_seconds=$((10#${arm_term_grace_seconds}))
+matrix_term_grace_seconds=$((10#${matrix_term_grace_seconds}))
+if (( matrix_term_grace_seconds <= arm_term_grace_seconds )); then
+    echo "Matrix grace must be greater than arm grace." >&2
+    exit 2
+fi
+export UAM_ARM_TERM_GRACE_SECONDS=${arm_term_grace_seconds}
 
 conda_exe=${CONDA_EXE:-}
 if [[ -z "${conda_exe}" ]]; then
@@ -140,7 +157,7 @@ terminate_active_arms() {
         fi
     done
 
-    local deadline=$((SECONDS + 5))
+    local deadline=$((SECONDS + matrix_term_grace_seconds))
     while (( SECONDS < deadline )); do
         local running=0
         for slot in 0 1; do

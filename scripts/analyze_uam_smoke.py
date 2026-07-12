@@ -5,6 +5,7 @@ import csv
 import json
 import math
 import os
+import shutil
 import tempfile
 from numbers import Integral, Real
 from pathlib import Path
@@ -63,6 +64,7 @@ GEOMETRY_INTEGER_FIELDS = {
     "uam_calls",
     "replay_calls",
 }
+GEOMETRY_NORM_FIELDS = {field for field in GEOMETRY_REQUIRED if field.endswith("_norm")}
 ACTUAL_DELTA_REQUIRED = {
     "update_step",
     "coverage",
@@ -248,6 +250,11 @@ def _validate_geometry(record, index, path):
 
     numeric_fields = GEOMETRY_REQUIRED - GEOMETRY_STRING_FIELDS - {"residual_gate_kept"}
     _require_finite(record, numeric_fields, "UAM geometry", path)
+    for field in GEOMETRY_NORM_FIELDS:
+        if record[field] < 0.0:
+            raise ValueError(
+                f"UAM geometry field {field!r} in {path} must be nonnegative"
+            )
     for field in GEOMETRY_INTEGER_FIELDS:
         if not isinstance(record[field], Integral) or isinstance(record[field], bool):
             raise ValueError(f"UAM geometry field {field!r} in {path} must be integral")
@@ -274,6 +281,15 @@ def _validate_actual_delta(record, index, path):
             f"found {record['coverage']!r}"
         )
     _require_finite(record, ACTUAL_DELTA_NUMERIC_FIELDS, "Actual-delta", path)
+    for field in ("forget_gradient_norm", "retain_gradient_norm"):
+        if record[field] < 0.0:
+            raise ValueError(
+                f"Actual-delta field {field!r} in {path} must be nonnegative"
+            )
+    if record["parameter_delta_norm"] <= 0.0:
+        raise ValueError(
+            f"Actual-delta field 'parameter_delta_norm' in {path} must be positive"
+        )
     for field in ("update_step", "sampled_elements"):
         if not isinstance(record[field], Integral) or isinstance(record[field], bool):
             raise ValueError(f"Actual-delta field {field!r} in {path} must be integral")
@@ -576,6 +592,25 @@ def _write_output_temp(destination, content):
     return Path(temporary_name)
 
 
+def _backup_output(destination):
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.",
+        suffix=".backup.tmp",
+        dir=destination.parent,
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as target:
+            with destination.open("rb") as source:
+                shutil.copyfileobj(source, target)
+            target.flush()
+            os.fsync(target.fileno())
+    except BaseException:
+        if os.path.exists(temporary_name):
+            os.unlink(temporary_name)
+        raise
+    return Path(temporary_name)
+
+
 def write_outputs(result, markdown_path, json_path):
     markdown_path = Path(markdown_path)
     json_path = Path(json_path)
@@ -583,18 +618,33 @@ def write_outputs(result, markdown_path, json_path):
     json_content = json.dumps(result, indent=2, sort_keys=True, allow_nan=False) + "\n"
     markdown_path.parent.mkdir(parents=True, exist_ok=True)
     json_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_paths = []
+    destinations = (markdown_path, json_path)
+    existed = tuple(os.path.lexists(path) for path in destinations)
+    output_temps = []
+    backup_temps = [None, None]
     try:
-        temporary_paths.append(_write_output_temp(markdown_path, markdown_content))
-        temporary_paths.append(_write_output_temp(json_path, json_content))
-        os.replace(temporary_paths[0], markdown_path)
-        temporary_paths.pop(0)
-        os.replace(temporary_paths[0], json_path)
-        temporary_paths.clear()
+        output_temps.append(_write_output_temp(markdown_path, markdown_content))
+        output_temps.append(_write_output_temp(json_path, json_content))
+        for index, destination in enumerate(destinations):
+            if existed[index]:
+                backup_temps[index] = _backup_output(destination)
+        try:
+            for index, destination in enumerate(destinations):
+                os.replace(output_temps[index], destination)
+                output_temps[index] = None
+        except BaseException:
+            for index in reversed(range(len(destinations))):
+                destination = destinations[index]
+                if existed[index]:
+                    os.replace(backup_temps[index], destination)
+                    backup_temps[index] = None
+                elif os.path.lexists(destination):
+                    os.unlink(destination)
+            raise
     finally:
-        for temporary_path in temporary_paths:
-            if temporary_path.exists():
-                temporary_path.unlink()
+        for temporary_path in (*output_temps, *backup_temps):
+            if temporary_path is not None and os.path.lexists(temporary_path):
+                os.unlink(temporary_path)
 
 
 def _parse_args():
