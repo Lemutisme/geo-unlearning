@@ -82,7 +82,6 @@ class UAMUnlearn(GeometricUnlearn):
 
         adapter = make_optimizer_geometry_adapter(self.optimizer)
         adapter.validate(named_params)
-        self._optimizer_geometry_adapter = adapter
 
         if self.component_buffer_device == "cpu":
             ComponentGradientBuffers.validate_host_memory(
@@ -90,4 +89,5 @@ class UAMUnlearn(GeometricUnlearn):
                 component_count=3,
             )
 
+        self._optimizer_geometry_adapter = adapter
         self._uam_runtime_validated = True

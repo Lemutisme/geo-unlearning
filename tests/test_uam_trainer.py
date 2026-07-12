@@ -457,3 +457,26 @@ def test_cpu_buffers_validate_three_component_host_memory(tmp_path, monkeypatch)
     )
     assert captured["selected_numel"] == expected_numel
     assert captured["component_count"] == 3
+
+
+def test_host_memory_failure_does_not_partially_cache_runtime(tmp_path, monkeypatch):
+    trainer, _ = make_uam_trainer(
+        tmp_path,
+        component_buffer_device="cpu",
+    )
+    trainer.create_optimizer()
+
+    def reject_host_memory(*args, **kwargs):
+        raise RuntimeError("insufficient host memory")
+
+    monkeypatch.setattr(
+        ComponentGradientBuffers,
+        "validate_host_memory",
+        staticmethod(reject_host_memory),
+    )
+
+    with pytest.raises(RuntimeError, match="insufficient host memory"):
+        trainer._validate_uam_runtime()
+
+    assert trainer._optimizer_geometry_adapter is None
+    assert trainer._uam_runtime_validated is False
