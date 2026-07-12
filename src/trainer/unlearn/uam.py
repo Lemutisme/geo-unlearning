@@ -1,5 +1,6 @@
 import copy
 import math
+from builtins import BaseExceptionGroup, ExceptionGroup
 from dataclasses import dataclass
 
 import torch
@@ -80,6 +81,8 @@ class PerturbationStats:
 
 
 class TemporaryParameterPerturbation:
+    _SUPPORTED_PARAMETER_DTYPES = {torch.float32, torch.bfloat16}
+
     def __init__(self, named_params, deltas, storage_device="cpu"):
         self.named_params = list(named_params)
         self.deltas = dict(deltas)
@@ -97,6 +100,11 @@ class TemporaryParameterPerturbation:
                 raise ValueError(f"Duplicate parameter name: {name!r}.")
             if not isinstance(parameter, torch.Tensor):
                 raise TypeError(f"UAM parameter {name!r} must be a tensor.")
+            if parameter.dtype not in self._SUPPORTED_PARAMETER_DTYPES:
+                raise TypeError(
+                    f"UAM parameter {name!r} dtype {parameter.dtype} is unsupported; "
+                    "expected torch.float32 or torch.bfloat16."
+                )
             parameters_by_name[name] = parameter
 
         unknown_names = set(self.deltas).difference(parameters_by_name)
@@ -113,6 +121,11 @@ class TemporaryParameterPerturbation:
             delta = self.deltas[name]
             if not isinstance(delta, torch.Tensor):
                 raise TypeError(f"UAM delta for parameter {name!r} must be a tensor.")
+            if delta.dtype != torch.float32:
+                raise TypeError(
+                    f"UAM delta for parameter {name!r} dtype {delta.dtype} is "
+                    "unsupported; expected a real torch.float32 tensor."
+                )
             if delta.shape != parameter.shape:
                 raise ValueError(
                     f"UAM delta shape for parameter {name!r} is {tuple(delta.shape)}, "
@@ -178,6 +191,16 @@ class TemporaryParameterPerturbation:
         self._requested.clear()
         self._mutated_names.clear()
 
+    @staticmethod
+    def _combine_failures(primary_error, restoration_error):
+        message = "UAM parameter perturbation failed and restoration also failed."
+        if isinstance(primary_error, Exception) and isinstance(
+            restoration_error,
+            Exception,
+        ):
+            return ExceptionGroup(message, [primary_error, restoration_error])
+        return BaseExceptionGroup(message, [primary_error, restoration_error])
+
     @torch.no_grad()
     def __enter__(self):
         if self._state == "active":
@@ -234,7 +257,7 @@ class TemporaryParameterPerturbation:
             try:
                 self._restore_originals()
             except BaseException as restoration_error:
-                raise restoration_error from enter_error
+                raise self._combine_failures(enter_error, restoration_error)
             finally:
                 self._clear_snapshots()
                 self._state = "used"
@@ -248,7 +271,7 @@ class TemporaryParameterPerturbation:
             self._restore_originals()
         except BaseException as restoration_error:
             if exc_value is not None:
-                raise restoration_error from exc_value
+                raise self._combine_failures(exc_value, restoration_error)
             raise
         finally:
             self._clear_snapshots()

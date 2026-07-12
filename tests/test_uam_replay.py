@@ -1,4 +1,5 @@
 import math
+from builtins import ExceptionGroup
 
 import pytest
 import torch
@@ -141,6 +142,46 @@ def test_perturbation_restores_exactly_when_body_raises():
         assert torch.equal(parameter, originals[name])
 
 
+def test_restoration_failure_preserves_underlying_copy_error():
+    parameter = torch.nn.Parameter(torch.tensor([1.0, 2.0]))
+    context = TemporaryParameterPerturbation(
+        [("weight", parameter)],
+        {"weight": torch.ones(2)},
+    )
+
+    with pytest.raises(RuntimeError, match="restore.*weight.*exactly") as caught:
+        with context:
+            context.originals["weight"] = torch.zeros(3)
+
+    assert caught.value.__cause__ is not None
+    assert "size of tensor" in str(caught.value.__cause__).lower()
+    assert context.originals == {}
+    with pytest.raises(RuntimeError, match="cannot be reused"):
+        context.__enter__()
+
+
+def test_body_and_restoration_failures_are_both_preserved():
+    parameter = torch.nn.Parameter(torch.tensor([1.0, 2.0]))
+    context = TemporaryParameterPerturbation(
+        [("weight", parameter)],
+        {"weight": torch.ones(2)},
+    )
+    body_error = ValueError("body transaction failed")
+
+    with pytest.raises(ExceptionGroup, match="perturbation.*restoration") as caught:
+        with context:
+            context.originals["weight"] = torch.zeros(3)
+            raise body_error
+
+    assert caught.value.exceptions[0] is body_error
+    restoration_error = caught.value.exceptions[1]
+    assert isinstance(restoration_error, RuntimeError)
+    assert "restore parameter" in str(restoration_error)
+    assert restoration_error.__cause__ is not None
+    assert "size of tensor" in str(restoration_error.__cause__).lower()
+    assert context.originals == {}
+
+
 def test_bfloat16_representable_perturbation_reports_effective_ratio():
     module = TwoParameterModule(dtype=torch.bfloat16)
     named_params = list(module.named_parameters())
@@ -185,7 +226,7 @@ def test_empty_perturbation_is_allowed():
 
 
 def test_all_zero_perturbation_leaves_parameters_unchanged():
-    parameter = torch.nn.Parameter(torch.tensor([1.0, 2.0], dtype=torch.float64))
+    parameter = torch.nn.Parameter(torch.tensor([1.0, 2.0], dtype=torch.float32))
     original = parameter.detach().clone()
 
     with TemporaryParameterPerturbation(
@@ -196,6 +237,82 @@ def test_all_zero_perturbation_leaves_parameters_unchanged():
         assert stats == PerturbationStats()
 
     assert torch.equal(parameter, original)
+
+
+@pytest.mark.parametrize(
+    "invalid_dtype",
+    [
+        torch.float16,
+        torch.float64,
+        torch.complex64,
+        torch.int64,
+        torch.bool,
+    ],
+)
+def test_invalid_parameter_dtype_is_rejected_before_mutation(invalid_dtype):
+    first = torch.nn.Parameter(torch.tensor([1.0]))
+    invalid_data = torch.tensor([1], dtype=invalid_dtype)
+    invalid = torch.nn.Parameter(
+        invalid_data,
+        requires_grad=invalid_dtype.is_floating_point or invalid_dtype.is_complex,
+    )
+    context = TemporaryParameterPerturbation(
+        [("first", first), ("invalid", invalid)],
+        {"first": torch.ones(1)},
+    )
+    first_original = first.detach().clone()
+    invalid_original = invalid.detach().clone()
+
+    with pytest.raises(
+        TypeError,
+        match="parameter.*invalid.*dtype.*float32.*bfloat16",
+    ):
+        with context:
+            pytest.fail("invalid parameter dtype must fail before entry")
+
+    assert torch.equal(first, first_original)
+    assert torch.equal(invalid, invalid_original)
+    assert context.originals == {}
+    assert context._requested == {}
+
+
+@pytest.mark.parametrize(
+    "invalid_delta",
+    [
+        pytest.param(torch.ones(2, dtype=torch.float16), id="float16"),
+        pytest.param(torch.ones(2, dtype=torch.bfloat16), id="bfloat16"),
+        pytest.param(torch.ones(2, dtype=torch.float64), id="float64"),
+        pytest.param(
+            torch.tensor([1 + 2j, 3 - 4j], dtype=torch.complex64),
+            id="complex-imaginary-would-be-lost",
+        ),
+        pytest.param(torch.ones(2, dtype=torch.int64), id="integer"),
+        pytest.param(torch.ones(2, dtype=torch.bool), id="bool"),
+    ],
+)
+def test_invalid_delta_dtype_is_rejected_before_mutation(invalid_delta):
+    module = TwoParameterModule()
+    named_params = list(module.named_parameters())
+    originals = clone_parameters(named_params)
+    context = TemporaryParameterPerturbation(
+        named_params,
+        {
+            "first": torch.ones_like(module.first),
+            "second": invalid_delta,
+        },
+    )
+
+    with pytest.raises(
+        TypeError,
+        match="delta.*second.*dtype.*float32",
+    ):
+        with context:
+            pytest.fail("invalid delta dtype must fail before entry")
+
+    for name, parameter in module.named_parameters():
+        assert torch.equal(parameter, originals[name])
+    assert context.originals == {}
+    assert context._requested == {}
 
 
 @pytest.mark.parametrize("invalid_delta", [None, [1.0], 1.0])
