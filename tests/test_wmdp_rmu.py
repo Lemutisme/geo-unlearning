@@ -3,8 +3,11 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from hydra import compose, initialize_config_dir
+from pathlib import Path
 from transformers import TrainingArguments
 
+from trainer import TRAINER_REGISTRY
 from tests.test_wmdp_uam import ToyWMDPCausalLM, make_batch
 from trainer.unlearn.wmdp_selection import EXPECTED_WMDP_PARAMETER_NAMES
 from trainer.unlearn.wmdp_rmu import WMDPRMUUnlearn
@@ -80,6 +83,37 @@ def test_wmdp_rmu_freezes_reference_and_selects_exact_parameters(tmp_path):
     assert {
         name for name, parameter in model.named_parameters() if parameter.requires_grad
     } == set(EXPECTED_WMDP_PARAMETER_NAMES)
+
+
+def test_wmdp_rmu_is_registered_and_yaml_resolves_w2_contract():
+    assert TRAINER_REGISTRY["WMDPRMUUnlearn"] is WMDPRMUUnlearn
+    config_dir = Path(__file__).resolve().parents[1] / "configs"
+    with initialize_config_dir(config_dir=str(config_dir), version_base=None):
+        config = compose(
+            config_name="unlearn",
+            overrides=["trainer=WMDPRMUUnlearn"],
+        )
+
+    trainer = config.trainer
+    assert trainer.handler == "WMDPRMUUnlearn"
+    assert trainer.args.per_device_train_batch_size == 1
+    assert trainer.args.gradient_accumulation_steps == 4
+    assert trainer.args.max_steps == 80
+    assert trainer.args.learning_rate == pytest.approx(5e-5)
+    assert trainer.args.bf16 is True
+    assert trainer.args.fp16 is False
+    assert trainer.args.optim == "paged_adamw_32bit"
+    assert trainer.args.adam_beta1 == 0.0
+    assert trainer.args.weight_decay == 0.0
+    assert trainer.args.save_strategy == "no"
+    assert trainer.method_args.gamma == 1.0
+    assert trainer.method_args.alpha == 100.0
+    assert trainer.method_args.geometric_config.loss == "rmu"
+    assert trainer.method_args.geometric_config.gu_enabled is False
+    assert trainer.method_args.geometric_config.actual_delta_mode == "full"
+    assert trainer.method_args.geometric_config.actual_delta_steps == [1, 80]
+    assert trainer.method_args.rmu_config.steering_coeff == 20.0
+    assert trainer.method_args.rmu_config.require_paged_adamw is True
 
 
 def test_control_vector_is_seeded_unit_direction_scaled_by_twenty(tmp_path):

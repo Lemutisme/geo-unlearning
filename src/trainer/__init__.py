@@ -17,6 +17,8 @@ from trainer.unlearn.wga import WGA
 from trainer.unlearn.pdu import PDU
 from trainer.unlearn.geometric import GeometricUnlearn
 from trainer.unlearn.uam import UAMUnlearn
+from trainer.unlearn.wmdp_rmu import WMDPRMUUnlearn
+from trainer.unlearn.wmdp_uam import WMDPUAMUnlearn
 
 
 import logging
@@ -109,3 +111,5 @@ _register_trainer(WGA)
 _register_trainer(PDU)
 _register_trainer(GeometricUnlearn)
 _register_trainer(UAMUnlearn)
+_register_trainer(WMDPRMUUnlearn)
+_register_trainer(WMDPUAMUnlearn)
