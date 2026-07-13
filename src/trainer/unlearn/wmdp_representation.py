@@ -33,7 +33,7 @@ def forward_with_activation(model, inputs, module, *, no_grad=False):
     captured = []
 
     def capture(_module, _args, output):
-        captured.append(_activation_tensor(output))
+        captured.append(output[0] if isinstance(output, tuple) else output)
 
     handle = module.register_forward_hook(capture)
     try:
@@ -46,7 +46,7 @@ def forward_with_activation(model, inputs, module, *, no_grad=False):
         raise RuntimeError(
             f"Expected one captured WMDP activation, found {len(captured)}."
         )
-    return captured[0], outputs
+    return _activation_tensor(captured[0]), outputs
 
 
 def supervised_token_mask(inputs):
