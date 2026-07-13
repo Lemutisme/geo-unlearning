@@ -9,6 +9,7 @@ from hydra import compose, initialize_config_dir
 ROOT = Path(__file__).resolve().parents[1]
 ARM = ROOT / "scripts/wmdp_uam_w2_arm.sh"
 MATRIX = ROOT / "scripts/wmdp_uam_w2_matrix.sh"
+STRONG = ROOT / "scripts/wmdp_uam_strong_pair.sh"
 
 
 def script_text(path):
@@ -72,7 +73,7 @@ def test_matrix_is_strictly_base_gated_and_sequential():
 
 
 def test_scripts_have_valid_bash_syntax():
-    for script in (ARM, MATRIX):
+    for script in (ARM, MATRIX, STRONG):
         result = subprocess.run(
             ["bash", "-n", str(script)],
             cwd=ROOT,
@@ -80,6 +81,53 @@ def test_scripts_have_valid_bash_syntax():
             text=True,
         )
         assert result.returncode == 0, result.stderr
+
+
+def test_strong_pair_has_fixed_two_arm_calibration_contract():
+    text = script_text(STRONG)
+    for token in (
+        "export CUDA_VISIBLE_DEVICES=0",
+        "export WMDP_W2_LEARNING_RATE=1.25e-4",
+        "export WMDP_W2_MAX_STEPS=160",
+        "export WMDP_W2_LR_SCHEDULER_TYPE=constant",
+        "WMDP_UAM_W2_STRONG",
+        'run_arm "uam"',
+        'run_arm "uam_gu"',
+        "scripts/analyze_wmdp_uam_strong_pair.py",
+        "w2-20260713-2/W2_SUMMARY.json",
+    ):
+        assert token in text
+    assert 'run_arm "base"' not in text
+    assert 'run_arm "rmu"' not in text
+    assert 'run_arm "rmu_gu"' not in text
+    assert text.index('run_arm "uam"') < text.index('run_arm "uam_gu"')
+
+
+def test_strong_pair_rejects_unsafe_or_existing_run_id(tmp_path):
+    environment = os.environ.copy()
+    environment["WMDP_UAM_STRONG_ROOT"] = str(tmp_path)
+
+    unsafe = subprocess.run(
+        ["bash", str(STRONG), "../unsafe"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert unsafe.returncode == 2
+    assert "Unsafe run id" in unsafe.stderr
+
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    duplicate = subprocess.run(
+        ["bash", str(STRONG), "existing"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert duplicate.returncode == 1
+    assert "already exists" in duplicate.stderr
 
 
 def test_arm_runner_does_not_require_external_gnu_time():
