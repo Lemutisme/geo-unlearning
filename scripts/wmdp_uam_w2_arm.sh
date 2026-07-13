@@ -180,19 +180,24 @@ else
 fi
 
 start_seconds=$(date +%s.%N)
-time_file="${local_arm}/time.txt"
 printf 'Launching %q ' "${command[@]}"
 printf '\n'
-setsid /usr/bin/time -v -o "${time_file}" "${command[@]}" \
+setsid "${command[@]}" \
     > "${local_arm}/run.log" 2>&1 &
 process_pid=$!
 peak_nvml_mib=0
+max_rss_kib=0
 while kill -0 "${process_pid}" 2>/dev/null; do
     current=$(nvidia-smi --id=0 --query-compute-apps=used_gpu_memory \
         --format=csv,noheader,nounits 2>/dev/null | \
         awk '{sum += $1} END {print sum + 0}')
     if [[ "${current}" =~ ^[0-9]+$ ]] && (( current > peak_nvml_mib )); then
         peak_nvml_mib=${current}
+    fi
+    current_rss=$(ps -o rss= -g "${process_pid}" 2>/dev/null | \
+        awk '{sum += $1} END {print sum + 0}' || true)
+    if [[ "${current_rss}" =~ ^[0-9]+$ ]] && (( current_rss > max_rss_kib )); then
+        max_rss_kib=${current_rss}
     fi
     sleep 0.2
 done
@@ -229,7 +234,6 @@ print(matches[-1] if matches else "null")
 PY
 )
 fi
-max_rss_kib=$(awk -F: '/Maximum resident set size/ {gsub(/^[[:space:]]+/, "", $2); print $2}' "${time_file}")
 python - "${local_arm}/resource.json" "${start_seconds}" "${end_seconds}" \
     "${training_wall}" "${peak_nvml_mib}" "${max_rss_kib}" <<'PY'
 import json

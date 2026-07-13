@@ -57,6 +57,12 @@ def test_scripts_have_valid_bash_syntax():
         assert result.returncode == 0, result.stderr
 
 
+def test_arm_runner_does_not_require_external_gnu_time():
+    text = script_text(ARM)
+    assert "/usr/bin/time" not in text
+    assert 'ps -o rss= -g "${process_pid}"' in text
+
+
 @pytest.mark.parametrize(
     "relative_path",
     [
