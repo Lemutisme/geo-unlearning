@@ -5,10 +5,9 @@ import torch
 from trainer.unlearn.uam import UAMUnlearn
 from trainer.unlearn.wmdp_representation import (
     find_exact_module,
-    forward_with_activation,
+    forward_representation_pair,
     masked_representation_mse,
     seeded_gaussian_noise,
-    supervised_token_mask,
 )
 from trainer.unlearn.wmdp_selection import (
     configure_wmdp_trainable_parameters,
@@ -58,30 +57,14 @@ class WMDPUAMUnlearn(UAMUnlearn):
         validate_wmdp_optimizer(self.optimizer, selected)
         return optimizer
 
-    @staticmethod
-    def _model_inputs(inputs):
-        required = ("input_ids", "attention_mask", "labels")
-        missing = [name for name in required if name not in inputs]
-        if missing:
-            raise KeyError(f"WMDP representation batch is missing: {missing}.")
-        return {name: inputs[name] for name in required}
-
     def _representation_pair(self, model, inputs):
-        model_inputs = self._model_inputs(inputs)
-        activation, outputs = forward_with_activation(
+        return forward_representation_pair(
             model,
-            model_inputs,
-            self.model_module,
-        )
-        reference, _ = forward_with_activation(
             self.ref_model,
-            model_inputs,
+            inputs,
+            self.model_module,
             self.ref_module,
-            no_grad=True,
         )
-        if reference.device != activation.device:
-            reference = reference.to(activation.device)
-        return activation, reference, outputs, supervised_token_mask(model_inputs)
 
     def compute_uam_forget_signal(self, model, forget_inputs):
         activation, reference, outputs, mask = self._representation_pair(

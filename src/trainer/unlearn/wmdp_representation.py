@@ -65,6 +65,39 @@ def supervised_token_mask(inputs):
     return mask
 
 
+def representation_model_inputs(inputs):
+    required = ("input_ids", "attention_mask", "labels")
+    missing = [name for name in required if name not in inputs]
+    if missing:
+        raise KeyError(f"WMDP representation batch is missing: {missing}.")
+    return {name: inputs[name] for name in required}
+
+
+def forward_representation_pair(
+    model,
+    reference_model,
+    inputs,
+    model_module,
+    reference_module,
+):
+    model_inputs = representation_model_inputs(inputs)
+    activation, outputs = forward_with_activation(
+        model,
+        model_inputs,
+        model_module,
+    )
+    reference, _ = forward_with_activation(
+        reference_model,
+        model_inputs,
+        reference_module,
+        no_grad=True,
+    )
+    if reference.device != activation.device:
+        reference = reference.to(activation.device)
+    mask = supervised_token_mask(model_inputs)
+    return activation, reference, outputs, mask
+
+
 def masked_representation_mse(actual, target, mask):
     if (
         actual.shape != target.shape
