@@ -7,7 +7,9 @@
 ## Goal
 
 Test whether the weak UAM endpoint in the completed W2 matrix is primarily an
-under-training effect. Run exactly one stronger, matched pair on GPU 0:
+under-training effect. The predeclared calibration target for strong UAM is a
+WMDP-Cyber accuracy in `[0.27, 0.31]`, centered at `0.29`. Run exactly one
+stronger, matched pair on GPU 0:
 
 1. UAM;
 2. residual UAM+GU.
@@ -22,8 +24,9 @@ pipeline, data, seed, evaluator, objectives, and system stack.
 
 | Setting | W2 primary | Strong pair |
 |---|---:|---:|
-| Learning rate | `5e-5` | `1e-4` |
+| Learning rate | `5e-5` | `1.25e-4` |
 | Optimizer updates | 80 | 160 |
+| LR scheduler | linear decay to zero | constant |
 | UAM rho | `5e-5` | `5e-5` |
 | Noise standard deviation | `0.01` | `0.01` |
 | Physical batch / GAS | 1 / 4 | 1 / 4 |
@@ -32,9 +35,17 @@ pipeline, data, seed, evaluator, objectives, and system stack.
 | Precision / attention | BF16 / FlashAttention 2 | BF16 / FlashAttention 2 |
 | Seed | 42 | 42 |
 
-The linear learning-rate schedule makes the approximate integrated learning
-rate four times the 80-step primary run. This is deliberately stronger while
-leaving the UAM perturbation definition unchanged.
+The primary run's 80-step linear schedule has an approximate learning-rate
+sum of `0.001975`. The strong run's constant schedule has a sum of `0.020`, or
+about `10.1x` the primary value. This strength was predeclared by a simple
+calibration heuristic: the primary UAM run reduced Cyber accuracy from
+`0.443382` to `0.428284`; scaling that observed reduction by about ten gives
+an endpoint near `0.29`. The relationship need not be linear, so the target is
+an evaluation band rather than a guaranteed result.
+
+The paper reports UAM WMDP-Cyber accuracy `0.2330` in its joint Bio/Cyber
+setting, so the target is not stronger than the published endpoint. Our run is
+still Cyber-only and must not be presented as a reproduction of that result.
 
 Forget-loss scalar multiplication is not used. Under fixed-loss
 normalization,
@@ -82,6 +93,10 @@ training time, end-to-end wall time, and peak NVML memory. Compare:
 1. strong UAM against primary UAM;
 2. strong UAM+GU against primary UAM+GU;
 3. strong UAM+GU against strong UAM.
+
+Report whether strong UAM falls below, inside, or above the predeclared
+`[0.27, 0.31]` calibration band. No arm is discarded or rerun based on this
+outcome.
 
 The result is classified as complementarity only if strong UAM+GU has no
 higher WMDP-Cyber accuracy and no lower MMLU point estimate than strong UAM.
