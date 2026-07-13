@@ -142,6 +142,7 @@ else
         model.model_args.attn_implementation=flash_attention_2
         "data.forget.WMDP_forget.args.hf_args.data_files=${cyber_corpus}"
         data/datasets@data.retain=WMDP_wikitext_retain
+        "~data.retain.WMDP_retain"
         "paths.output_dir=${local_arm}"
         save_model_after_train=false
         trainer.args.per_device_train_batch_size=1

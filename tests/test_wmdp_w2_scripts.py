@@ -2,6 +2,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from hydra import compose, initialize_config_dir
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,11 +31,28 @@ def test_arm_script_has_fixed_five_arm_gpu0_contract():
         "trainer.args.gradient_accumulation_steps=4",
         "trainer.args.max_steps=80",
         "data/datasets@data.retain=WMDP_wikitext_retain",
+        "~data.retain.WMDP_retain",
         "audit_checkpoint_payloads",
         "provenance.json",
         "resource.json",
     ):
         assert token in text
+
+
+def test_wikitext_override_removes_inline_wmdp_retain_fragment():
+    with initialize_config_dir(version_base=None, config_dir=str(ROOT / "configs")):
+        cfg = compose(
+            config_name="unlearn",
+            overrides=[
+                "experiment=unlearn/wmdp/default",
+                "data/datasets@data.retain=WMDP_wikitext_retain",
+                "~data.retain.WMDP_retain",
+                "task_name=cfg_probe",
+            ],
+        )
+
+    assert list(cfg.data.retain) == ["WMDP_wikitext_retain"]
+    assert cfg.data.retain.WMDP_wikitext_retain.handler == "PretrainingDataset"
 
 
 def test_matrix_is_strictly_base_gated_and_sequential():
