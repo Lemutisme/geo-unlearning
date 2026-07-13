@@ -46,6 +46,8 @@ class WMDPRMUUnlearn(GeometricUnlearn):
         self.model_module = find_exact_module(self.model, self.wmdp_module_name)
         self.ref_module = find_exact_module(self.ref_model, self.wmdp_module_name)
         self._wmdp_runtime_validated = False
+        self.rmu_finalizer_calls = 0
+        self.last_rmu_diagnostics = {}
 
     def _selected_named_parameters(self, model=None):
         model = self.model if model is None else model
@@ -128,6 +130,100 @@ class WMDPRMUUnlearn(GeometricUnlearn):
             raise NotImplementedError("WMDP RMU requires PagedAdamW32.")
         self._wmdp_runtime_validated = True
 
+    @torch.no_grad()
+    def _finalize_rmu_baseline(self, named_params):
+        update_step = self.rmu_finalizer_calls + 1
+        if not self.component_buffers.has_component("forget"):
+            raise RuntimeError("RMU forget gradient buffer is empty.")
+        if not self.component_buffers.has_component("retain"):
+            raise RuntimeError("RMU retain gradient buffer is empty.")
+
+        forget_sq = torch.zeros((), dtype=torch.float64)
+        retain_sq = torch.zeros_like(forget_sq)
+        final_sq = torch.zeros_like(forget_sq)
+        try:
+            for name, parameter in named_params:
+                forget = self.component_buffers.tensor(
+                    "forget",
+                    name,
+                    parameter.device,
+                )
+                retain = self.component_buffers.tensor(
+                    "retain",
+                    name,
+                    parameter.device,
+                )
+                if forget is None:
+                    forget = torch.zeros_like(parameter, dtype=torch.float32)
+                if retain is None:
+                    retain = torch.zeros_like(parameter, dtype=torch.float32)
+                final = self.gamma * forget.float() + self.alpha * retain.float()
+                if not torch.isfinite(final).all().item():
+                    raise RuntimeError("RMU baseline final gradient is non-finite.")
+                forget_sq.add_(forget.double().square().sum().cpu())
+                retain_sq.add_(retain.double().square().sum().cpu())
+                final_sq.add_(final.double().square().sum().cpu())
+                if parameter.grad is None:
+                    parameter.grad = torch.zeros_like(parameter)
+                parameter.grad.copy_(final.to(parameter.grad))
+
+            diagnostics = {
+                "record_type": "rmu_geometry",
+                "update_step": update_step,
+                "finalizer_calls": update_step,
+                "forget_norm": float(forget_sq.sqrt().item()),
+                "retain_norm": float(retain_sq.sqrt().item()),
+                "final_gradient_norm": float(final_sq.sqrt().item()),
+                "optimizer_geometry": self._optimizer_geometry_adapter.name,
+            }
+            self.actual_delta_callback.prepare_step(
+                update_step,
+                named_params,
+                self.component_buffers,
+            )
+            if self.diagnostics_writer is not None:
+                self.diagnostics_writer.write_step(diagnostics)
+            self.component_buffers.clear()
+            self.rmu_finalizer_calls = update_step
+            self.last_rmu_diagnostics = diagnostics
+        except BaseException:
+            self.actual_delta_callback.cancel_step()
+            self._clear_gu_failure_state()
+            raise
+
     def training_step(self, model, inputs):
         self._validate_wmdp_runtime()
-        return super().training_step(model, inputs)
+        if self.gu_enabled:
+            return super().training_step(model, inputs)
+
+        model.train()
+        if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
+            self.optimizer.train()
+        inputs = self._prepare_inputs(inputs)
+        with self.compute_loss_context_manager():
+            forget_loss, retain_loss, _ = self.compute_component_losses(model, inputs)
+            total_loss = self.gamma * forget_loss + self.alpha * retain_loss
+
+        named_params = self._selected_named_parameters(model)
+        params = [parameter for _, parameter in named_params]
+        scale = 1.0 / self.args.gradient_accumulation_steps
+        forget_grads = torch.autograd.grad(
+            forget_loss * scale,
+            params,
+            retain_graph=True,
+            create_graph=False,
+            allow_unused=True,
+        )
+        retain_grads = torch.autograd.grad(
+            retain_loss * scale,
+            params,
+            retain_graph=True,
+            create_graph=False,
+            allow_unused=True,
+        )
+        self.component_buffers.add("forget", named_params, forget_grads)
+        self.component_buffers.add("retain", named_params, retain_grads)
+        self.accelerator.backward(total_loss)
+        if self.accelerator.sync_gradients or self._is_short_final_accumulation_step():
+            self._finalize_rmu_baseline(named_params)
+        return total_loss.detach() * scale

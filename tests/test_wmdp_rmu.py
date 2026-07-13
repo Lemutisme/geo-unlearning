@@ -309,6 +309,9 @@ def test_wmdp_rmu_baseline_writes_component_sum_gradient(tmp_path):
     trainer.train()
 
     assert capture.gradients is not None
+    assert trainer.rmu_finalizer_calls == trainer.state.global_step == 1
+    assert trainer.last_rmu_diagnostics["record_type"] == "rmu_geometry"
+    assert trainer.last_rmu_diagnostics["finalizer_calls"] == 1
     for name in EXPECTED_WMDP_PARAMETER_NAMES:
         torch.testing.assert_close(
             capture.gradients[name],
