@@ -120,7 +120,7 @@ def read_jsonl(path):
     return records
 
 
-def validate_geometry(arm, arm_dir):
+def validate_geometry(arm, arm_dir, expected_updates=EXPECTED_UPDATES):
     records = read_jsonl(Path(arm_dir) / "geometry.jsonl")
     record_type = {
         "rmu": "rmu_geometry",
@@ -129,21 +129,25 @@ def validate_geometry(arm, arm_dir):
         "uam_gu": "uam_geometry",
     }[arm]
     geometry = [record for record in records if record.get("record_type") == record_type]
-    if len(geometry) != EXPECTED_UPDATES:
+    if len(geometry) != expected_updates:
         raise ValueError(
-            f"{arm} requires {EXPECTED_UPDATES} geometry updates, found {len(geometry)}"
+            f"{arm} requires {expected_updates} geometry updates, found {len(geometry)}"
         )
     if [record.get("update_step") for record in geometry] != list(
-        range(1, EXPECTED_UPDATES + 1)
+        range(1, expected_updates + 1)
     ):
         raise ValueError(f"{arm} geometry update steps are not contiguous")
 
     if arm == "rmu":
-        if geometry[-1].get("finalizer_calls") != EXPECTED_UPDATES:
-            raise ValueError("RMU finalizer count does not equal 80")
+        if geometry[-1].get("finalizer_calls") != expected_updates:
+            raise ValueError(
+                f"RMU finalizer count does not equal {expected_updates}"
+            )
     elif arm == "rmu_gu":
-        if geometry[-1].get("projection_calls") != EXPECTED_UPDATES:
-            raise ValueError("RMU+GU projection count does not equal 80")
+        if geometry[-1].get("projection_calls") != expected_updates:
+            raise ValueError(
+                f"RMU+GU projection count does not equal {expected_updates}"
+            )
         for record in geometry:
             residual = finite_number(
                 record.get("relative_orthogonality_residual"),
@@ -152,10 +156,12 @@ def validate_geometry(arm, arm_dir):
             if residual > MAX_ORTHOGONALITY:
                 raise ValueError("RMU+GU orthogonality residual exceeds 1e-6")
     else:
-        if geometry[-1].get("uam_calls") != EXPECTED_UPDATES:
-            raise ValueError("UAM finalizer count does not equal 80")
-        if geometry[-1].get("replay_calls") != EXPECTED_UPDATES:
-            raise ValueError("UAM replay count does not equal 80")
+        if geometry[-1].get("uam_calls") != expected_updates:
+            raise ValueError(
+                f"UAM finalizer count does not equal {expected_updates}"
+            )
+        if geometry[-1].get("replay_calls") != expected_updates:
+            raise ValueError(f"UAM replay count does not equal {expected_updates}")
         if arm == "uam_gu":
             for record in geometry:
                 if not record.get("residual_gate_kept", False):

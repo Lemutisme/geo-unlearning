@@ -154,6 +154,24 @@ def test_analyzer_rejects_79_of_80_updates(tmp_path):
         analyzer.analyze_matrix(root)
 
 
+def test_geometry_validator_accepts_explicit_160_update_contract(tmp_path):
+    analyzer = load_analyzer()
+    arm_dir = tmp_path / "uam"
+    write_jsonl(
+        arm_dir / "geometry.jsonl",
+        geometry_records("uam", count=160),
+    )
+
+    geometry = analyzer.validate_geometry(
+        "uam",
+        arm_dir,
+        expected_updates=160,
+    )
+
+    assert len(geometry) == 160
+    assert geometry[-1]["uam_calls"] == 160
+
+
 def test_analyzer_rejects_unsafe_kept_residual(tmp_path):
     analyzer = load_analyzer()
     root = make_complete_matrix(tmp_path)
