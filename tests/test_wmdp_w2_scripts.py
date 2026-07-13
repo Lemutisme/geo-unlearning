@@ -1,3 +1,4 @@
+import os
 import subprocess
 from pathlib import Path
 
@@ -29,7 +30,13 @@ def test_arm_script_has_fixed_five_arm_gpu0_contract():
         "save_model_after_train=false",
         "trainer.args.optim=paged_adamw_32bit",
         "trainer.args.gradient_accumulation_steps=4",
-        "trainer.args.max_steps=80",
+        "learning_rate=${WMDP_W2_LEARNING_RATE:-5e-5}",
+        "max_steps=${WMDP_W2_MAX_STEPS:-80}",
+        "lr_scheduler_type=${WMDP_W2_LR_SCHEDULER_TYPE:-linear}",
+        '"trainer.args.learning_rate=${learning_rate}"',
+        '"trainer.args.max_steps=${max_steps}"',
+        '"trainer.args.lr_scheduler_type=${lr_scheduler_type}"',
+        '"trainer.method_args.geometric_config.actual_delta_steps=[1,${max_steps}]"',
         "data/datasets@data.retain=WMDP_wikitext_retain",
         "~data.retain.WMDP_retain",
         "audit_checkpoint_payloads",
@@ -86,6 +93,49 @@ def test_arm_runner_prints_command_log_before_cleaning_failed_staging():
     failure = text.index('if [[ ${exit_code} -ne 0 ]]')
     cleanup = text.index('exit "${exit_code}"', failure)
     assert 'tail -200 "${local_arm}/run.log" >&2' in text[failure:cleanup]
+
+
+def run_invalid_strength(tmp_path, field, value):
+    environment = os.environ.copy()
+    environment["WMDP_DATA_ROOT"] = str(tmp_path / "missing-data")
+    environment[field] = value
+    return subprocess.run(
+        ["bash", str(ARM), "uam", "0", f"invalid-{field.lower()}"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "true"])
+def test_arm_rejects_invalid_learning_rate_before_launch(tmp_path, value):
+    result = run_invalid_strength(tmp_path, "WMDP_W2_LEARNING_RATE", value)
+
+    assert result.returncode == 2
+    assert "learning rate" in result.stderr.lower()
+    assert "Missing WMDP-Cyber corpus" not in result.stderr
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "1.5", "true"])
+def test_arm_rejects_invalid_max_steps_before_launch(tmp_path, value):
+    result = run_invalid_strength(tmp_path, "WMDP_W2_MAX_STEPS", value)
+
+    assert result.returncode == 2
+    assert "max steps" in result.stderr.lower()
+    assert "Missing WMDP-Cyber corpus" not in result.stderr
+
+
+def test_arm_rejects_invalid_scheduler_before_launch(tmp_path):
+    result = run_invalid_strength(
+        tmp_path,
+        "WMDP_W2_LR_SCHEDULER_TYPE",
+        "cosine",
+    )
+
+    assert result.returncode == 2
+    assert "scheduler" in result.stderr.lower()
+    assert "Missing WMDP-Cyber corpus" not in result.stderr
 
 
 @pytest.mark.parametrize(

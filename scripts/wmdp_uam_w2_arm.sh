@@ -61,6 +61,37 @@ if [[ ! "${run_id}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
     exit 2
 fi
 
+learning_rate=${WMDP_W2_LEARNING_RATE:-5e-5}
+max_steps=${WMDP_W2_MAX_STEPS:-80}
+lr_scheduler_type=${WMDP_W2_LR_SCHEDULER_TYPE:-linear}
+if ! [[ "${max_steps}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "WMDP W2 max steps must be a positive integer: ${max_steps}" >&2
+    exit 2
+fi
+case "${lr_scheduler_type}" in
+    linear|constant) ;;
+    *)
+        echo "WMDP W2 scheduler must be linear or constant: ${lr_scheduler_type}" >&2
+        exit 2
+        ;;
+esac
+if ! python - "${learning_rate}" <<'PY'
+import math
+import sys
+
+raw = sys.argv[1]
+try:
+    value = float(raw)
+except ValueError:
+    value = float("nan")
+if raw.lower() in {"true", "false"} or not math.isfinite(value) or value <= 0.0:
+    print(f"WMDP W2 learning rate must be positive and finite: {raw}", file=sys.stderr)
+    raise SystemExit(2)
+PY
+then
+    exit 2
+fi
+
 conda_exe=${CONDA_EXE:-$(command -v conda || true)}
 if [[ -z "${conda_exe}" ]]; then
     conda_exe=/root/miniconda3/bin/conda
@@ -147,8 +178,9 @@ else
         save_model_after_train=false
         trainer.args.per_device_train_batch_size=1
         trainer.args.gradient_accumulation_steps=4
-        trainer.args.max_steps=80
-        trainer.args.learning_rate=5e-5
+        "trainer.args.max_steps=${max_steps}"
+        "trainer.args.learning_rate=${learning_rate}"
+        "trainer.args.lr_scheduler_type=${lr_scheduler_type}"
         trainer.args.optim=paged_adamw_32bit
         trainer.args.adam_beta1=0.0
         trainer.args.weight_decay=0.0
@@ -169,7 +201,7 @@ else
         trainer.args.data_seed=42
         "trainer.method_args.geometric_config.diagnostics_path=${diagnostics_path}"
         trainer.method_args.geometric_config.actual_delta_mode=full
-        'trainer.method_args.geometric_config.actual_delta_steps=[1,80]'
+        "trainer.method_args.geometric_config.actual_delta_steps=[1,${max_steps}]"
         eval.lm_eval.overwrite=true
         eval.lm_eval.simple_evaluate_args.batch_size=8
     )
