@@ -389,6 +389,9 @@ class UAMUnlearn(GeometricUnlearn):
         if not math.isfinite(delta):
             raise ValueError("UAM SimNPO delta must be finite.")
 
+    def _supported_forget_signals(self):
+        return {"nll", "simnpo"}
+
     @staticmethod
     def _validate_finite_forget_signal(signal):
         if not signal.isfinite().item():
@@ -1164,7 +1167,7 @@ class UAMUnlearn(GeometricUnlearn):
 
         if self.uam_mode not in {"uam", "uam_gu"}:
             raise ValueError(f"Unsupported UAM mode: {self.uam_mode}")
-        if self.forget_signal not in {"nll", "simnpo"}:
+        if self.forget_signal not in self._supported_forget_signals():
             raise ValueError(f"Unsupported UAM forget signal: {self.forget_signal}")
         if self.reflection_geometry not in {"optimizer", "euclidean"}:
             raise ValueError(
