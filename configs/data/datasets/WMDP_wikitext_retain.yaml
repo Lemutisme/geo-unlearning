@@ -1,0 +1,9 @@
+WMDP_wikitext_retain:
+  handler: PretrainingDataset
+  args:
+    hf_args:
+      path: wikitext
+      name: wikitext-2-raw-v1
+      split: train
+    text_key: text
+    max_length: 512
