@@ -179,6 +179,7 @@ def uam_gpu_trainer(tmp_path):
         uam_config = SimpleNamespace(
             mode=mode,
             forget_signal=forget_signal,
+            reflection_geometry="optimizer",
             perturbation_normalization="auto",
             rho=5e-2,
             reflection_gamma=2.0,
@@ -425,6 +426,7 @@ def assert_diagnostics_finite(diagnostics):
         "record_type",
         "mode",
         "forget_signal",
+        "reflection_geometry",
         "perturbation_normalization",
         "optimizer_geometry",
         "component_buffer_device",

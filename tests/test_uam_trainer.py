@@ -35,6 +35,7 @@ def make_uam_trainer(tmp_path, **overrides):
     uam_config = SimpleNamespace(
         mode=overrides.pop("mode", "uam"),
         forget_signal=overrides.pop("forget_signal", "nll"),
+        reflection_geometry=overrides.pop("reflection_geometry", "optimizer"),
         perturbation_normalization=overrides.pop(
             "perturbation_normalization",
             "auto",
@@ -161,6 +162,7 @@ def test_uam_yaml_resolves_safe_defaults():
     assert OmegaConf.to_container(trainer.method_args.uam_config) == {
         "mode": "uam",
         "forget_signal": "nll",
+        "reflection_geometry": "optimizer",
         "perturbation_normalization": "auto",
         "rho": 5e-5,
         "reflection_gamma": 2.0,
@@ -185,6 +187,7 @@ def test_uam_initialization_resolves_values_and_empty_state(tmp_path):
 
     assert trainer.uam_mode == "uam"
     assert trainer.forget_signal == "nll"
+    assert trainer.reflection_geometry == "optimizer"
     assert trainer.perturbation_normalization == "fixed_loss"
     assert trainer.rho == 0.25
     assert trainer.reflection_gamma == -2.0
@@ -589,6 +592,12 @@ def test_auto_normalization_resolves_per_mode(tmp_path, mode, expected):
             "other",
             ValueError,
             "Unsupported UAM forget signal",
+        ),
+        (
+            "reflection_geometry",
+            "other",
+            ValueError,
+            "Unsupported UAM reflection geometry",
         ),
         (
             "perturbation_normalization",
@@ -1641,6 +1650,146 @@ def test_finalize_pure_uam_matches_global_optimizer_coordinate_calculation(
         for value in diagnostics.values()
         if isinstance(value, (int, float, bool))
     )
+
+
+def test_finalize_pure_uam_euclidean_ignores_adam_denominator(
+    tmp_path,
+    monkeypatch,
+):
+    trainer, model = make_uam_trainer(
+        tmp_path,
+        reflection_geometry="euclidean",
+        reflection_gamma=2.0,
+    )
+    initialize_uam_runtime(trainer)
+    named_params = trainer._selected_named_parameters(model)
+    forget = make_sparse_selected_tensors(named_params, [[1.0, 2.0], [3.0, 4.0]])
+    retain = [torch.ones_like(parameter) for _, parameter in named_params]
+    perturbed = make_sparse_selected_tensors(
+        named_params,
+        [[5.0, 6.0], [7.0, 8.0]],
+    )
+    for index, (_, parameter) in enumerate(named_params, start=1):
+        trainer.optimizer.state[parameter].update(
+            step=torch.tensor(float(index)),
+            exp_avg_sq=torch.linspace(
+                1e-6 * index,
+                1e3 * index,
+                parameter.numel(),
+            ).reshape_as(parameter),
+        )
+    prepare_manual_uam_window(trainer, named_params, forget, retain)
+    install_manual_uam_replay(monkeypatch, trainer, perturbed)
+    raw_dot = sum((left * right).sum() for left, right in zip(forget, perturbed))
+    raw_sq = sum(tensor.square().sum() for tensor in forget)
+    coefficient = trainer.reflection_gamma * raw_dot / raw_sq
+    expected = [
+        replay.float() - coefficient * forget_tensor.float()
+        for replay, forget_tensor in zip(perturbed, forget, strict=True)
+    ]
+
+    trainer._finalize_uam_gradients(named_params)
+
+    for (_, parameter), expected_gradient in zip(
+        named_params,
+        expected,
+        strict=True,
+    ):
+        torch.testing.assert_close(parameter.grad, expected_gradient, rtol=0, atol=0)
+    assert trainer.last_uam_diagnostics["reflection_geometry"] == "euclidean"
+
+
+def test_euclidean_uam_gu_projects_residual_in_frozen_adam_coordinates(
+    tmp_path,
+    monkeypatch,
+):
+    trainer, model = make_uam_trainer(
+        tmp_path,
+        mode="uam_gu",
+        reflection_geometry="euclidean",
+        reflection_gamma=0.0,
+        residual_lambda=1.0,
+    )
+    initialize_uam_runtime(trainer)
+    named_params = trainer._selected_named_parameters(model)
+    adapter = trainer._optimizer_geometry_adapter
+    groups = adapter.groups_by_parameter()
+    for index, (_, parameter) in enumerate(named_params, start=1):
+        trainer.optimizer.state[parameter].update(
+            step=torch.tensor(float(index)),
+            exp_avg_sq=torch.linspace(
+                0.01 * index,
+                2.0 * index,
+                parameter.numel(),
+            ).reshape_as(parameter),
+        )
+
+    retain_coordinates = make_sparse_selected_tensors(
+        named_params,
+        [[1.0, 0.0], [0.0, 2.0]],
+    )
+    residual_coordinates = make_sparse_selected_tensors(
+        named_params,
+        [[1.0, 4.0], [5.0, 6.0]],
+    )
+    projection = torch.tensor(13.0 / 5.0)
+    normal_coordinates = [
+        residual - projection * retain
+        for residual, retain in zip(
+            residual_coordinates,
+            retain_coordinates,
+            strict=True,
+        )
+    ]
+    forget_coordinates = [-normal for normal in normal_coordinates]
+    denominators = [
+        adapter.sqrt_denominator(parameter, groups[id(parameter)])
+        for _, parameter in named_params
+    ]
+    raw_retain = [
+        coordinate * denominator
+        for coordinate, denominator in zip(
+            retain_coordinates,
+            denominators,
+            strict=True,
+        )
+    ]
+    raw_forget = [
+        coordinate * denominator
+        for coordinate, denominator in zip(
+            forget_coordinates,
+            denominators,
+            strict=True,
+        )
+    ]
+    raw_uam = [
+        (retain + residual) * denominator
+        for retain, residual, denominator in zip(
+            retain_coordinates,
+            residual_coordinates,
+            denominators,
+            strict=True,
+        )
+    ]
+    prepare_manual_uam_window(trainer, named_params, raw_forget, raw_retain)
+    install_manual_uam_replay(monkeypatch, trainer, raw_uam)
+
+    trainer._finalize_uam_gradients(named_params)
+
+    for (_, parameter), retain, normal, denominator in zip(
+        named_params,
+        retain_coordinates,
+        normal_coordinates,
+        denominators,
+        strict=True,
+    ):
+        expected_raw = (retain + normal) * denominator
+        torch.testing.assert_close(parameter.grad, expected_raw, rtol=0, atol=2e-6)
+    diagnostics = trainer.last_uam_diagnostics
+    assert diagnostics["reflection_geometry"] == "euclidean"
+    assert diagnostics["residual_gate_kept"] is True
+    assert diagnostics["residual_projection_coefficient"] == pytest.approx(13.0 / 5.0)
+    assert diagnostics["relative_residual_orthogonality"] < 1e-6
 
 
 def test_finalize_pure_uam_uses_one_global_not_per_tensor_coefficient(
@@ -2927,6 +3076,7 @@ REQUIRED_UAM_GEOMETRY_KEYS = {
     "update_step",
     "mode",
     "forget_signal",
+    "reflection_geometry",
     "perturbation_normalization",
     "rho",
     "requested_perturbation_norm",
@@ -2989,6 +3139,7 @@ def test_uam_diagnostics_persist_before_actual_delta_with_complete_schema(
     assert geometry["replay_calls"] == geometry["replay_microsteps"] == 1
     assert geometry["mode"] == mode
     assert geometry["forget_signal"] == "nll"
+    assert geometry["reflection_geometry"] == "optimizer"
     assert geometry["perturbation_normalization"] == (
         "fixed_loss" if mode == "uam" else "metric_trust"
     )
@@ -3003,6 +3154,7 @@ def test_uam_diagnostics_persist_before_actual_delta_with_complete_schema(
         "record_type",
         "mode",
         "forget_signal",
+        "reflection_geometry",
         "perturbation_normalization",
         "optimizer_geometry",
         "component_buffer_device",

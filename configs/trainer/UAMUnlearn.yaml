@@ -9,6 +9,7 @@ method_args:
   uam_config:
     mode: uam
     forget_signal: nll
+    reflection_geometry: optimizer
     perturbation_normalization: auto
     rho: 5.0e-5
     reflection_gamma: 2.0

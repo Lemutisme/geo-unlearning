@@ -342,6 +342,9 @@ class UAMUnlearn(GeometricUnlearn):
 
         self.uam_mode = str(self.uam_config.mode).lower()
         self.forget_signal = str(self.uam_config.forget_signal).lower()
+        self.reflection_geometry = str(
+            getattr(self.uam_config, "reflection_geometry", "optimizer")
+        ).lower()
         normalization = str(self.uam_config.perturbation_normalization).lower()
         if normalization == "auto":
             normalization = "fixed_loss" if self.uam_mode == "uam" else "metric_trust"
@@ -502,6 +505,27 @@ class UAMUnlearn(GeometricUnlearn):
             raise RuntimeError("UAM component buffers must use FP32.")
         effective_mean = tensor.float() / self._uam_microsteps
         return self._to_adam_coordinates(effective_mean, sqrt_denominator)
+
+    def _reflection_component_coordinate(
+        self,
+        component,
+        name,
+        parameter,
+        sqrt_denominator,
+    ):
+        if self.reflection_geometry == "optimizer":
+            return self._mean_component_coordinate(
+                component,
+                name,
+                parameter,
+                sqrt_denominator,
+            )
+        return self._mean_component_coordinate(component, name, parameter)
+
+    def _uam_in_optimizer_coordinates(self, uam, sqrt_denominator):
+        if self.reflection_geometry == "optimizer":
+            return uam
+        return self._to_adam_coordinates(uam, sqrt_denominator)
 
     @torch.no_grad()
     def _build_uam_perturbation(self, named_params):
@@ -681,19 +705,26 @@ class UAMUnlearn(GeometricUnlearn):
                 device=scalar_device,
             )
             optimizer_forget_sq = torch.zeros_like(forget_perturbed_retain_dot)
+            reflection_forget_sq = torch.zeros_like(forget_perturbed_retain_dot)
             perturbed_retain_sq = torch.zeros_like(forget_perturbed_retain_dot)
 
             for name, parameter in named_params:
                 group = groups_by_parameter[id(parameter)]
                 sqrt_denominator = adapter.sqrt_denominator(parameter, group)
-                forget = self._mean_component_coordinate(
+                forget = self._reflection_component_coordinate(
                     "forget",
                     name,
                     parameter,
                     sqrt_denominator,
                 )
-                perturbed_retain = self._mean_component_coordinate(
+                perturbed_retain = self._reflection_component_coordinate(
                     "perturbed_retain",
+                    name,
+                    parameter,
+                    sqrt_denominator,
+                )
+                optimizer_forget = self._mean_component_coordinate(
+                    "forget",
                     name,
                     parameter,
                     sqrt_denominator,
@@ -705,13 +736,19 @@ class UAMUnlearn(GeometricUnlearn):
                         parameter,
                         dtype=torch.float32,
                     )
+                if optimizer_forget is None:
+                    optimizer_forget = torch.zeros_like(
+                        parameter,
+                        dtype=torch.float32,
+                    )
                 forget_perturbed_retain_dot.add_((forget * perturbed_retain).sum())
-                optimizer_forget_sq.add_(forget.square().sum())
+                reflection_forget_sq.add_(forget.square().sum())
+                optimizer_forget_sq.add_(optimizer_forget.square().sum())
                 perturbed_retain_sq.add_(perturbed_retain.square().sum())
 
             decision = decide_uam(
                 forget_perturbed_retain_dot,
-                optimizer_forget_sq,
+                reflection_forget_sq,
                 self.reflection_gamma,
                 self.projection_eps,
             )
@@ -732,7 +769,7 @@ class UAMUnlearn(GeometricUnlearn):
                 for name, parameter in named_params:
                     group = groups_by_parameter[id(parameter)]
                     sqrt_denominator = adapter.sqrt_denominator(parameter, group)
-                    forget = self._mean_component_coordinate(
+                    forget = self._reflection_component_coordinate(
                         "forget",
                         name,
                         parameter,
@@ -744,7 +781,7 @@ class UAMUnlearn(GeometricUnlearn):
                         parameter,
                         sqrt_denominator,
                     )
-                    perturbed_retain = self._mean_component_coordinate(
+                    perturbed_retain = self._reflection_component_coordinate(
                         "perturbed_retain",
                         name,
                         parameter,
@@ -759,10 +796,14 @@ class UAMUnlearn(GeometricUnlearn):
                             parameter,
                             dtype=torch.float32,
                         )
-                    uam = apply_uam_tensor(
+                    uam_reflection = apply_uam_tensor(
                         perturbed_retain,
                         forget,
                         decision,
+                    )
+                    uam = self._uam_in_optimizer_coordinates(
+                        uam_reflection,
+                        sqrt_denominator,
                     )
                     residual = uam - retain
                     residual_retain_dot.add_((residual * retain).sum())
@@ -778,6 +819,12 @@ class UAMUnlearn(GeometricUnlearn):
                 for name, parameter in named_params:
                     group = groups_by_parameter[id(parameter)]
                     sqrt_denominator = adapter.sqrt_denominator(parameter, group)
+                    forget_reflection = self._reflection_component_coordinate(
+                        "forget",
+                        name,
+                        parameter,
+                        sqrt_denominator,
+                    )
                     forget = self._mean_component_coordinate(
                         "forget",
                         name,
@@ -790,12 +837,17 @@ class UAMUnlearn(GeometricUnlearn):
                         parameter,
                         sqrt_denominator,
                     )
-                    perturbed_retain = self._mean_component_coordinate(
+                    perturbed_retain = self._reflection_component_coordinate(
                         "perturbed_retain",
                         name,
                         parameter,
                         sqrt_denominator,
                     )
+                    if forget_reflection is None:
+                        forget_reflection = torch.zeros_like(
+                            parameter,
+                            dtype=torch.float32,
+                        )
                     if forget is None:
                         forget = torch.zeros_like(parameter, dtype=torch.float32)
                     if retain is None:
@@ -805,10 +857,14 @@ class UAMUnlearn(GeometricUnlearn):
                             parameter,
                             dtype=torch.float32,
                         )
-                    uam = apply_uam_tensor(
+                    uam_reflection = apply_uam_tensor(
                         perturbed_retain,
-                        forget,
+                        forget_reflection,
                         decision,
+                    )
+                    uam = self._uam_in_optimizer_coordinates(
+                        uam_reflection,
+                        sqrt_denominator,
                     )
                     normal = project_residual_gu_tensor(
                         uam,
@@ -850,58 +906,106 @@ class UAMUnlearn(GeometricUnlearn):
             for name, parameter in named_params:
                 group = groups_by_parameter[id(parameter)]
                 sqrt_denominator = adapter.sqrt_denominator(parameter, group)
-                forget = self._mean_component_coordinate(
+                forget_reflection = self._reflection_component_coordinate(
                     "forget",
                     name,
                     parameter,
                     sqrt_denominator,
                 )
-                perturbed_retain = self._mean_component_coordinate(
+                perturbed_retain = self._reflection_component_coordinate(
                     "perturbed_retain",
                     name,
                     parameter,
                     sqrt_denominator,
                 )
-                retain = self._mean_component_coordinate(
+                forget_optimizer = self._mean_component_coordinate(
+                    "forget",
+                    name,
+                    parameter,
+                    sqrt_denominator,
+                )
+                retain_optimizer = self._mean_component_coordinate(
                     "retain",
                     name,
                     parameter,
                     sqrt_denominator,
                 )
-                if forget is None:
-                    forget = torch.zeros_like(parameter, dtype=torch.float32)
-                if retain is None:
-                    retain = torch.zeros_like(parameter, dtype=torch.float32)
+                if forget_reflection is None:
+                    forget_reflection = torch.zeros_like(
+                        parameter,
+                        dtype=torch.float32,
+                    )
+                if forget_optimizer is None:
+                    forget_optimizer = torch.zeros_like(
+                        parameter,
+                        dtype=torch.float32,
+                    )
+                if retain_optimizer is None:
+                    retain_optimizer = torch.zeros_like(
+                        parameter,
+                        dtype=torch.float32,
+                    )
                 if perturbed_retain is None:
                     perturbed_retain = torch.zeros_like(
                         parameter,
                         dtype=torch.float32,
                     )
-                uam = apply_uam_tensor(
+                uam_reflection = apply_uam_tensor(
                     perturbed_retain,
-                    forget,
+                    forget_reflection,
                     decision,
                 )
+                uam_optimizer = self._uam_in_optimizer_coordinates(
+                    uam_reflection,
+                    sqrt_denominator,
+                )
                 if residual_decision is None:
-                    final_coordinates = uam
-                    normal = torch.zeros_like(uam)
+                    final_coordinates = uam_reflection
+                    diagnostic_uam = uam_reflection
+                    diagnostic_forget = forget_reflection
+                    if self.reflection_geometry == "euclidean":
+                        diagnostic_retain = self._mean_component_coordinate(
+                            "retain",
+                            name,
+                            parameter,
+                        )
+                        if diagnostic_retain is None:
+                            diagnostic_retain = torch.zeros_like(
+                                parameter,
+                                dtype=torch.float32,
+                            )
+                        raw = final_coordinates
+                    else:
+                        diagnostic_retain = retain_optimizer
+                        raw = self._from_adam_coordinates(
+                            final_coordinates,
+                            sqrt_denominator,
+                        )
                 else:
-                    final_coordinates, normal = apply_residual_gu_tensor(
-                        uam,
-                        retain,
+                    final_coordinates, _ = apply_residual_gu_tensor(
+                        uam_optimizer,
+                        retain_optimizer,
                         residual_decision,
+                    )
+                    diagnostic_uam = uam_optimizer
+                    diagnostic_forget = forget_optimizer
+                    diagnostic_retain = retain_optimizer
+                    raw = self._from_adam_coordinates(
+                        final_coordinates,
+                        sqrt_denominator,
                     )
 
                 if residual_projection is None:
-                    diagnostic_retain_sq.add_(self._chunked_fp64_dot(retain))
-                uam_sq.add_(self._chunked_fp64_dot(uam))
+                    diagnostic_retain_sq.add_(
+                        self._chunked_fp64_dot(diagnostic_retain)
+                    )
+                uam_sq.add_(self._chunked_fp64_dot(diagnostic_uam))
                 final_sq.add_(self._chunked_fp64_dot(final_coordinates))
-                forget_final_dot.add_(self._chunked_fp64_dot(forget, final_coordinates))
-                retain_final_dot.add_(self._chunked_fp64_dot(retain, final_coordinates))
-
-                raw = self._from_adam_coordinates(
-                    final_coordinates,
-                    sqrt_denominator,
+                forget_final_dot.add_(
+                    self._chunked_fp64_dot(diagnostic_forget, final_coordinates)
+                )
+                retain_final_dot.add_(
+                    self._chunked_fp64_dot(diagnostic_retain, final_coordinates)
                 )
                 if not torch.isfinite(raw).all().item():
                     raise RuntimeError(
@@ -957,6 +1061,7 @@ class UAMUnlearn(GeometricUnlearn):
                 "mode": self.uam_mode,
                 "update_step": update_step,
                 "forget_signal": self.forget_signal,
+                "reflection_geometry": self.reflection_geometry,
                 "perturbation_normalization": self.perturbation_normalization,
                 "rho": self.rho,
                 "requested_perturbation_norm": perturbation_stats.requested_norm,
@@ -977,7 +1082,10 @@ class UAMUnlearn(GeometricUnlearn):
                 ),
                 "optimizer_forget_norm": float(optimizer_forget_sq.sqrt().item()),
                 "optimizer_retain_norm": float(retain_norm.item()),
-                "forget_norm": float(optimizer_forget_sq.sqrt().item()),
+                "reflection_forget_norm": float(
+                    reflection_forget_sq.sqrt().item()
+                ),
+                "forget_norm": float(reflection_forget_sq.sqrt().item()),
                 "retain_norm": float(retain_norm.item()),
                 "perturbed_retain_norm": float(perturbed_retain_sq.sqrt().item()),
                 "uam_coefficient": float(decision.coefficient.item()),
@@ -1013,6 +1121,7 @@ class UAMUnlearn(GeometricUnlearn):
                 "record_type",
                 "mode",
                 "forget_signal",
+                "reflection_geometry",
                 "perturbation_normalization",
                 "optimizer_geometry",
                 "component_buffer_device",
@@ -1057,6 +1166,11 @@ class UAMUnlearn(GeometricUnlearn):
             raise ValueError(f"Unsupported UAM mode: {self.uam_mode}")
         if self.forget_signal not in {"nll", "simnpo"}:
             raise ValueError(f"Unsupported UAM forget signal: {self.forget_signal}")
+        if self.reflection_geometry not in {"optimizer", "euclidean"}:
+            raise ValueError(
+                "Unsupported UAM reflection geometry: "
+                f"{self.reflection_geometry}"
+            )
         if self.forget_signal == "simnpo":
             self._validate_simnpo_signal_config()
         if self.perturbation_normalization not in {"fixed_loss", "metric_trust"}:
