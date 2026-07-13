@@ -5,11 +5,13 @@ import pytest
 import torch
 from hydra import compose, initialize_config_dir
 from pathlib import Path
-from transformers import TrainingArguments
+from transformers import PretrainedConfig, TrainingArguments
+from transformers.modeling_outputs import CausalLMOutput
 
 from trainer import TRAINER_REGISTRY
 from trainer.unlearn.wmdp_selection import EXPECTED_WMDP_PARAMETER_NAMES
 from trainer.unlearn.wmdp_uam import WMDPUAMUnlearn
+from tests.helpers import nested_collator
 
 
 class ToyWMDPLayer(torch.nn.Module):
@@ -23,9 +25,12 @@ class ToyWMDPLayer(torch.nn.Module):
 
 
 class ToyWMDPCausalLM(torch.nn.Module):
+    main_input_name = "input_ids"
+
     def __init__(self, layer_count=8, width=6, vocab_size=32):
         super().__init__()
-        self.config = SimpleNamespace(use_cache=False)
+        self.config = PretrainedConfig(vocab_size=vocab_size)
+        self.config.use_cache = False
         self.embed = torch.nn.Embedding(vocab_size, width)
         self.model = torch.nn.Module()
         self.model.layers = torch.nn.ModuleList(
@@ -37,7 +42,7 @@ class ToyWMDPCausalLM(torch.nn.Module):
         hidden = self.embed(input_ids)
         for layer in self.model.layers:
             hidden = layer(hidden)[0]
-        return SimpleNamespace(logits=self.lm_head(hidden))
+        return CausalLMOutput(logits=self.lm_head(hidden))
 
 
 def make_batch(seed=1, batch_size=2, sequence_length=5):
@@ -60,8 +65,23 @@ def make_batch(seed=1, batch_size=2, sequence_length=5):
     }
 
 
+def unbatch_wmdp_dataset(batch):
+    batch_size = batch["forget"]["input_ids"].shape[0]
+    return [
+        {
+            component: {
+                name: tensor[index].clone()
+                for name, tensor in component_batch.items()
+            }
+            for component, component_batch in batch.items()
+        }
+        for index in range(batch_size)
+    ]
+
+
 def make_wmdp_uam_trainer(tmp_path, *, model=None, **overrides):
     model = ToyWMDPCausalLM() if model is None else model
+    train_dataset = overrides.pop("train_dataset", None)
     args = TrainingArguments(
         output_dir=str(tmp_path),
         use_cpu=True,
@@ -132,6 +152,8 @@ def make_wmdp_uam_trainer(tmp_path, *, model=None, **overrides):
         undial_config=None,
         wga_config=None,
         satimp_config=None,
+        train_dataset=train_dataset,
+        data_collator=nested_collator if train_dataset is not None else None,
     )
     return trainer, model
 
@@ -271,3 +293,82 @@ def test_wmdp_runtime_rejects_nonpaper_objective_settings(
 
     with pytest.raises((ValueError, NotImplementedError), match=message):
         trainer._validate_uam_runtime()
+
+
+@pytest.mark.parametrize("mode", ["uam", "uam_gu"])
+def test_wmdp_uam_gas_matches_effective_batch_update(tmp_path, mode):
+    torch.manual_seed(101)
+    base = ToyWMDPCausalLM()
+    full_model = copy.deepcopy(base)
+    accumulated_model = copy.deepcopy(base)
+    dataset = unbatch_wmdp_dataset(
+        {
+            "forget": make_batch(seed=102, batch_size=4),
+            "retain": make_batch(seed=103, batch_size=4),
+        }
+    )
+    full, _ = make_wmdp_uam_trainer(
+        tmp_path / "full",
+        model=full_model,
+        mode=mode,
+        train_dataset=dataset,
+        per_device_train_batch_size=4,
+        gradient_accumulation_steps=1,
+    )
+    accumulated, _ = make_wmdp_uam_trainer(
+        tmp_path / "accumulated",
+        model=accumulated_model,
+        mode=mode,
+        train_dataset=dataset,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=4,
+    )
+
+    full.train()
+    accumulated.train()
+
+    assert full.uam_calls == full.replay_calls == 1
+    assert accumulated.uam_calls == accumulated.replay_calls == 1
+    assert full.last_uam_diagnostics["replay_microsteps"] == 1
+    assert accumulated.last_uam_diagnostics["replay_microsteps"] == 4
+    for name in EXPECTED_WMDP_PARAMETER_NAMES:
+        torch.testing.assert_close(
+            full_model.get_parameter(name),
+            accumulated_model.get_parameter(name),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
+
+def test_wmdp_uam_replay_failure_restores_parameters_and_clears_window(
+    tmp_path,
+    monkeypatch,
+):
+    trainer, model = make_wmdp_uam_trainer(tmp_path)
+    trainer.create_optimizer()
+    trainer._validate_uam_runtime()
+    batch = trainer._prepare_inputs(
+        {
+            "forget": make_batch(seed=104),
+            "retain": make_batch(seed=105),
+        }
+    )
+    trainer._collect_uam_microstep(model, batch)
+    named_params = trainer._selected_named_parameters()
+    originals = {name: parameter.detach().clone() for name, parameter in named_params}
+
+    def fail_retain_replay(_model, _inputs):
+        raise RuntimeError("forced WMDP retain replay failure")
+
+    monkeypatch.setattr(trainer, "compute_retain_loss", fail_retain_replay)
+
+    with pytest.raises(RuntimeError, match="forced WMDP retain replay failure"):
+        trainer._finalize_uam_gradients(named_params)
+
+    for name, parameter in named_params:
+        assert torch.equal(parameter, originals[name])
+        assert parameter.grad is None
+    assert trainer.component_buffers.empty
+    assert trainer.replay_buffer.empty
+    assert trainer._uam_microsteps == 0
+    assert trainer.uam_calls == trainer.replay_calls == 0

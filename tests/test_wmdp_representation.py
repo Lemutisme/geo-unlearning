@@ -101,7 +101,7 @@ def test_masked_representation_mse_ignores_unsupervised_and_padding_tokens():
     loss = masked_representation_mse(actual, target, mask)
 
     assert mask.tolist() == [[False, True, True], [False, True, False]]
-    assert loss.item() == pytest.approx((4.0 + 16.0 + 36.0) / 3.0)
+    assert loss.item() == pytest.approx(((4.0 + 16.0) / 2.0 + 36.0) / 2.0)
 
 
 def test_supervised_token_mask_rejects_empty_mask():
@@ -151,6 +151,33 @@ def test_seeded_gaussian_noise_is_reproducible_finite_and_nonzero():
     assert torch.equal(first, second)
     assert torch.isfinite(first).all()
     assert torch.count_nonzero(first).item() > 0
+
+
+def test_seeded_gaussian_noise_is_invariant_to_batch_chunking():
+    full_generator = torch.Generator(device="cpu").manual_seed(43)
+    chunked_generator = torch.Generator(device="cpu").manual_seed(43)
+
+    full = seeded_gaussian_noise(
+        (4, 3, 2),
+        std=0.01,
+        generator=full_generator,
+        device=torch.device("cpu"),
+        dtype=torch.float32,
+    )
+    chunked = torch.cat(
+        [
+            seeded_gaussian_noise(
+                (1, 3, 2),
+                std=0.01,
+                generator=chunked_generator,
+                device=torch.device("cpu"),
+                dtype=torch.float32,
+            )
+            for _ in range(4)
+        ]
+    )
+
+    assert torch.equal(full, chunked)
 
 
 @pytest.mark.parametrize("std", [0.0, -0.01, float("nan"), float("inf")])

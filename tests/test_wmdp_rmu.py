@@ -5,23 +5,35 @@ import pytest
 import torch
 from hydra import compose, initialize_config_dir
 from pathlib import Path
-from transformers import TrainingArguments
+from transformers import TrainerCallback, TrainingArguments
 
 from trainer import TRAINER_REGISTRY
-from tests.test_wmdp_uam import ToyWMDPCausalLM, make_batch
+from tests.helpers import nested_collator
+from tests.test_wmdp_uam import (
+    ToyWMDPCausalLM,
+    make_batch,
+    unbatch_wmdp_dataset,
+)
 from trainer.unlearn.wmdp_selection import EXPECTED_WMDP_PARAMETER_NAMES
 from trainer.unlearn.wmdp_rmu import WMDPRMUUnlearn
 
 
 def make_wmdp_rmu_trainer(tmp_path, *, model=None, **overrides):
     model = ToyWMDPCausalLM() if model is None else model
+    train_dataset = overrides.pop("train_dataset", None)
     args = TrainingArguments(
         output_dir=str(tmp_path),
         use_cpu=True,
         report_to=[],
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=1,
-        max_steps=1,
+        per_device_train_batch_size=overrides.pop(
+            "per_device_train_batch_size",
+            1,
+        ),
+        gradient_accumulation_steps=overrides.pop(
+            "gradient_accumulation_steps",
+            1,
+        ),
+        max_steps=overrides.pop("max_steps", 1),
         learning_rate=5e-5,
         optim="adamw_torch",
         adam_beta1=0.0,
@@ -68,6 +80,8 @@ def make_wmdp_rmu_trainer(tmp_path, *, model=None, **overrides):
         undial_config=None,
         wga_config=None,
         satimp_config=None,
+        train_dataset=train_dataset,
+        data_collator=nested_collator if train_dataset is not None else None,
     )
     return trainer, model
 
@@ -203,3 +217,149 @@ def test_wmdp_rmu_runtime_rejects_nonmatched_settings(
 
     with pytest.raises((ValueError, NotImplementedError), match=message):
         trainer._validate_wmdp_runtime()
+
+
+class CaptureSelectedGradient(TrainerCallback):
+    def __init__(self, trainer):
+        self.trainer = trainer
+        self.gradients = None
+
+    def on_pre_optimizer_step(self, _args, _state, control, **_kwargs):
+        self.gradients = {
+            name: parameter.grad.detach().clone()
+            for name, parameter in self.trainer._selected_named_parameters()
+        }
+        return control
+
+
+@pytest.mark.parametrize("gu_enabled", [False, True])
+def test_wmdp_rmu_gas_matches_effective_batch_update(tmp_path, gu_enabled):
+    torch.manual_seed(201)
+    base = ToyWMDPCausalLM()
+    full_model = copy.deepcopy(base)
+    accumulated_model = copy.deepcopy(base)
+    dataset = unbatch_wmdp_dataset(
+        {
+            "forget": make_batch(seed=202, batch_size=4),
+            "retain": make_batch(seed=203, batch_size=4),
+        }
+    )
+    full, _ = make_wmdp_rmu_trainer(
+        tmp_path / "full",
+        model=full_model,
+        gu_enabled=gu_enabled,
+        train_dataset=dataset,
+        per_device_train_batch_size=4,
+        gradient_accumulation_steps=1,
+    )
+    accumulated, _ = make_wmdp_rmu_trainer(
+        tmp_path / "accumulated",
+        model=accumulated_model,
+        gu_enabled=gu_enabled,
+        train_dataset=dataset,
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=4,
+    )
+
+    full.train()
+    accumulated.train()
+
+    expected_calls = 1 if gu_enabled else 0
+    assert full.gu_projection_calls == accumulated.gu_projection_calls == expected_calls
+    for name in EXPECTED_WMDP_PARAMETER_NAMES:
+        torch.testing.assert_close(
+            full_model.get_parameter(name),
+            accumulated_model.get_parameter(name),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
+
+def test_wmdp_rmu_baseline_writes_component_sum_gradient(tmp_path):
+    torch.manual_seed(204)
+    model = ToyWMDPCausalLM()
+    batch = {
+        "forget": make_batch(seed=205, batch_size=4),
+        "retain": make_batch(seed=206, batch_size=4),
+    }
+    trainer, _ = make_wmdp_rmu_trainer(
+        tmp_path,
+        model=model,
+        gu_enabled=False,
+        train_dataset=unbatch_wmdp_dataset(batch),
+        per_device_train_batch_size=4,
+    )
+    forget, retain, _ = trainer.compute_component_losses(model, batch)
+    named_params = trainer._selected_named_parameters()
+    params = [parameter for _, parameter in named_params]
+    forget_grads = torch.autograd.grad(forget, params, retain_graph=True)
+    retain_grads = torch.autograd.grad(retain, params)
+    expected = {
+        name: gf + 100.0 * gr
+        for (name, _), gf, gr in zip(
+            named_params,
+            forget_grads,
+            retain_grads,
+            strict=True,
+        )
+    }
+    capture = CaptureSelectedGradient(trainer)
+    trainer.add_callback(capture)
+
+    trainer.train()
+
+    assert capture.gradients is not None
+    for name in EXPECTED_WMDP_PARAMETER_NAMES:
+        torch.testing.assert_close(
+            capture.gradients[name],
+            expected[name],
+            rtol=1e-5,
+            atol=1e-6,
+        )
+
+
+def test_wmdp_rmu_gu_writes_one_global_projected_gradient(tmp_path):
+    torch.manual_seed(207)
+    model = ToyWMDPCausalLM()
+    batch = {
+        "forget": make_batch(seed=208, batch_size=4),
+        "retain": make_batch(seed=209, batch_size=4),
+    }
+    trainer, _ = make_wmdp_rmu_trainer(
+        tmp_path,
+        model=model,
+        gu_enabled=True,
+        train_dataset=unbatch_wmdp_dataset(batch),
+        per_device_train_batch_size=4,
+    )
+    forget, retain, _ = trainer.compute_component_losses(model, batch)
+    named_params = trainer._selected_named_parameters()
+    params = [parameter for _, parameter in named_params]
+    forget_grads = torch.autograd.grad(forget, params, retain_graph=True)
+    retain_grads = torch.autograd.grad(retain, params)
+    dot = sum((gf * gr).sum() for gf, gr in zip(forget_grads, retain_grads))
+    retain_sq = sum(gr.square().sum() for gr in retain_grads)
+    coefficient = dot / retain_sq.clamp_min(1e-12)
+    expected = {
+        name: gf - coefficient * gr + 100.0 * gr
+        for (name, _), gf, gr in zip(
+            named_params,
+            forget_grads,
+            retain_grads,
+            strict=True,
+        )
+    }
+    capture = CaptureSelectedGradient(trainer)
+    trainer.add_callback(capture)
+
+    trainer.train()
+
+    assert trainer.gu_projection_calls == trainer.state.global_step == 1
+    assert trainer.last_gu_diagnostics["relative_orthogonality_residual"] < 1e-6
+    for name in EXPECTED_WMDP_PARAMETER_NAMES:
+        torch.testing.assert_close(
+            capture.gradients[name],
+            expected[name],
+            rtol=1e-5,
+            atol=1e-6,
+        )

@@ -108,7 +108,14 @@ def masked_representation_mse(actual, target, mask):
             "WMDP activation, target, and mask shapes are incompatible."
         )
     per_token = (actual.float() - target.float()).square().mean(dim=-1)
-    loss = per_token.masked_select(mask.bool()).mean()
+    mask = mask.bool()
+    token_counts = mask.sum(dim=-1)
+    if (token_counts == 0).any().item():
+        raise RuntimeError(
+            "WMDP representation objective has an empty per-example token mask."
+        )
+    per_example = (per_token * mask).sum(dim=-1) / token_counts.to(per_token)
+    loss = per_example.mean()
     if not torch.isfinite(loss).item():
         raise RuntimeError("WMDP representation loss is non-finite.")
     return loss
@@ -123,11 +130,21 @@ def seeded_gaussian_noise(shape, *, std, generator, device, dtype):
     if not isinstance(generator, torch.Generator):
         raise TypeError("WMDP Gaussian noise requires a torch.Generator.")
 
-    noise = torch.randn(
-        tuple(shape),
-        generator=generator,
-        device="cpu",
-        dtype=torch.float32,
+    shape = tuple(shape)
+    if not shape or shape[0] <= 0:
+        raise ValueError("WMDP Gaussian noise requires a positive batch dimension.")
+
+    noise = torch.stack(
+        [
+            torch.randn(
+                shape[1:],
+                generator=generator,
+                device="cpu",
+                dtype=torch.float32,
+            )
+            for _ in range(shape[0])
+        ],
+        dim=0,
     )
     noise.mul_(std)
     noise = noise.to(device=device, dtype=dtype)

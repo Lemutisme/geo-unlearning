@@ -530,6 +530,18 @@ class UAMUnlearn(GeometricUnlearn):
             return uam
         return self._to_adam_coordinates(uam, sqrt_denominator)
 
+    def _decide_residual_gu_projection(
+        self,
+        residual_retain_dot,
+        optimizer_retain_sq,
+    ):
+        return decide_residual_gu(
+            residual_retain_dot,
+            optimizer_retain_sq,
+            self.residual_lambda,
+            self.projection_eps,
+        )
+
     @torch.no_grad()
     def _build_uam_perturbation(self, named_params):
         named_params = list(named_params)
@@ -812,11 +824,9 @@ class UAMUnlearn(GeometricUnlearn):
                     residual_retain_dot.add_((residual * retain).sum())
                     optimizer_retain_sq.add_(retain.square().sum())
 
-                residual_projection = decide_residual_gu(
+                residual_projection = self._decide_residual_gu_projection(
                     residual_retain_dot,
                     optimizer_retain_sq,
-                    self.residual_lambda,
-                    self.projection_eps,
                 )
 
                 for name, parameter in named_params:
@@ -889,7 +899,10 @@ class UAMUnlearn(GeometricUnlearn):
                     ).square()
                     * diagnostic_retain_sq
                 )
-                if residual_normal_sq.item() != 0.0:
+                if (
+                    residual_normal_sq.item() != 0.0
+                    and diagnostic_retain_sq.item() != 0.0
+                ):
                     relative_residual_orthogonality = (
                         residual_normal_retain_dot.abs()
                         / (diagnostic_retain_sq.sqrt() * residual_normal_sq.sqrt())
@@ -1096,6 +1109,7 @@ class UAMUnlearn(GeometricUnlearn):
                 "final_coordinate_norm": float(final_sq.sqrt().item()),
                 "residual_tangent_norm": float(residual_tangent_norm.item()),
                 "residual_normal_norm": float(residual_normal_norm.item()),
+                "zero_retain_norm": bool(diagnostic_retain_sq.item() == 0.0),
                 "residual_sign_gate_passed": residual_sign_gate_passed,
                 "residual_orthogonality_safe": residual_orthogonality_safe,
                 "residual_gate_kept": residual_gate_kept,

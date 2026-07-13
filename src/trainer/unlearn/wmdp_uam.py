@@ -3,6 +3,7 @@ import math
 import torch
 
 from trainer.unlearn.uam import UAMUnlearn
+from trainer.unlearn.uam_geometry import ResidualGUProjection
 from trainer.unlearn.wmdp_representation import (
     find_exact_module,
     forward_representation_pair,
@@ -88,6 +89,21 @@ class WMDPUAMUnlearn(UAMUnlearn):
             retain_inputs,
         )
         return masked_representation_mse(activation, reference, mask)
+
+    def _decide_residual_gu_projection(
+        self,
+        residual_retain_dot,
+        optimizer_retain_sq,
+    ):
+        if optimizer_retain_sq.item() == 0.0:
+            return ResidualGUProjection(
+                projection_coefficient=torch.zeros_like(residual_retain_dot),
+                residual_lambda=self.residual_lambda,
+            )
+        return super()._decide_residual_gu_projection(
+            residual_retain_dot,
+            optimizer_retain_sq,
+        )
 
     def _validate_uam_runtime(self):
         if self._wmdp_runtime_validated:
