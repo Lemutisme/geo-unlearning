@@ -63,6 +63,13 @@ def test_arm_runner_does_not_require_external_gnu_time():
     assert 'ps -o rss= -g "${process_pid}"' in text
 
 
+def test_arm_runner_prints_command_log_before_cleaning_failed_staging():
+    text = script_text(ARM)
+    failure = text.index('if [[ ${exit_code} -ne 0 ]]')
+    cleanup = text.index('exit "${exit_code}"', failure)
+    assert 'tail -200 "${local_arm}/run.log" >&2' in text[failure:cleanup]
+
+
 @pytest.mark.parametrize(
     "relative_path",
     [

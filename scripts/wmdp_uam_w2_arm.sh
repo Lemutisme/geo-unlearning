@@ -206,6 +206,10 @@ wait "${process_pid}"
 exit_code=$?
 set -e
 if [[ ${exit_code} -ne 0 ]]; then
+    if [[ -f "${local_arm}/run.log" ]]; then
+        echo "Last 200 lines from failed W2 arm ${arm}:" >&2
+        tail -200 "${local_arm}/run.log" >&2
+    fi
     echo "W2 arm failed with exit code ${exit_code}: ${arm}" >&2
     exit "${exit_code}"
 fi
