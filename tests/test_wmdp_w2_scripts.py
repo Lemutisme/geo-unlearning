@@ -36,7 +36,7 @@ def test_arm_script_has_fixed_five_arm_gpu0_contract():
         "lr_scheduler_type=${WMDP_W2_LR_SCHEDULER_TYPE:-linear}",
         '"trainer.args.learning_rate=${learning_rate}"',
         '"trainer.args.max_steps=${max_steps}"',
-        '"trainer.args.lr_scheduler_type=${lr_scheduler_type}"',
+        '"+trainer.args.lr_scheduler_type=${lr_scheduler_type}"',
         '"trainer.method_args.geometric_config.actual_delta_steps=[1,${max_steps}]"',
         "data/datasets@data.retain=WMDP_wikitext_retain",
         "~data.retain.WMDP_retain",

@@ -180,7 +180,7 @@ else
         trainer.args.gradient_accumulation_steps=4
         "trainer.args.max_steps=${max_steps}"
         "trainer.args.learning_rate=${learning_rate}"
-        "trainer.args.lr_scheduler_type=${lr_scheduler_type}"
+        "+trainer.args.lr_scheduler_type=${lr_scheduler_type}"
         trainer.args.optim=paged_adamw_32bit
         trainer.args.adam_beta1=0.0
         trainer.args.weight_decay=0.0
