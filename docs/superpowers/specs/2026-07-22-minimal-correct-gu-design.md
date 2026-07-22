@@ -98,9 +98,9 @@ realized parameter delta is constrained again, so safety is defined on applied
 parameter updates rather than on an imagined modified Adam trajectory. The
 diagnostic record names this state policy explicitly.
 
-Supported optimizers are Torch AdamW and shipped 32-bit paged AdamW variants
-whose selected state exposes finite `exp_avg_sq`. Eight-bit optimizer state is
-rejected.
+Supported optimizers are Torch AdamW and shipped 32-bit paged AdamW variants.
+The frozen second moment is `exp_avg_sq` for Torch and `state2` for the shipped
+paged optimizer. Eight-bit optimizer state is rejected.
 
 ## Retain Constraints
 
