@@ -36,6 +36,13 @@ if is_deepspeed_available():
 
 
 class UnlearnTrainer(FinetuneTrainer):
+    def __init__(self, *args, gu=None, **kwargs):
+        self.gu_config = gu
+        self.gu_enabled = bool(gu is not None and gu.get("enabled", False))
+        self.gu_projection_calls = 0
+        self.gu_last_diagnostics = None
+        super().__init__(*args, **kwargs)
+
     # Adapted from Huggingface DPO Trainer: https://github.com/huggingface/accelerate/blob/739b135f8367becb67ffaada12fe76e3aa60fefd/src/accelerate/accelerator.py#L1473
     def _prepare_deepspeed(self, model):
         # Adapted from accelerate: https://github.com/huggingface/accelerate/blob/739b135f8367becb67ffaada12fe76e3aa60fefd/src/accelerate/accelerator.py#L1473
