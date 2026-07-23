@@ -8,7 +8,9 @@ from torch.nn import functional as F
 from transformers import PretrainedConfig, TrainingArguments
 from transformers.modeling_outputs import CausalLMOutput
 
+from trainer.base import FinetuneTrainer
 from trainer.unlearn.base import UnlearnTrainer
+from trainer.utils import compute_batch_nll
 
 
 class TinyCausalLM(nn.Module):
@@ -62,7 +64,12 @@ def gu_config(**overrides):
     return config
 
 
-def make_trainer(model, output_dir, **kwargs):
+def make_trainer(
+    model,
+    output_dir,
+    gradient_accumulation_steps=1,
+    **kwargs,
+):
     args = TrainingArguments(
         output_dir=str(output_dir),
         use_cpu=True,
@@ -72,6 +79,7 @@ def make_trainer(model, output_dir, **kwargs):
         weight_decay=0.0,
         remove_unused_columns=False,
         disable_tqdm=True,
+        gradient_accumulation_steps=gradient_accumulation_steps,
     )
     return TinyObjectiveTrainer(model=model, args=args, **kwargs)
 
@@ -629,3 +637,377 @@ def test_disabled_gu_matches_unmodified_objective_update(tmp_path):
     ):
         assert torch.equal(control_parameter, disabled_parameter)
     assert_ordered_optimizer_state_equal(control, disabled)
+
+
+def test_gu_collects_normalized_answer_masked_retain_constraint(tmp_path):
+    torch.manual_seed(321)
+    trainer = make_trainer(TinyCausalLM(), tmp_path, gu=gu_config())
+    trainer.create_optimizer()
+    retain = {
+        "input_ids": torch.tensor([[1, 4, 2, 8], [7, 2, 6, 1]]),
+        "labels": torch.tensor([[-100, -100, 2, 8], [-100, 2, 6, 1]]),
+    }
+    batch = {
+        "forget": {
+            "input_ids": torch.tensor([[3, 1, 5, 9], [8, 4, 2, 6]]),
+            "labels": torch.tensor([[3, 1, 5, 9], [8, 4, 2, 6]]),
+        },
+        "retain": retain,
+    }
+    retain_nll, _ = compute_batch_nll(trainer.model, retain)
+    expected_gradient = torch.autograd.grad(
+        retain_nll.mean(),
+        trainer._gu_selected[0][1],
+    )[0].detach()
+    expected_gradient /= expected_gradient.double().square().sum().sqrt()
+
+    trainer.training_step(trainer.model, batch)
+
+    assert len(trainer._gu_constraints_used) == 1
+    (current_constraint,) = trainer._gu_constraints_used
+    assert len(current_constraint) == 1
+    assert current_constraint[0].dtype == torch.float32
+    assert not current_constraint[0].requires_grad
+    assert torch.allclose(current_constraint[0], expected_gradient, atol=1.0e-6)
+
+
+def test_gu_uses_current_then_newest_bounded_constraint_history(tmp_path):
+    torch.manual_seed(654)
+    trainer = make_trainer(
+        TinyCausalLM(),
+        tmp_path,
+        gu=gu_config(retain_history_rank=2),
+    )
+    trainer.create_optimizer()
+    observed_currents = []
+
+    for offset in range(4):
+        tokens = torch.tensor(
+            [
+                [1 + offset, 2 + offset, 3 + offset, 4 + offset],
+                [6 + offset, 7 + offset, 8 + offset, 9 + offset],
+            ]
+        ) % 11
+        batch = {
+            "forget": {"input_ids": tokens, "labels": tokens.clone()},
+            "retain": {
+                "input_ids": tokens.flip(dims=(1,)),
+                "labels": torch.cat(
+                    (
+                        torch.full((2, 1), -100),
+                        tokens.flip(dims=(1,))[:, 1:],
+                    ),
+                    dim=1,
+                ),
+            },
+        }
+
+        trainer.training_step(trainer.model, batch)
+
+        current = tuple(
+            block.clone() for block in trainer._gu_constraints_used[0]
+        )
+        observed_currents.append(current)
+        expected = [current]
+        expected.extend(reversed(observed_currents[:-1]))
+        expected = expected[:3]
+        assert len(trainer._gu_constraints_used) == len(expected)
+        for actual_constraint, expected_constraint in zip(
+            trainer._gu_constraints_used,
+            expected,
+        ):
+            for actual_block, expected_block in zip(
+                actual_constraint,
+                expected_constraint,
+            ):
+                assert torch.equal(actual_block, expected_block)
+
+
+@pytest.mark.parametrize(
+    "retain",
+    [pytest.param(None, id="missing"), pytest.param([], id="not-mapping")],
+)
+def test_gu_requires_retain_mapping(tmp_path, retain):
+    trainer = make_trainer(TinyCausalLM(), tmp_path, gu=gu_config())
+    trainer.create_optimizer()
+    tokens = torch.tensor([[1, 2, 3, 4]])
+    batch = {
+        "forget": {"input_ids": tokens, "labels": tokens.clone()},
+    }
+    if retain is not None:
+        batch["retain"] = retain
+
+    with pytest.raises(ValueError, match="retain.*mapping"):
+        trainer.training_step(trainer.model, batch)
+
+
+def test_gu_rejects_unused_selected_retain_gradient(tmp_path, monkeypatch):
+    model = TinyCausalLM()
+    trainer = make_trainer(model, tmp_path, gu=gu_config())
+    trainer.create_optimizer()
+    model.embed.weight.requires_grad_(True)
+
+    def forward_without_selected_parameter(input_ids, labels=None):
+        del labels
+        hidden = model.embed(input_ids)
+        logits = hidden.mean(dim=-1, keepdim=True).expand(-1, -1, 11)
+        return CausalLMOutput(logits=logits)
+
+    monkeypatch.setattr(model, "forward", forward_without_selected_parameter)
+    tokens = torch.tensor([[1, 2, 3, 4]])
+    batch = {
+        "forget": {"input_ids": tokens, "labels": tokens.clone()},
+        "retain": {"input_ids": tokens, "labels": tokens.clone()},
+    }
+
+    with pytest.raises(ValueError, match="unused"):
+        trainer.training_step(trainer.model, batch)
+
+
+def test_gu_rejects_shape_mismatched_retain_gradient(
+    tmp_path,
+    monkeypatch,
+):
+    trainer = make_trainer(TinyCausalLM(), tmp_path, gu=gu_config())
+    trainer.create_optimizer()
+    monkeypatch.setattr(
+        torch.autograd,
+        "grad",
+        lambda *args, **kwargs: (torch.ones(1),),
+    )
+    tokens = torch.tensor([[1, 2, 3, 4]])
+    batch = {
+        "forget": {"input_ids": tokens, "labels": tokens.clone()},
+        "retain": {"input_ids": tokens, "labels": tokens.clone()},
+    }
+
+    with pytest.raises(ValueError, match="shape"):
+        trainer.training_step(trainer.model, batch)
+
+
+def test_gu_rejects_nonfinite_retain_gradient(tmp_path):
+    trainer = make_trainer(TinyCausalLM(), tmp_path, gu=gu_config())
+    trainer.create_optimizer()
+    selected_parameter = trainer._gu_selected[0][1]
+    hook = selected_parameter.register_hook(
+        lambda gradient: torch.full_like(gradient, float("nan"))
+    )
+    tokens = torch.tensor([[1, 2, 3, 4]])
+    batch = {
+        "forget": {"input_ids": tokens, "labels": tokens.clone()},
+        "retain": {"input_ids": tokens, "labels": tokens.clone()},
+    }
+
+    try:
+        with pytest.raises(ValueError, match="finite"):
+            trainer.training_step(trainer.model, batch)
+    finally:
+        hook.remove()
+
+
+def test_gu_rejects_zero_global_retain_norm(tmp_path):
+    trainer = make_trainer(TinyCausalLM(), tmp_path, gu=gu_config())
+    trainer.create_optimizer()
+    selected_parameter = trainer._gu_selected[0][1]
+    hook = selected_parameter.register_hook(torch.zeros_like)
+    tokens = torch.tensor([[1, 2, 3, 4]])
+    batch = {
+        "forget": {"input_ids": tokens, "labels": tokens.clone()},
+        "retain": {"input_ids": tokens, "labels": tokens.clone()},
+    }
+
+    try:
+        with pytest.raises(ValueError, match="zero"):
+            trainer.training_step(trainer.model, batch)
+    finally:
+        hook.remove()
+
+
+def test_gu_accumulates_effective_batch_then_uses_one_global_block_norm(
+    tmp_path,
+):
+    torch.manual_seed(987)
+    trainer = make_trainer(
+        TinyCausalLM(),
+        tmp_path,
+        gradient_accumulation_steps=2,
+        gu=gu_config(
+            parameter_regex=["embed[.]weight", "protected[.]weight"],
+            retain_history_rank=0,
+        ),
+    )
+    trainer.create_optimizer()
+    retain_batches = [
+        {
+            "input_ids": torch.tensor([[1, 4, 2, 8], [7, 2, 6, 1]]),
+            "labels": torch.tensor([[-100, -100, 2, 8], [-100, 2, 6, 1]]),
+        },
+        {
+            "input_ids": torch.tensor([[3, 9, 5, 2], [6, 8, 4, 1]]),
+            "labels": torch.tensor([[-100, 9, 5, 2], [-100, -100, 4, 1]]),
+        },
+    ]
+    selected_parameters = tuple(
+        parameter for _, parameter in trainer._gu_selected
+    )
+    microstep_gradients = []
+    for retain in retain_batches:
+        retain_nll, _ = compute_batch_nll(trainer.model, retain)
+        microstep_gradients.append(
+            torch.autograd.grad(retain_nll.mean(), selected_parameters)
+        )
+    expected_blocks = tuple(
+        (
+            microstep_gradients[0][index]
+            + microstep_gradients[1][index]
+        ).detach()
+        / 2
+        for index in range(len(selected_parameters))
+    )
+    expected_norm = sum(
+        block.double().square().sum() for block in expected_blocks
+    ).sqrt()
+    expected_blocks = tuple(
+        (block / expected_norm).to(torch.float32)
+        for block in expected_blocks
+    )
+
+    for index, retain in enumerate(retain_batches):
+        forget_tokens = torch.tensor(
+            [[1 + index, 3 + index, 5 + index, 7 + index]]
+        )
+        batch = {
+            "forget": {
+                "input_ids": forget_tokens,
+                "labels": forget_tokens.clone(),
+            },
+            "retain": retain,
+        }
+        with trainer.accelerator.accumulate(trainer.model):
+            trainer.training_step(trainer.model, batch)
+            if index == 0:
+                assert not trainer.accelerator.sync_gradients
+                assert len(trainer._gu_constraint_microsteps) == 1
+                assert not hasattr(trainer, "_gu_constraints_used")
+            else:
+                assert trainer.accelerator.sync_gradients
+
+    (current_constraint,) = trainer._gu_constraints_used
+    assert len(current_constraint) == 2
+    for actual_block, expected_block in zip(
+        current_constraint,
+        expected_blocks,
+    ):
+        assert torch.allclose(actual_block, expected_block, atol=1.0e-6)
+    block_norms = [
+        block.double().square().sum().sqrt().item()
+        for block in current_constraint
+    ]
+    assert all(0.0 < block_norm < 1.0 for block_norm in block_norms)
+    global_norm = sum(
+        block.double().square().sum() for block in current_constraint
+    ).sqrt()
+    assert global_norm.item() == pytest.approx(1.0, abs=1.0e-6)
+    assert trainer._gu_constraint_microsteps == []
+
+
+def test_gu_rank_zero_keeps_current_constraint_without_history(tmp_path):
+    trainer = make_trainer(
+        TinyCausalLM(),
+        tmp_path,
+        gu=gu_config(retain_history_rank=0),
+    )
+    trainer.create_optimizer()
+    currents = []
+
+    for offset in range(2):
+        tokens = torch.tensor([[1 + offset, 3 + offset, 5 + offset, 7 + offset]])
+        batch = {
+            "forget": {"input_ids": tokens, "labels": tokens.clone()},
+            "retain": {
+                "input_ids": tokens.flip(dims=(1,)),
+                "labels": tokens.clone(),
+            },
+        }
+        trainer.training_step(trainer.model, batch)
+        assert len(trainer._gu_constraints_used) == 1
+        assert trainer._gu_constraint_history == ()
+        currents.append(trainer._gu_constraints_used[0][0].clone())
+
+    assert not torch.equal(currents[0], currents[1])
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        pytest.param(None, id="absent"),
+        pytest.param(gu_config(enabled=False), id="disabled"),
+        pytest.param({}, id="legacy-inert"),
+    ],
+)
+def test_gu_inert_modes_delegate_inputs_and_result_unchanged(
+    tmp_path,
+    monkeypatch,
+    config,
+):
+    sentinel = object()
+    inputs = {"opaque": object()}
+    calls = []
+
+    def parent_training_step(self, model, parent_inputs):
+        calls.append((self, model, parent_inputs))
+        return sentinel
+
+    monkeypatch.setattr(FinetuneTrainer, "training_step", parent_training_step)
+    kwargs = {} if config is None else {"gu": config}
+    trainer = make_trainer(TinyCausalLM(), tmp_path, **kwargs)
+
+    result = trainer.training_step(trainer.model, inputs)
+
+    assert result is sentinel
+    assert calls == [(trainer, trainer.model, inputs)]
+
+
+def test_gu_parent_failure_clears_accumulated_microsteps(tmp_path, monkeypatch):
+    trainer = make_trainer(
+        TinyCausalLM(),
+        tmp_path,
+        gradient_accumulation_steps=2,
+        gu=gu_config(),
+    )
+    trainer.create_optimizer()
+    original_compute_loss = trainer.compute_loss
+    parent_calls = 0
+
+    def failing_second_compute_loss(
+        model,
+        inputs,
+        return_outputs=False,
+        num_items_in_batch=None,
+    ):
+        nonlocal parent_calls
+        parent_calls += 1
+        if parent_calls == 2:
+            raise RuntimeError("configured objective failed")
+        return original_compute_loss(
+            model,
+            inputs,
+            return_outputs=return_outputs,
+            num_items_in_batch=num_items_in_batch,
+        )
+
+    monkeypatch.setattr(trainer, "compute_loss", failing_second_compute_loss)
+    tokens = torch.tensor([[1, 2, 3, 4]])
+    batch = {
+        "forget": {"input_ids": tokens, "labels": tokens.clone()},
+        "retain": {"input_ids": tokens.flip(dims=(1,)), "labels": tokens.clone()},
+    }
+
+    with trainer.accelerator.accumulate(trainer.model):
+        trainer.training_step(trainer.model, copy.deepcopy(batch))
+        assert len(trainer._gu_constraint_microsteps) == 1
+    with pytest.raises(RuntimeError, match="configured objective failed"):
+        with trainer.accelerator.accumulate(trainer.model):
+            trainer.training_step(trainer.model, copy.deepcopy(batch))
+
+    assert trainer._gu_constraint_microsteps == []
