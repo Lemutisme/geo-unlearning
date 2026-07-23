@@ -54,7 +54,7 @@ def gu_config(**overrides):
         "enabled": True,
         "parameter_regex": ["protected[.]weight"],
         "retain_history_rank": 8,
-        "projection_eps": 1.0e-12,
+        "projection_eps": 1.0e-6,
         "retain_filter": "first_order",
         "retain_budget": 1.0e-4,
         "backtracking_scales": [1.0, 0.5, 0.25, 0.125],
@@ -975,7 +975,7 @@ def test_gu_constrains_actual_multi_active_adamw_delta_and_reports_kkt(tmp_path)
     trainer = make_trainer(
         TinyCausalLM(),
         tmp_path,
-        gu=gu_config(retain_history_rank=2),
+        gu=gu_config(retain_history_rank=2, projection_eps=1.0e-12),
     )
     trainer.create_optimizer()
     parameter = trainer._gu_selected[0][1]
@@ -1001,7 +1001,8 @@ def test_gu_constrains_actual_multi_active_adamw_delta_and_reports_kkt(tmp_path)
     assert diagnostics["active_constraints"] == [0, 1, 2]
     assert diagnostics["max_violation_before"] > 0.0
     assert diagnostics["max_violation_after"] <= 1.0e-12
-    assert diagnostics["kkt_residual"] <= 1.0e-8
+    assert diagnostics["kkt_residual"] <= 1.0e-12
+    assert diagnostics["projection_tolerance"] == 1.0e-12
     assert trainer.gu_projection_calls == 1
     assert trainer._gu_constraint_history == constraints[:2]
     for attribute in (
@@ -1011,6 +1012,57 @@ def test_gu_constrains_actual_multi_active_adamw_delta_and_reports_kkt(tmp_path)
         "_gu_proposal_delta",
     ):
         assert not hasattr(trainer, attribute)
+
+
+def test_gu_rejects_violating_delta_after_parameter_dtype_cast(
+    tmp_path,
+    monkeypatch,
+):
+    trainer = make_trainer(
+        TinyCausalLM(),
+        tmp_path,
+        gu=gu_config(
+            parameter_regex=["embed[.]weight", "protected[.]weight"],
+            retain_history_rank=1,
+        ),
+    )
+    trainer.create_optimizer()
+    constraint = coordinate_constraint(
+        trainer,
+        [(0, 0, -1.0), (1, 0, -1.0)],
+    )
+    install_constraints(trainer, (constraint,))
+    history = trainer._gu_constraint_history
+    snapshots = tuple(
+        parameter.detach().clone() for _, parameter in trainer._gu_selected
+    )
+    for _, parameter in trainer._gu_selected:
+        parameter.grad = torch.ones_like(parameter)
+
+    original_to = torch.Tensor.to
+    correction_casts = 0
+
+    def drop_second_parameter_correction(tensor, *args, **kwargs):
+        nonlocal correction_casts
+        result = original_to(tensor, *args, **kwargs)
+        if tensor.dtype == torch.float64 and args == (torch.float32,):
+            correction_casts += 1
+            if correction_casts == 2:
+                return torch.zeros_like(result)
+        return result
+
+    monkeypatch.setattr(torch.Tensor, "to", drop_second_parameter_correction)
+
+    with pytest.raises(ValueError, match="applied"):
+        trainer.optimizer.step()
+
+    assert correction_casts == 2
+    for (_, parameter), snapshot in zip(trainer._gu_selected, snapshots):
+        assert torch.equal(parameter, snapshot)
+        assert trainer.optimizer.state[parameter]["step"].item() == 1
+    assert trainer._gu_constraint_history is history
+    assert trainer.gu_projection_calls == 0
+    assert trainer.gu_last_diagnostics is None
 
 
 def test_gu_safe_proposal_is_bitwise_unchanged(tmp_path):

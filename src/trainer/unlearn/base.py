@@ -451,6 +451,16 @@ class UnlearnTrainer(FinetuneTrainer):
                     for index, constraint in enumerate(constraints):
                         violations_after[index] += (constraint[block_index].double()
                             * applied.double()).sum().item()
+            kkt_residual = max(max(violations_after.max().item(), 0.0), max(
+                (-multipliers).max().item(), 0.0), (multipliers *
+                violations_after).abs().max().item(), max((abs(
+                    violations_after[i].item()) for i in active_constraints), default=0.0))
+            if not torch.isfinite(violations_after).all() or not math.isfinite(
+                kkt_residual) or kkt_residual > tolerance:
+                with torch.no_grad():
+                    for before, (_, parameter) in zip(snapshot, self._gu_selected):
+                        parameter.copy_(before)
+                raise ValueError("GU applied delta failed its KKT residual check")
             self.gu_last_diagnostics = {
                 "proposal_norm": math.sqrt(proposal_squared),
                 "corrected_norm": math.sqrt(corrected_squared),
@@ -461,6 +471,7 @@ class UnlearnTrainer(FinetuneTrainer):
                 "max_violation_before": violations_before.max().item(),
                 "max_violation_after": violations_after.max().item(),
                 "kkt_residual": kkt_residual,
+                "projection_tolerance": tolerance,
             }
             self.gu_projection_calls += 1
             retain_history_rank = self.gu_config["retain_history_rank"]
