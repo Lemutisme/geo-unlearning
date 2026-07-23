@@ -348,6 +348,23 @@ class UnlearnTrainer(FinetuneTrainer):
                 self._gu_selected = selected
                 self._gu_diagnostics_path = resolved_candidate
                 self._gu_setup_complete = True
+
+            if getattr(self, "_gu_hooked_optimizer", None) is not optimizer:
+                pre_hook_handle = optimizer.register_step_pre_hook(
+                    self._gu_optimizer_step_pre_hook
+                )
+                try:
+                    post_hook_handle = optimizer.register_step_post_hook(
+                        self._gu_optimizer_step_post_hook
+                    )
+                except Exception:
+                    pre_hook_handle.remove()
+                    raise
+                self._gu_hooked_optimizer = optimizer
+                self._gu_optimizer_step_hook_handles = (
+                    pre_hook_handle,
+                    post_hook_handle,
+                )
         except Exception:
             for parameter, requires_grad in original_requires_grad:
                 parameter.requires_grad_(requires_grad)
@@ -367,6 +384,130 @@ class UnlearnTrainer(FinetuneTrainer):
                 except OSError:
                     pass
         return optimizer
+
+    def _gu_optimizer_step_pre_hook(self, optimizer, _args, _kwargs):
+        del optimizer
+        if hasattr(self, "_gu_parameter_snapshot"):
+            raise ValueError("GU optimizer step already has a pending snapshot")
+        if not hasattr(self, "_gu_constraints_used") or not hasattr(
+            self, "_gu_pending_history_covector"
+        ):
+            raise ValueError("GU optimizer step requires ready constraints")
+
+        constraints = self._gu_constraints_used
+        pending = self._gu_pending_history_covector
+        if (
+            not isinstance(constraints, tuple)
+            or not constraints
+            or constraints[0] is not pending
+        ):
+            raise ValueError("GU optimizer step received stale constraints")
+        if not isinstance(pending, tuple) or len(pending) != len(self._gu_selected):
+            raise ValueError("GU optimizer step received stale pending covector")
+        for block, (name, parameter) in zip(pending, self._gu_selected):
+            if not isinstance(block, torch.Tensor) or block.shape != parameter.shape:
+                raise ValueError(
+                    "GU optimizer step received stale pending covector for "
+                    f"parameter {name}"
+                )
+
+        self._gu_parameter_snapshot = tuple(
+            parameter.detach().float().clone()
+            for _, parameter in self._gu_selected
+        )
+        for attribute in ("_gu_proposal_delta", "_gu_metric_diagonal"):
+            if hasattr(self, attribute):
+                delattr(self, attribute)
+
+    def _gu_optimizer_step_post_hook(self, optimizer, _args, _kwargs):
+        if not hasattr(self, "_gu_parameter_snapshot"):
+            raise ValueError("GU optimizer step is missing its parameter snapshot")
+
+        snapshot = self._gu_parameter_snapshot
+        pending = self._gu_pending_history_covector
+        proposal_delta = []
+        metric_diagonal = []
+        try:
+            for before, (name, parameter) in zip(snapshot, self._gu_selected):
+                if before.shape != parameter.shape:
+                    raise ValueError(
+                        "GU parameter snapshot shape does not match selected "
+                        f"parameter {name}"
+                    )
+                proposal_delta.append(parameter.detach().float() - before)
+
+                state = optimizer.state.get(parameter)
+                if not isinstance(state, Mapping):
+                    raise ValueError(
+                        "GU optimizer second-moment state is missing for selected "
+                        f"parameter {name}"
+                    )
+                if "exp_avg_sq" in state:
+                    second_moment = state["exp_avg_sq"]
+                elif "state2" in state:
+                    second_moment = state["state2"]
+                else:
+                    raise ValueError(
+                        "GU optimizer second-moment state is missing for selected "
+                        f"parameter {name}"
+                    )
+                if not isinstance(second_moment, torch.Tensor) or not (
+                    torch.is_floating_point(second_moment)
+                ):
+                    raise ValueError(
+                        "GU optimizer second-moment state must be a floating tensor "
+                        f"for selected parameter {name}"
+                    )
+                if second_moment.shape != parameter.shape:
+                    raise ValueError(
+                        "GU optimizer second-moment state shape does not match "
+                        f"selected parameter {name}"
+                    )
+                if not torch.isfinite(second_moment).all():
+                    raise ValueError(
+                        "GU optimizer second-moment state must be finite for "
+                        f"selected parameter {name}"
+                    )
+                if (second_moment < 0).any():
+                    raise ValueError(
+                        "GU optimizer second-moment state must be nonnegative for "
+                        f"selected parameter {name}"
+                    )
+
+                parameter_group = next(
+                    group
+                    for group in optimizer.param_groups
+                    if any(
+                        candidate is parameter for candidate in group["params"]
+                    )
+                )
+                diagonal = second_moment.detach().float().sqrt()
+                diagonal.add_(parameter_group["eps"])
+                if not torch.isfinite(diagonal).all():
+                    raise ValueError(
+                        "GU optimizer metric diagonal must be finite for selected "
+                        f"parameter {name}"
+                    )
+                metric_diagonal.append(diagonal)
+
+            self._gu_proposal_delta = tuple(proposal_delta)
+            self._gu_metric_diagonal = tuple(metric_diagonal)
+            retain_history_rank = self.gu_config["retain_history_rank"]
+            history = getattr(self, "_gu_constraint_history", ())
+            self._gu_constraint_history = (
+                (pending, *history)[:retain_history_rank]
+                if retain_history_rank
+                else ()
+            )
+        finally:
+            for attribute in (
+                "_gu_constraint_accumulator",
+                "_gu_constraints_used",
+                "_gu_pending_history_covector",
+                "_gu_parameter_snapshot",
+            ):
+                if hasattr(self, attribute):
+                    delattr(self, attribute)
 
     def training_step(self, model, inputs):
         if not self.gu_enabled:

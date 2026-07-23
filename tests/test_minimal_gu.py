@@ -68,6 +68,8 @@ def make_trainer(
     model,
     output_dir,
     gradient_accumulation_steps=1,
+    adam_beta1=0.9,
+    weight_decay=0.0,
     **kwargs,
 ):
     args = TrainingArguments(
@@ -76,7 +78,8 @@ def make_trainer(
         report_to=[],
         learning_rate=1.0e-3,
         optim="adamw_torch",
-        weight_decay=0.0,
+        adam_beta1=adam_beta1,
+        weight_decay=weight_decay,
         remove_unused_columns=False,
         disable_tqdm=True,
         gradient_accumulation_steps=gradient_accumulation_steps,
@@ -114,6 +117,19 @@ def assert_ordered_optimizer_state_equal(left, right):
                 assert torch.equal(left_value, right_value)
             else:
                 assert left_value == right_value
+
+
+def gu_batch(forget_tokens, retain_tokens):
+    return {
+        "forget": {
+            "input_ids": forget_tokens,
+            "labels": forget_tokens.clone(),
+        },
+        "retain": {
+            "input_ids": retain_tokens,
+            "labels": retain_tokens.clone(),
+        },
+    }
 
 
 @pytest.mark.parametrize(
@@ -1076,3 +1092,391 @@ def test_gu_parent_failure_clears_accumulator_and_pending_state(
     assert not hasattr(trainer, "_gu_constraint_accumulator")
     assert not hasattr(trainer, "_gu_constraints_used")
     assert not hasattr(trainer, "_gu_pending_history_covector")
+
+
+def test_gu_captures_full_realized_adamw_delta_and_metric(tmp_path):
+    torch.manual_seed(2468)
+    trainer = make_trainer(
+        TinyCausalLM(),
+        tmp_path,
+        adam_beta1=0.9,
+        weight_decay=0.2,
+        gu=gu_config(),
+    )
+    trainer.create_optimizer()
+    assert not trainer.optimizer.state
+    batches = [
+        gu_batch(
+            torch.tensor([[1, 4, 2, 8], [7, 2, 6, 1]]),
+            torch.tensor([[3, 1, 5, 9], [8, 4, 2, 6]]),
+        ),
+        gu_batch(
+            torch.tensor([[2, 5, 3, 9], [8, 3, 7, 2]]),
+            torch.tensor([[4, 2, 6, 10], [9, 5, 3, 7]]),
+        ),
+    ]
+
+    trainer.training_step(trainer.model, batches[0])
+    assert not trainer.optimizer.state
+    trainer.optimizer.step()
+    trainer.optimizer.zero_grad()
+
+    before = tuple(
+        parameter.detach().float().clone()
+        for _, parameter in trainer._gu_selected
+    )
+    trainer.training_step(trainer.model, batches[1])
+    raw_gradients = tuple(
+        parameter.grad.detach().float().clone()
+        for _, parameter in trainer._gu_selected
+    )
+    trainer.optimizer.step()
+
+    observed = tuple(
+        parameter.detach().float() - old
+        for (_, parameter), old in zip(trainer._gu_selected, before)
+    )
+    for captured, actual in zip(trainer._gu_proposal_delta, observed):
+        assert captured.dtype == torch.float32
+        torch.testing.assert_close(captured, actual, rtol=0.0, atol=0.0)
+    assert any(
+        not torch.allclose(
+            actual,
+            -trainer.args.learning_rate * raw_gradient,
+        )
+        for actual, raw_gradient in zip(observed, raw_gradients)
+    )
+
+    for metric, (_, parameter) in zip(
+        trainer._gu_metric_diagonal,
+        trainer._gu_selected,
+    ):
+        state = trainer.optimizer.state[parameter]
+        expected = state["exp_avg_sq"].detach().float().sqrt()
+        parameter_group = next(
+            group
+            for group in trainer.optimizer.param_groups
+            if any(candidate is parameter for candidate in group["params"])
+        )
+        expected.add_(parameter_group["eps"])
+        assert metric.dtype == torch.float32
+        torch.testing.assert_close(metric, expected, rtol=0.0, atol=0.0)
+
+
+def test_gu_commits_history_only_after_post_hook_and_truncates_fifo(tmp_path):
+    trainer = make_trainer(
+        TinyCausalLM(),
+        tmp_path,
+        gu=gu_config(retain_history_rank=2),
+    )
+    trainer.create_optimizer()
+    prior = (torch.ones_like(trainer._gu_selected[0][1]),)
+    trainer._gu_constraint_history = (prior,)
+    expected_history = (prior,)
+    batches = [
+        gu_batch(
+            torch.tensor([[1, 2, 3, 4]]),
+            torch.tensor([[4, 3, 2, 1]]),
+        ),
+        gu_batch(
+            torch.tensor([[2, 3, 4, 5]]),
+            torch.tensor([[5, 4, 3, 2]]),
+        ),
+        gu_batch(
+            torch.tensor([[3, 4, 5, 6]]),
+            torch.tensor([[6, 5, 4, 3]]),
+        ),
+    ]
+
+    committed = [prior]
+    for batch in batches:
+        trainer.training_step(trainer.model, batch)
+        pending = trainer._gu_pending_history_covector
+        assert trainer._gu_constraint_history == expected_history
+        trainer._gu_constraint_accumulator = object()
+
+        trainer.optimizer.step()
+        trainer.optimizer.zero_grad()
+
+        committed.insert(0, pending)
+        expected_history = tuple(committed[:2])
+        assert trainer._gu_constraint_history == expected_history
+        assert trainer._gu_constraint_history[0] is pending
+        for attribute in (
+            "_gu_constraint_accumulator",
+            "_gu_constraints_used",
+            "_gu_pending_history_covector",
+            "_gu_parameter_snapshot",
+        ):
+            assert not hasattr(trainer, attribute)
+        assert hasattr(trainer, "_gu_proposal_delta")
+        assert hasattr(trainer, "_gu_metric_diagonal")
+
+
+def test_gu_rank_zero_commits_empty_history_after_step(tmp_path):
+    trainer = make_trainer(
+        TinyCausalLM(),
+        tmp_path,
+        gu=gu_config(retain_history_rank=0),
+    )
+    trainer.create_optimizer()
+    trainer.training_step(
+        trainer.model,
+        gu_batch(
+            torch.tensor([[1, 3, 5, 7]]),
+            torch.tensor([[7, 5, 3, 1]]),
+        ),
+    )
+
+    trainer.optimizer.step()
+
+    assert trainer._gu_constraint_history == ()
+
+
+@pytest.mark.parametrize(
+    ("prepared_state", "message"),
+    [
+        pytest.param("missing", "ready", id="missing"),
+        pytest.param("stale", "stale", id="stale"),
+        pytest.param("duplicate", "snapshot", id="duplicate-snapshot"),
+    ],
+)
+def test_gu_pre_hook_rejects_unready_or_duplicate_state(
+    tmp_path,
+    prepared_state,
+    message,
+):
+    trainer = make_trainer(
+        TinyCausalLM(),
+        tmp_path,
+        weight_decay=0.2,
+        gu=gu_config(),
+    )
+    trainer.create_optimizer()
+    parameter = trainer._gu_selected[0][1]
+    parameter.grad = torch.ones_like(parameter)
+    before = parameter.detach().clone()
+    covector = (torch.ones_like(parameter),)
+    if prepared_state != "missing":
+        trainer._gu_constraints_used = (covector,)
+        trainer._gu_pending_history_covector = covector
+    if prepared_state == "stale":
+        trainer._gu_pending_history_covector = tuple(
+            block.clone() for block in covector
+        )
+    elif prepared_state == "duplicate":
+        trainer._gu_parameter_snapshot = (parameter.detach().float().clone(),)
+
+    with pytest.raises(ValueError, match=message):
+        trainer.optimizer.step()
+
+    assert torch.equal(parameter, before)
+    assert not trainer.optimizer.state
+
+
+def test_gu_registers_bound_optimizer_hooks_exactly_once(tmp_path, monkeypatch):
+    model = TinyCausalLM()
+    optimizer = torch.optim.AdamW([model.protected.weight], lr=1.0e-3)
+    pre_hooks = []
+    post_hooks = []
+    original_register_pre_hook = optimizer.register_step_pre_hook
+    original_register_post_hook = optimizer.register_step_post_hook
+
+    def register_pre_hook(hook):
+        pre_hooks.append(hook)
+        return original_register_pre_hook(hook)
+
+    def register_post_hook(hook):
+        post_hooks.append(hook)
+        return original_register_post_hook(hook)
+
+    monkeypatch.setattr(optimizer, "register_step_pre_hook", register_pre_hook)
+    monkeypatch.setattr(optimizer, "register_step_post_hook", register_post_hook)
+    trainer = make_trainer(
+        model,
+        tmp_path,
+        gu=gu_config(),
+        optimizers=(optimizer, None),
+    )
+
+    trainer.create_optimizer()
+    trainer.create_optimizer()
+
+    assert len(pre_hooks) == 1
+    assert len(post_hooks) == 1
+    assert pre_hooks[0].__self__ is trainer
+    assert pre_hooks[0].__func__ is UnlearnTrainer._gu_optimizer_step_pre_hook
+    assert post_hooks[0].__self__ is trainer
+    assert post_hooks[0].__func__ is UnlearnTrainer._gu_optimizer_step_post_hook
+
+
+@pytest.mark.parametrize(
+    ("corruption", "message"),
+    [
+        pytest.param("missing", "state", id="missing"),
+        pytest.param("nan", "finite", id="nan"),
+        pytest.param("negative", "nonnegative", id="negative"),
+        pytest.param("shape", "shape", id="shape"),
+        pytest.param("integer", "floating", id="integer"),
+    ],
+)
+def test_gu_invalid_second_moment_does_not_commit_or_rewind_proposal(
+    tmp_path,
+    corruption,
+    message,
+):
+    model = TinyCausalLM()
+    parameter = model.protected.weight
+    optimizer = torch.optim.AdamW([parameter], lr=1.0e-3, weight_decay=0.2)
+    after_ordinary_step = []
+
+    def corrupt_state(stepped_optimizer, _args, _kwargs):
+        after_ordinary_step.append(parameter.detach().clone())
+        if corruption == "missing":
+            stepped_optimizer.state.pop(parameter)
+            return
+        state = stepped_optimizer.state[parameter]
+        if corruption == "nan":
+            state["exp_avg_sq"].fill_(float("nan"))
+        elif corruption == "negative":
+            state["exp_avg_sq"].fill_(-1.0)
+        elif corruption == "shape":
+            state["exp_avg_sq"] = torch.zeros(1)
+        else:
+            state["exp_avg_sq"] = torch.zeros_like(parameter, dtype=torch.int64)
+
+    optimizer.register_step_post_hook(corrupt_state)
+    trainer = make_trainer(
+        model,
+        tmp_path,
+        gu=gu_config(retain_history_rank=2),
+        optimizers=(optimizer, None),
+    )
+    trainer.create_optimizer()
+    prior = (torch.ones_like(parameter),)
+    history = (prior,)
+    trainer._gu_constraint_history = history
+    trainer.training_step(
+        trainer.model,
+        gu_batch(
+            torch.tensor([[1, 2, 3, 4]]),
+            torch.tensor([[4, 3, 2, 1]]),
+        ),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        trainer.optimizer.step()
+
+    assert len(after_ordinary_step) == 1
+    assert torch.equal(parameter, after_ordinary_step[0])
+    assert trainer._gu_constraint_history is history
+    assert not hasattr(trainer, "_gu_proposal_delta")
+    assert not hasattr(trainer, "_gu_metric_diagonal")
+    for attribute in (
+        "_gu_constraint_accumulator",
+        "_gu_constraints_used",
+        "_gu_pending_history_covector",
+        "_gu_parameter_snapshot",
+    ):
+        assert not hasattr(trainer, attribute)
+
+
+def test_gu_reads_state2_second_moment_without_optimizer_adapter(tmp_path):
+    model = TinyCausalLM()
+    parameter = model.protected.weight
+    optimizer = torch.optim.AdamW([parameter], lr=1.0e-3, eps=3.0e-7)
+
+    def expose_state2(stepped_optimizer, _args, _kwargs):
+        state = stepped_optimizer.state[parameter]
+        state["state2"] = state.pop("exp_avg_sq")
+
+    optimizer.register_step_post_hook(expose_state2)
+    trainer = make_trainer(
+        model,
+        tmp_path,
+        gu=gu_config(),
+        optimizers=(optimizer, None),
+    )
+    trainer.create_optimizer()
+    trainer.training_step(
+        trainer.model,
+        gu_batch(
+            torch.tensor([[1, 2, 3, 4]]),
+            torch.tensor([[4, 3, 2, 1]]),
+        ),
+    )
+    pending = trainer._gu_pending_history_covector
+
+    trainer.optimizer.step()
+
+    expected = optimizer.state[parameter]["state2"].float().sqrt().add(3.0e-7)
+    torch.testing.assert_close(
+        trainer._gu_metric_diagonal[0],
+        expected,
+        rtol=0.0,
+        atol=0.0,
+    )
+    assert trainer._gu_constraint_history[0] is pending
+
+
+def test_gu_failed_adamw_step_does_not_commit_history(tmp_path):
+    trainer = make_trainer(TinyCausalLM(), tmp_path, gu=gu_config())
+    trainer.create_optimizer()
+    trainer.training_step(
+        trainer.model,
+        gu_batch(
+            torch.tensor([[1, 2, 3, 4]]),
+            torch.tensor([[4, 3, 2, 1]]),
+        ),
+    )
+    history = ()
+    trainer._gu_constraint_history = history
+    before = trainer._gu_selected[0][1].detach().clone()
+
+    def failing_closure():
+        raise RuntimeError("ordinary AdamW step failed")
+
+    with pytest.raises(RuntimeError, match="ordinary AdamW step failed"):
+        trainer.optimizer.step(failing_closure)
+
+    assert trainer._gu_constraint_history is history
+    assert torch.equal(trainer._gu_selected[0][1], before)
+    assert not hasattr(trainer, "_gu_proposal_delta")
+    assert not hasattr(trainer, "_gu_metric_diagonal")
+    assert hasattr(trainer, "_gu_parameter_snapshot")
+
+
+def test_disabled_gu_registers_no_hooks_or_transient_state(tmp_path, monkeypatch):
+    model = TinyCausalLM()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1.0e-3)
+    registrations = []
+    original_register_pre_hook = optimizer.register_step_pre_hook
+    original_register_post_hook = optimizer.register_step_post_hook
+
+    def register_pre_hook(hook):
+        registrations.append(("pre", hook))
+        return original_register_pre_hook(hook)
+
+    def register_post_hook(hook):
+        registrations.append(("post", hook))
+        return original_register_post_hook(hook)
+
+    monkeypatch.setattr(optimizer, "register_step_pre_hook", register_pre_hook)
+    monkeypatch.setattr(optimizer, "register_step_post_hook", register_post_hook)
+    trainer = make_trainer(
+        model,
+        tmp_path,
+        gu=gu_config(enabled=False),
+        optimizers=(optimizer, None),
+    )
+
+    trainer.create_optimizer()
+
+    assert registrations == []
+    for attribute in (
+        "_gu_parameter_snapshot",
+        "_gu_proposal_delta",
+        "_gu_metric_diagonal",
+        "_gu_constraint_history",
+    ):
+        assert not hasattr(trainer, attribute)
