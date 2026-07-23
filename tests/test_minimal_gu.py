@@ -395,6 +395,16 @@ def test_gu_rejects_unsupported_runtime_modes(tmp_path, monkeypatch, mode, messa
         trainer.create_optimizer()
 
 
+def test_gu_rejects_selected_float16_parameter_without_fp16_mode(tmp_path):
+    model = TinyCausalLM()
+    model.protected.to(dtype=torch.float16)
+    trainer = make_trainer(model, tmp_path, gu=gu_config())
+    assert trainer.args.fp16 is False
+
+    with pytest.raises(ValueError, match="FP16"):
+        trainer.create_optimizer()
+
+
 def test_gu_permits_nonreentrant_checkpointing_and_bf16(tmp_path, monkeypatch):
     trainer = make_trainer(TinyCausalLM(), tmp_path, gu=gu_config())
     monkeypatch.setattr(trainer.args, "gradient_checkpointing", True)
@@ -706,7 +716,7 @@ def test_gu_rejects_zero_global_retain_norm(tmp_path):
         hook.remove()
 
 
-def test_gu_accumulates_effective_batch_then_uses_one_global_block_norm(
+def test_gu_accumulates_unequal_microbatches_by_sequence_weight(
     tmp_path,
 ):
     torch.manual_seed(987)
@@ -726,8 +736,8 @@ def test_gu_accumulates_effective_batch_then_uses_one_global_block_norm(
             "labels": torch.tensor([[-100, -100, 2, 8], [-100, 2, 6, 1]]),
         },
         {
-            "input_ids": torch.tensor([[3, 9, 5, 2], [6, 8, 4, 1]]),
-            "labels": torch.tensor([[-100, 9, 5, 2], [-100, -100, 4, 1]]),
+            "input_ids": torch.tensor([[3, 9, 5, 2]]),
+            "labels": torch.tensor([[-100, 9, 5, 2]]),
         },
     ]
     selected_parameters = tuple(
@@ -737,14 +747,10 @@ def test_gu_accumulates_effective_batch_then_uses_one_global_block_norm(
     for retain in retain_batches:
         retain_nll, _ = compute_batch_nll(trainer.model, retain)
         microstep_gradients.append(
-            torch.autograd.grad(retain_nll.mean(), selected_parameters)
+            torch.autograd.grad(retain_nll.sum(), selected_parameters)
         )
     expected_blocks = tuple(
-        (
-            microstep_gradients[0][index]
-            + microstep_gradients[1][index]
-        ).detach()
-        / 2
+        (microstep_gradients[0][index] + microstep_gradients[1][index]).detach()
         for index in range(len(selected_parameters))
     )
     expected_norm = sum(
@@ -753,6 +759,21 @@ def test_gu_accumulates_effective_batch_then_uses_one_global_block_norm(
     expected_blocks = tuple(
         (block / expected_norm).to(torch.float32)
         for block in expected_blocks
+    )
+    equal_microbatch_blocks = tuple(
+        microstep_gradients[0][index] / 2 + microstep_gradients[1][index]
+        for index in range(len(selected_parameters))
+    )
+    equal_microbatch_norm = sum(
+        block.double().square().sum() for block in equal_microbatch_blocks
+    ).sqrt()
+    equal_microbatch_blocks = tuple(
+        (block / equal_microbatch_norm).to(torch.float32)
+        for block in equal_microbatch_blocks
+    )
+    assert any(
+        not torch.allclose(sequence, equal, atol=1.0e-6)
+        for sequence, equal in zip(expected_blocks, equal_microbatch_blocks)
     )
 
     for index, retain in enumerate(retain_batches):
@@ -1074,6 +1095,47 @@ def test_gu_rejects_violating_delta_after_parameter_dtype_cast(
     assert trainer.gu_last_diagnostics is None
 
 
+def test_gu_rejects_primal_safe_dtype_cast_with_stationarity_error(
+    tmp_path,
+    monkeypatch,
+):
+    trainer = make_trainer(
+        TinyCausalLM(),
+        tmp_path,
+        gu=gu_config(retain_history_rank=1),
+    )
+    trainer.create_optimizer()
+    parameter = trainer._gu_selected[0][1]
+    constraint = coordinate_constraint(trainer, [(0, 0, -1.0)])
+    install_constraints(trainer, (constraint,))
+    history = trainer._gu_constraint_history
+    snapshot = parameter.detach().clone()
+    parameter.grad = torch.ones_like(parameter)
+    original_to = torch.Tensor.to
+    correction_casts = 0
+
+    def perturb_unconstrained_correction(tensor, *args, **kwargs):
+        nonlocal correction_casts
+        result = original_to(tensor, *args, **kwargs)
+        if tensor.dtype == torch.float64 and args == (torch.float32,):
+            correction_casts += 1
+            result = result.clone()
+            result.view(-1)[1] += 1.0e-2
+        return result
+
+    monkeypatch.setattr(torch.Tensor, "to", perturb_unconstrained_correction)
+
+    with pytest.raises(ValueError, match="stationarity"):
+        trainer.optimizer.step()
+
+    assert correction_casts == 1
+    assert torch.equal(parameter, snapshot)
+    assert trainer._gu_constraint_history is history
+    assert trainer.gu_projection_calls == 0
+    assert trainer.gu_last_diagnostics is None
+    assert trainer._gu_diagnostics_path.read_text() == ""
+
+
 def test_gu_safe_proposal_is_bitwise_unchanged(tmp_path):
     model = TinyCausalLM()
     trainer = make_trainer(model, tmp_path, gu=gu_config())
@@ -1179,7 +1241,7 @@ def test_gu_uses_one_global_dual_coefficient_across_parameter_blocks(tmp_path):
 
 
 @pytest.mark.parametrize("solver_failure", ["rank", "negative", "nonfinite"])
-def test_gu_infeasible_solver_result_does_not_correct_or_commit(
+def test_gu_infeasible_solver_result_restores_snapshot_without_commit(
     tmp_path,
     monkeypatch,
     solver_failure,
@@ -1204,6 +1266,7 @@ def test_gu_infeasible_solver_result_does_not_correct_or_commit(
     install_constraints(trainer, (constraint,))
     history = trainer._gu_constraint_history
     parameter.grad = torch.ones_like(parameter)
+    snapshot = parameter.detach().clone()
     real_lstsq = torch.linalg.lstsq
 
     def invalid_lstsq(matrix, right_hand_side, *, rcond):
@@ -1225,9 +1288,12 @@ def test_gu_infeasible_solver_result_does_not_correct_or_commit(
         optimizer.step()
 
     assert len(ordinary_proposal) == 1
-    assert torch.equal(parameter, ordinary_proposal[0])
+    assert not torch.equal(ordinary_proposal[0], snapshot)
+    assert torch.equal(parameter, snapshot)
     assert trainer._gu_constraint_history is history
     assert trainer.gu_projection_calls == 0
+    assert trainer.gu_last_diagnostics is None
+    assert trainer._gu_diagnostics_path.read_text() == ""
     for attribute in (
         "_gu_constraints_used",
         "_gu_pending_history_covector",
@@ -1237,7 +1303,7 @@ def test_gu_infeasible_solver_result_does_not_correct_or_commit(
         assert not hasattr(trainer, attribute)
 
 
-def test_gu_nonfinite_constraint_does_not_correct_or_commit(tmp_path):
+def test_gu_nonfinite_constraint_restores_snapshot_without_commit(tmp_path):
     model = TinyCausalLM()
     parameter = model.protected.weight
     optimizer = torch.optim.AdamW([parameter], lr=1.0e-3)
@@ -1258,12 +1324,17 @@ def test_gu_nonfinite_constraint_does_not_correct_or_commit(tmp_path):
     install_constraints(trainer, (constraint,))
     history = trainer._gu_constraint_history
     parameter.grad = torch.ones_like(parameter)
+    snapshot = parameter.detach().clone()
 
     with pytest.raises(ValueError, match="finite"):
         optimizer.step()
 
-    assert torch.equal(parameter, ordinary_proposal[0])
+    assert not torch.equal(ordinary_proposal[0], snapshot)
+    assert torch.equal(parameter, snapshot)
     assert trainer._gu_constraint_history is history
+    assert trainer.gu_projection_calls == 0
+    assert trainer.gu_last_diagnostics is None
+    assert trainer._gu_diagnostics_path.read_text() == ""
     assert not hasattr(trainer, "_gu_proposal_delta")
 
 
@@ -1496,7 +1567,7 @@ def test_gu_registers_bound_optimizer_hooks_exactly_once(tmp_path, monkeypatch):
         pytest.param("metric", "metric diagonal", id="metric"),
     ],
 )
-def test_gu_invalid_second_moment_does_not_commit_or_rewind_proposal(
+def test_gu_invalid_second_moment_restores_snapshot_without_commit(
     tmp_path,
     corruption,
     message,
@@ -1541,13 +1612,18 @@ def test_gu_invalid_second_moment_does_not_commit_or_rewind_proposal(
             torch.tensor([[4, 3, 2, 1]]),
         ),
     )
+    snapshot = parameter.detach().clone()
 
     with pytest.raises(ValueError, match=message):
         trainer.optimizer.step()
 
     assert len(after_ordinary_step) == 1
-    assert torch.equal(parameter, after_ordinary_step[0])
+    assert not torch.equal(after_ordinary_step[0], snapshot)
+    assert torch.equal(parameter, snapshot)
     assert trainer._gu_constraint_history is history
+    assert trainer.gu_projection_calls == 0
+    assert trainer.gu_last_diagnostics is None
+    assert trainer._gu_diagnostics_path.read_text() == ""
     assert not hasattr(trainer, "_gu_proposal_delta")
     assert not hasattr(trainer, "_gu_metric_diagonal")
     for attribute in (
@@ -1911,6 +1987,30 @@ def test_finite_step_without_feasible_scale_commits_zero_step_history(tmp_path):
     assert trainer._gu_constraint_history[0] is pending
     assert trainer.optimizer.state[parameter]["exp_avg_sq"].eq(1).all()
     assert trainer.gu_projection_calls == 1
+
+
+def test_gu_reports_bf16_quantized_zero_applied_delta(tmp_path):
+    model = TinyCausalLM()
+    model.protected.to(dtype=torch.bfloat16)
+    trainer = make_trainer(model, tmp_path, gu=gu_config())
+    trainer.create_optimizer()
+    parameter = trainer._gu_selected[0][1]
+    pending = (torch.ones_like(parameter, dtype=torch.float32),)
+    install_constraints(trainer, (pending,))
+    trainer.optimizer.state[parameter]["exp_avg_sq"] = torch.ones_like(parameter)
+    trainer._gu_optimizer_step_pre_hook(trainer.optimizer, (), {})
+    snapshot = parameter.detach().clone()
+    with torch.no_grad():
+        parameter.add_(torch.full_like(parameter, 1.0e-8))
+    assert torch.equal(parameter, snapshot)
+
+    trainer._gu_optimizer_step_post_hook(trainer.optimizer, (), {})
+
+    assert torch.equal(parameter, snapshot)
+    assert trainer.gu_last_diagnostics["applied_scale"] == 1.0
+    assert trainer.gu_last_diagnostics["zero_step"] is True
+    assert trainer.gu_last_diagnostics["zero_step_reason"] == "quantized_zero"
+    assert trainer._gu_constraint_history[0] is pending
 
 
 def test_first_order_step_adds_no_retain_forward_and_writes_one_record(
@@ -2348,7 +2448,7 @@ def test_task7_legacy_gu_has_exact_migration_and_safe_legacy_controls(tmp_path):
     assert source.index("self.gradient_surgery") < guard_index
     assert guard_index < source.index("self.simnpo_config")
     assert guard_index < source.index("super().__init__")
-    assert guard_index < source.index("raise ValueError(")
+    assert guard_index < source.index("raise ValueError(", guard_index)
     assert source.index("super().__init__") < source.index("self.gu_enabled = bool(")
 
 
@@ -2872,6 +2972,43 @@ def test_task8_registered_objectives_inherit_common_gu_without_dispatch(tmp_path
         )
         assert trainer.gu_enabled is False
         assert type(trainer).training_step is UnlearnTrainer.training_step
+
+
+def test_rmu_common_gu_keeps_exact_scope_and_gradients(tmp_path):
+    from tests.helpers import TinyCausalLM as ShippedTinyCausalLM
+    from tests.helpers import make_unlearn_batch
+    from trainer.unlearn.rmu import RMU
+
+    model = ShippedTinyCausalLM()
+    args = TrainingArguments(
+        output_dir=str(tmp_path),
+        use_cpu=True,
+        report_to=[],
+        optim="adamw_torch",
+        remove_unused_columns=False,
+    )
+    trainer = RMU(
+        model=model,
+        args=args,
+        module_regex="lm_head",
+        trainable_params_regex=["embed[.]weight", "lm_head[.]weight"],
+        gamma=1.0,
+        alpha=1.0,
+        retain_loss_type="NLL",
+        gu=gu_config(parameter_regex=["lm_head[.]weight"]),
+    )
+    trainer.create_optimizer()
+
+    assert model.embed.weight.requires_grad is False
+    assert model.lm_head.weight.requires_grad is True
+    assert [parameter for group in trainer.optimizer.param_groups
+        for parameter in group["params"]] == [model.lm_head.weight]
+
+    trainer.training_step(model, make_unlearn_batch(batch_size=2, seed=83))
+
+    assert model.embed.weight.grad is None
+    assert model.lm_head.weight.grad is not None
+    assert torch.isfinite(model.lm_head.weight.grad).all()
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")

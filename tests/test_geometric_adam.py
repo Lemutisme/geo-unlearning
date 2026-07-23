@@ -29,6 +29,7 @@ def make_geometric_trainer(
     gradient_accumulation_steps=1,
     max_steps=-1,
     geometric_overrides=None,
+    common_gu=None,
 ):
     model = TinyCausalLM() if model is None else model
     geometric_config = SimpleNamespace(
@@ -84,6 +85,7 @@ def make_geometric_trainer(
         undial_config=None,
         wga_config=None,
         satimp_config=None,
+        gu=common_gu,
     )
     return trainer, model, simnpo_config
 

@@ -124,7 +124,7 @@ def test_pcgrad_lifecycle_runs_once_per_optimizer_update(tmp_path):
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-def test_shipped_pcgrad_enable_flag_survives_common_gu_initialization(
+def test_legacy_pcgrad_without_common_gu_preserves_enable_flag(
     tmp_path,
     enabled,
 ):
@@ -132,6 +132,11 @@ def test_shipped_pcgrad_enable_flag_survives_common_gu_initialization(
 
     assert trainer.gradient_surgery == "pcgrad"
     assert trainer.gu_enabled is enabled
+
+
+def test_common_gu_enabled_rejects_legacy_pcgrad_during_init(tmp_path):
+    with pytest.raises(ValueError, match="common GU.*PCGrad"):
+        make_geometric_trainer(tmp_path, common_gu={"enabled": True})
 
 
 def test_unknown_gradient_surgery_fails_during_initialization(tmp_path):

@@ -73,6 +73,9 @@ class GeometricUnlearn(GradDiff):
         self.gradient_surgery = str(
             getattr(self.geometric_config, "gradient_surgery", "gu")
         ).lower()
+        common_gu = kwargs.get("gu")
+        if common_gu is not None and common_gu.get("enabled") is True and self.gradient_surgery == "pcgrad":
+            raise ValueError("common GU cannot be combined with legacy PCGrad.")
         if bool(getattr(self.geometric_config, "gu_enabled", True)) and self.gradient_surgery == "gu":
             raise ValueError("Legacy GU is retired; select the objective trainer and set trainer.method_args.gu.enabled=true.")
         self.simnpo_config = kwargs.pop("simnpo_config", None)

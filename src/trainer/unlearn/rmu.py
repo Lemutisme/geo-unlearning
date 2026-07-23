@@ -45,7 +45,8 @@ class RMU(GradDiff):
         # This makes the optimizer to select only trainable params
         self._set_trainable_params(self.model, self.trainable_params_regex, True)
         super().create_optimizer()
-        self._freeze_all_params(self.model, True)
+        if not self.gu_enabled:
+            self._freeze_all_params(self.model, True)
 
     def _get_matching_module(self, model, module_regex):
         """Returns a single module matching the given regex from a DeepSpeed/DDP-wrapped model."""

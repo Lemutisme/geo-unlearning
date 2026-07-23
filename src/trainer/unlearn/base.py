@@ -46,7 +46,6 @@ class UnlearnTrainer(FinetuneTrainer):
     def create_optimizer(self):
         if self.gu_config is None:
             return super().create_optimizer()
-
         original_requires_grad = tuple((parameter, parameter.requires_grad)
             for parameter in self.model.parameters())
         setup_required = not getattr(self, "_gu_setup_complete", False)
@@ -83,7 +82,6 @@ class UnlearnTrainer(FinetuneTrainer):
                     raise ValueError(
                         "GU parameter_regex contains an invalid regex"
                     ) from error
-
                 retain_history_rank = self.gu_config["retain_history_rank"]
                 if (
                     isinstance(retain_history_rank, bool)
@@ -93,7 +91,6 @@ class UnlearnTrainer(FinetuneTrainer):
                     raise ValueError(
                         "GU retain_history_rank must be an integer from 0 to 8"
                     )
-
                 retain_filter = self.gu_config["retain_filter"]
                 if not isinstance(retain_filter, str) or retain_filter not in {
                     "first_order",
@@ -102,7 +99,6 @@ class UnlearnTrainer(FinetuneTrainer):
                     raise ValueError(
                         "GU retain_filter must be first_order or finite_step"
                     )
-
                 for key, must_be_positive in (
                     ("projection_eps", True),
                     ("retain_budget", False),
@@ -117,7 +113,6 @@ class UnlearnTrainer(FinetuneTrainer):
                     ):
                         bound = "positive" if must_be_positive else "nonnegative"
                         raise ValueError(f"GU {key} must be finite and {bound}")
-
                 backtracking_scales = self.gu_config["backtracking_scales"]
                 valid_scales = (
                     isinstance(backtracking_scales, Sequence)
@@ -145,7 +140,6 @@ class UnlearnTrainer(FinetuneTrainer):
                         "GU backtracking_scales must be finite, unique, and "
                         "strictly descending in (0, 1]"
                     )
-
                 diagnostics_path = self.gu_config["diagnostics_path"]
                 if (
                     not isinstance(diagnostics_path, str)
@@ -180,12 +174,13 @@ class UnlearnTrainer(FinetuneTrainer):
                     raise ValueError(
                         "GU does not support reentrant gradient checkpointing"
                     )
-
                 selected = tuple((name, parameter)
                     for name, parameter in self.model.named_parameters()
                     if any(pattern.search(name) for pattern in compiled_patterns))
                 if not selected:
                     raise ValueError("GU parameter_regex did not select any parameters")
+                if any(parameter.dtype == torch.float16 for _, parameter in selected):
+                    raise ValueError("GU does not support selected FP16 parameters")
                 selected_ids = {id(parameter) for _, parameter in selected}
                 for parameter in self.model.parameters():
                     if id(parameter) not in selected_ids:
@@ -230,7 +225,6 @@ class UnlearnTrainer(FinetuneTrainer):
                     "GU requires torch.optim.AdamW or shipped bitsandbytes 32-bit "
                     "paged AdamW"
                 )
-
             if getattr(self, "_gu_hooked_optimizer", None) is not optimizer:
                 pre_hook_handle = optimizer.register_step_pre_hook(
                     self._gu_optimizer_step_pre_hook
@@ -243,7 +237,6 @@ class UnlearnTrainer(FinetuneTrainer):
                     pre_hook_handle.remove()
                     raise
                 self._gu_hooked_optimizer = optimizer
-
             if setup_required:
                 resolved_candidate = Path(
                     os.path.abspath(self.args.output_dir)
@@ -304,7 +297,6 @@ class UnlearnTrainer(FinetuneTrainer):
     def _gu_optimizer_step_post_hook(self, optimizer, _args, _kwargs):
         if not hasattr(self, "_gu_parameter_snapshot"):
             raise ValueError("GU optimizer step is missing its parameter snapshot")
-
         snapshot, pending, constraints = (self._gu_parameter_snapshot,
             self._gu_pending_history_covector, self._gu_constraints_used)
         projection_start = time.perf_counter()
@@ -318,7 +310,7 @@ class UnlearnTrainer(FinetuneTrainer):
             count, tolerance = len(constraints), float(self.gu_config["projection_eps"])
             violations_before = torch.zeros(count, dtype=torch.float64)
             gram = torch.zeros((count, count), dtype=torch.float64)
-            proposal_squared = corrected_squared = correction_squared = 0.0
+            proposal_squared = corrected_squared = correction_squared = stationarity = 0.0
             for block_index, (before, (name, parameter), delta) in enumerate(
                 zip(snapshot, self._gu_selected, proposal)
             ):
@@ -411,6 +403,8 @@ class UnlearnTrainer(FinetuneTrainer):
                     parameter.add_((corrected - delta.double()).to(parameter.dtype))
                     applied = parameter.detach().float() - snapshot[block_index].float()
                     proposal[block_index] = applied
+                    stationarity = max(stationarity, (metric * (applied.double()
+                        - delta.double()) + weighted).abs().max().item())
                     corrected_squared += applied.double().square().sum().item()
                     correction_squared += (applied.double() - delta.double()).square().sum().item()
                     for index, constraint in enumerate(constraints):
@@ -419,15 +413,12 @@ class UnlearnTrainer(FinetuneTrainer):
             kkt_residual = max(max(violations_after.max().item(), 0.0), max(
                 (-multipliers).max().item(), 0.0), (multipliers *
                 violations_after).abs().max().item(), max((abs(
-                    violations_after[i].item()) for i in active_constraints), default=0.0))
+                    violations_after[i].item()) for i in active_constraints), default=0.0), stationarity)
             if not torch.isfinite(violations_after).all() or not math.isfinite(
                 kkt_residual) or kkt_residual > tolerance:
-                with torch.no_grad():
-                    for before, (_, parameter) in zip(snapshot, self._gu_selected):
-                        parameter.copy_(before)
-                raise ValueError("GU applied delta failed its KKT residual check")
+                raise ValueError("GU applied delta failed its KKT stationarity check")
             projection_seconds = time.perf_counter() - projection_start
-            filter_start, applied_scale = time.perf_counter(), 1.0
+            filter_start, applied_scale, final_squared = time.perf_counter(), 1.0, 0.0
             retain_before = retain_after = zero_reason = None
             try:
                 if self.gu_config["retain_filter"] == "finite_step":
@@ -471,6 +462,7 @@ class UnlearnTrainer(FinetuneTrainer):
                     applied = parameter.detach().float() - before.float()
                     if not torch.isfinite(applied).all():
                         raise ValueError("GU final delta must be finite")
+                    final_squared += applied.double().square().sum().item()
                     for index, constraint in enumerate(constraints):
                         violations_after[index] += (constraint[block_index].double()
                             * applied.double()).sum().item()
@@ -489,8 +481,8 @@ class UnlearnTrainer(FinetuneTrainer):
                     "max_violation_after": violations_after.max().item(),
                     "kkt_residual": kkt_residual, "projection_tolerance": tolerance,
                     "applied_scale": applied_scale, "retain_loss_before": retain_before,
-                    "retain_loss_after": retain_after, "zero_step": applied_scale == 0.0,
-                    "zero_step_reason": zero_reason,
+                    "retain_loss_after": retain_after, "zero_step": final_squared == 0.0,
+                    "zero_step_reason": zero_reason or ("quantized_zero" if final_squared == 0.0 else None),
                     "optimizer_state_semantics": "proposal_state_committed",
                     "projection_seconds": projection_seconds, "filter_seconds": filter_seconds,
                 }
@@ -524,6 +516,11 @@ class UnlearnTrainer(FinetuneTrainer):
                 if retain_history_rank
                 else ()
             )
+        except Exception:
+            with torch.no_grad():
+                for before, (_, parameter) in zip(snapshot, self._gu_selected):
+                    parameter.copy_(before)
+            raise
         finally:
             for attribute in ("_gu_constraint_accumulator", "_gu_constraints_used",
                 "_gu_pending_history_covector", "_gu_parameter_snapshot",
@@ -534,7 +531,6 @@ class UnlearnTrainer(FinetuneTrainer):
     def training_step(self, model, inputs):
         if not self.gu_enabled:
             return super().training_step(model, inputs)
-
         try:
             model.train()
             inputs = self._prepare_inputs(inputs)
@@ -547,10 +543,9 @@ class UnlearnTrainer(FinetuneTrainer):
                 self._gu_retain_inputs = retain_batches
             with self.compute_loss_context_manager():
                 retain_nll, _ = compute_batch_nll(model, retain_inputs)
-                retain_loss = retain_nll.mean()
             selected_parameters = tuple(parameter for _, parameter in self._gu_selected)
             retain_gradients = torch.autograd.grad(
-                retain_loss,
+                retain_nll.sum(),
                 selected_parameters,
                 retain_graph=False, create_graph=False, allow_unused=True,
             )
@@ -561,7 +556,6 @@ class UnlearnTrainer(FinetuneTrainer):
                     for parameter in selected_parameters
                 )
                 self._gu_constraint_accumulator = accumulator
-            scale = self.args.gradient_accumulation_steps
             with torch.no_grad():
                 for (name, _), gradient, accumulator_block in zip(
                     self._gu_selected,
@@ -579,9 +573,8 @@ class UnlearnTrainer(FinetuneTrainer):
                             "GU retain gradient must be finite for selected "
                             f"parameter {name}"
                         )
-                    accumulator_block.add_(gradient_block, alpha=1.0 / scale)
+                    accumulator_block.add_(gradient_block)
             del retain_gradients, gradient, gradient_block
-
             loss = super().training_step(model, inputs)
             if self.accelerator.sync_gradients:
                 squared_norm = sum(
@@ -602,7 +595,6 @@ class UnlearnTrainer(FinetuneTrainer):
                 if self.gu_config["retain_filter"] == "finite_step":
                     self._gu_retain_inputs = tuple(self._gu_retain_inputs)
                 del self._gu_constraint_accumulator
-
             return loss
         except Exception:
             for attribute in (
