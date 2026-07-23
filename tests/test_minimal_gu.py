@@ -104,35 +104,43 @@ def assert_ordered_optimizer_state_equal(left, right):
                 assert left_value == right_value
 
 
-def test_disabled_gu_is_exactly_the_native_update(tmp_path):
+def test_disabled_gu_matches_unmodified_objective_update(tmp_path):
     torch.manual_seed(123)
-    native_model = TinyCausalLM()
-    disabled_model = copy.deepcopy(native_model)
+    control_model = TinyCausalLM()
+    initial_parameters = {
+        name: parameter.detach().clone()
+        for name, parameter in control_model.named_parameters()
+    }
+    disabled_model = copy.deepcopy(control_model)
     batch = {
         "forget": {
             "input_ids": torch.tensor([[1, 4, 2, 8, 3], [7, 2, 6, 1, 5]]),
             "labels": torch.tensor([[1, 4, 2, 8, 3], [7, 2, 6, 1, 5]]),
         }
     }
-    native = make_trainer(native_model, tmp_path / "native")
+    control = make_trainer(control_model, tmp_path / "control")
     disabled = make_trainer(
         disabled_model,
         tmp_path / "disabled",
         gu=gu_config(enabled=False),
     )
 
-    native_loss = run_objective_update(native, copy.deepcopy(batch))
+    control_loss = run_objective_update(control, copy.deepcopy(batch))
     disabled_loss = run_objective_update(disabled, copy.deepcopy(batch))
 
-    assert torch.equal(native_loss, disabled_loss)
-    native_parameters = list(native.model.named_parameters())
+    assert any(
+        not torch.equal(initial_parameters[name], parameter)
+        for name, parameter in control.model.named_parameters()
+    ), "control update was a no-op"
+    assert torch.equal(control_loss, disabled_loss)
+    control_parameters = list(control.model.named_parameters())
     disabled_parameters = list(disabled.model.named_parameters())
-    assert [name for name, _ in native_parameters] == [
+    assert [name for name, _ in control_parameters] == [
         name for name, _ in disabled_parameters
     ]
-    for (_, native_parameter), (_, disabled_parameter) in zip(
-        native_parameters,
+    for (_, control_parameter), (_, disabled_parameter) in zip(
+        control_parameters,
         disabled_parameters,
     ):
-        assert torch.equal(native_parameter, disabled_parameter)
-    assert_ordered_optimizer_state_equal(native, disabled)
+        assert torch.equal(control_parameter, disabled_parameter)
+    assert_ordered_optimizer_state_equal(control, disabled)
