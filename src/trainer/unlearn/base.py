@@ -48,7 +48,6 @@ class UnlearnTrainer(FinetuneTrainer):
             (parameter, parameter.requires_grad)
             for parameter in self.model.parameters()
         )
-        diagnostics_created = None
         diagnostics_parent_descriptor = None
         setup_required = not getattr(self, "_gu_setup_complete", False)
         try:
@@ -189,6 +188,64 @@ class UnlearnTrainer(FinetuneTrainer):
                         "GU does not support reentrant gradient checkpointing"
                     )
 
+                selected = tuple(
+                    (name, parameter)
+                    for name, parameter in self.model.named_parameters()
+                    if any(pattern.search(name) for pattern in compiled_patterns)
+                )
+                if not selected:
+                    raise ValueError("GU parameter_regex did not select any parameters")
+                selected_ids = {id(parameter) for _, parameter in selected}
+                for parameter in self.model.parameters():
+                    if id(parameter) not in selected_ids:
+                        parameter.requires_grad_(False)
+            else:
+                selected = self._gu_selected
+
+            optimizer = super().create_optimizer()
+            optimizer_parameters = [
+                parameter
+                for group in optimizer.param_groups
+                for parameter in group["params"]
+            ]
+            optimizer_parameter_ids = [
+                id(parameter) for parameter in optimizer_parameters
+            ]
+            selected_parameter_ids = {id(parameter) for _, parameter in selected}
+            if (
+                len(optimizer_parameter_ids) != len(set(optimizer_parameter_ids))
+                or set(optimizer_parameter_ids) != selected_parameter_ids
+            ):
+                raise ValueError(
+                    "GU optimizer parameters must match selected parameters exactly "
+                    "without duplicates"
+                )
+
+            supported_optimizer = isinstance(optimizer, torch.optim.AdamW)
+            if not supported_optimizer:
+                try:
+                    import bitsandbytes
+                except ImportError:
+                    bitsandbytes = None
+                if bitsandbytes is not None:
+                    paged_adamw_types = (
+                        bitsandbytes.optim.AdamW,
+                        bitsandbytes.optim.PagedAdamW,
+                        bitsandbytes.optim.PagedAdamW32bit,
+                    )
+                    supported_optimizer = (
+                        isinstance(optimizer, paged_adamw_types)
+                        and optimizer.is_paged
+                        and optimizer.args.optim_bits == 32
+                        and optimizer.optimizer_name == "adam"
+                    )
+            if not supported_optimizer:
+                raise ValueError(
+                    "GU requires torch.optim.AdamW or shipped bitsandbytes 32-bit "
+                    "paged AdamW"
+                )
+
+            if setup_required:
                 output_dir = Path(os.path.abspath(self.args.output_dir))
                 output_parts = output_dir.parts[1:]
                 parent_parts = relative_diagnostics_path.parts[:-1]
@@ -249,30 +306,21 @@ class UnlearnTrainer(FinetuneTrainer):
                         os.close(directory_descriptor)
 
                 diagnostics_name = relative_diagnostics_path.parts[-1]
+                resolved_candidate = output_dir / relative_diagnostics_path
                 diagnostics_flags = (
-                    os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW
+                    os.O_WRONLY
+                    | os.O_APPEND
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | os.O_NOFOLLOW
                 )
-                created_exclusively = False
                 try:
-                    try:
-                        file_descriptor = os.open(
-                            diagnostics_name,
-                            diagnostics_flags | os.O_EXCL,
-                            0o666,
-                            dir_fd=diagnostics_parent_descriptor,
-                        )
-                        created_exclusively = True
-                    except FileExistsError:
-                        file_descriptor = os.open(
-                            diagnostics_name,
-                            diagnostics_flags,
-                            0o666,
-                            dir_fd=diagnostics_parent_descriptor,
-                        )
-                    try:
-                        opened_stat = os.fstat(file_descriptor)
-                    finally:
-                        os.close(file_descriptor)
+                    file_descriptor = os.open(
+                        diagnostics_name,
+                        diagnostics_flags,
+                        0o666,
+                        dir_fd=diagnostics_parent_descriptor,
+                    )
                 except OSError as error:
                     try:
                         candidate_stat = os.stat(
@@ -291,98 +339,17 @@ class UnlearnTrainer(FinetuneTrainer):
                     raise ValueError(
                         "GU diagnostics_path is not append-writable"
                     ) from error
-                if created_exclusively:
-                    diagnostics_created = (
-                        diagnostics_name,
-                        opened_stat.st_dev,
-                        opened_stat.st_ino,
-                    )
-                resolved_candidate = output_dir / relative_diagnostics_path
-
-                selected = tuple(
-                    (name, parameter)
-                    for name, parameter in self.model.named_parameters()
-                    if any(pattern.search(name) for pattern in compiled_patterns)
-                )
-                if not selected:
-                    raise ValueError("GU parameter_regex did not select any parameters")
-                selected_ids = {id(parameter) for _, parameter in selected}
-                for parameter in self.model.parameters():
-                    if id(parameter) not in selected_ids:
-                        parameter.requires_grad_(False)
-            else:
-                selected = self._gu_selected
-
-            optimizer = super().create_optimizer()
-            optimizer_parameters = [
-                parameter
-                for group in optimizer.param_groups
-                for parameter in group["params"]
-            ]
-            optimizer_parameter_ids = [
-                id(parameter) for parameter in optimizer_parameters
-            ]
-            selected_parameter_ids = {id(parameter) for _, parameter in selected}
-            if (
-                len(optimizer_parameter_ids) != len(set(optimizer_parameter_ids))
-                or set(optimizer_parameter_ids) != selected_parameter_ids
-            ):
-                raise ValueError(
-                    "GU optimizer parameters must match selected parameters exactly "
-                    "without duplicates"
-                )
-
-            supported_optimizer = isinstance(optimizer, torch.optim.AdamW)
-            if not supported_optimizer:
                 try:
-                    import bitsandbytes
-                except ImportError:
-                    bitsandbytes = None
-                if bitsandbytes is not None:
-                    paged_adamw_types = (
-                        bitsandbytes.optim.AdamW,
-                        bitsandbytes.optim.PagedAdamW,
-                        bitsandbytes.optim.PagedAdamW32bit,
-                    )
-                    supported_optimizer = (
-                        isinstance(optimizer, paged_adamw_types)
-                        and optimizer.is_paged
-                        and optimizer.args.optim_bits == 32
-                        and optimizer.optimizer_name == "adam"
-                    )
-            if not supported_optimizer:
-                raise ValueError(
-                    "GU requires torch.optim.AdamW or shipped bitsandbytes 32-bit "
-                    "paged AdamW"
-                )
+                    os.close(file_descriptor)
+                except OSError:
+                    pass
+                self._gu_parameter_patterns = compiled_patterns
+                self._gu_selected = selected
+                self._gu_diagnostics_path = resolved_candidate
+                self._gu_setup_complete = True
         except Exception:
             for parameter, requires_grad in original_requires_grad:
                 parameter.requires_grad_(requires_grad)
-            if (
-                diagnostics_created is not None
-                and diagnostics_parent_descriptor is not None
-            ):
-                diagnostics_name, device, inode = diagnostics_created
-                try:
-                    candidate_stat = os.stat(
-                        diagnostics_name,
-                        dir_fd=diagnostics_parent_descriptor,
-                        follow_symlinks=False,
-                    )
-                except FileNotFoundError:
-                    pass
-                else:
-                    if not stat.S_ISLNK(candidate_stat.st_mode) and (
-                        candidate_stat.st_dev,
-                        candidate_stat.st_ino,
-                    ) == (device, inode):
-                        try:
-                            os.unlink(
-                                diagnostics_name,
-                                dir_fd=diagnostics_parent_descriptor,
-                            )
-                        except FileNotFoundError:
-                            pass
             for attribute in (
                 "_gu_parameter_patterns",
                 "_gu_selected",
@@ -394,13 +361,10 @@ class UnlearnTrainer(FinetuneTrainer):
             raise
         finally:
             if diagnostics_parent_descriptor is not None:
-                os.close(diagnostics_parent_descriptor)
-
-        if setup_required:
-            self._gu_parameter_patterns = compiled_patterns
-            self._gu_selected = selected
-            self._gu_diagnostics_path = resolved_candidate
-            self._gu_setup_complete = True
+                try:
+                    os.close(diagnostics_parent_descriptor)
+                except OSError:
+                    pass
         return optimizer
 
     # Adapted from Huggingface DPO Trainer: https://github.com/huggingface/accelerate/blob/739b135f8367becb67ffaada12fe76e3aa60fefd/src/accelerate/accelerator.py#L1473

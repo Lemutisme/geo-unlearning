@@ -506,12 +506,10 @@ def test_gu_anchors_diagnostics_open_when_parent_is_temporarily_swapped(
     assert (diagnostics_dir / "gu.jsonl").is_file()
 
 
-def test_gu_rollback_preserves_file_concurrently_created_before_open(
+def test_gu_exclusive_commit_rejects_and_preserves_concurrent_file(
     tmp_path,
     monkeypatch,
 ):
-    model = TinyCausalLM()
-    optimizer = torch.optim.SGD([model.protected.weight], lr=1.0e-3)
     output_dir = tmp_path / "output"
     diagnostics_dir = output_dir / "diagnostics"
     diagnostics_dir.mkdir(parents=True)
@@ -526,6 +524,7 @@ def test_gu_rollback_preserves_file_concurrently_created_before_open(
             not created_concurrently
             and os.path.basename(os.fspath(path)) == diagnostics_path.name
             and flags & os.O_CREAT
+            and flags & os.O_EXCL
         ):
             concurrent_descriptor = original_open(
                 path,
@@ -542,13 +541,12 @@ def test_gu_rollback_preserves_file_concurrently_created_before_open(
 
     monkeypatch.setattr(os, "open", create_file_before_diagnostics_open)
     trainer = make_trainer(
-        model,
+        TinyCausalLM(),
         output_dir,
         gu=gu_config(diagnostics_path="diagnostics/gu.jsonl"),
-        optimizers=(optimizer, None),
     )
 
-    with pytest.raises(ValueError, match="AdamW"):
+    with pytest.raises(ValueError, match="append-writable"):
         trainer.create_optimizer()
 
     assert created_concurrently
@@ -588,6 +586,7 @@ def test_gu_opens_final_diagnostics_with_nofollow_append_create(
     assert opened_flags & os.O_NOFOLLOW
     assert opened_flags & os.O_APPEND
     assert opened_flags & os.O_CREAT
+    assert opened_flags & os.O_EXCL
 
 
 def test_disabled_gu_matches_unmodified_objective_update(tmp_path):
