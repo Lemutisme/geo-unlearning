@@ -49,6 +49,7 @@ class UnlearnTrainer(FinetuneTrainer):
             for parameter in self.model.parameters()
         )
         diagnostics_created = None
+        diagnostics_parent_descriptor = None
         setup_required = not getattr(self, "_gu_setup_complete", False)
         try:
             required_keys = {
@@ -81,9 +82,7 @@ class UnlearnTrainer(FinetuneTrainer):
                         for pattern in parameter_regex
                     )
                 ):
-                    raise ValueError(
-                        "GU parameter_regex must contain nonempty strings"
-                    )
+                    raise ValueError("GU parameter_regex must contain nonempty strings")
                 try:
                     compiled_patterns = tuple(
                         re.compile(pattern) for pattern in parameter_regex
@@ -128,9 +127,7 @@ class UnlearnTrainer(FinetuneTrainer):
                     or not math.isfinite(retain_budget)
                     or retain_budget < 0
                 ):
-                    raise ValueError(
-                        "GU retain_budget must be finite and nonnegative"
-                    )
+                    raise ValueError("GU retain_budget must be finite and nonnegative")
 
                 backtracking_scales = self.gu_config["backtracking_scales"]
                 if (
@@ -170,9 +167,7 @@ class UnlearnTrainer(FinetuneTrainer):
                     or relative_diagnostics_path == Path(".")
                     or ".." in relative_diagnostics_path.parts
                 ):
-                    raise ValueError(
-                        "GU diagnostics_path must be a safe relative path"
-                    )
+                    raise ValueError("GU diagnostics_path must be a safe relative path")
 
                 if getattr(self, "is_deepspeed_enabled", False):
                     raise ValueError("GU does not support DeepSpeed")
@@ -185,12 +180,8 @@ class UnlearnTrainer(FinetuneTrainer):
                 if self.args.fp16:
                     raise ValueError("GU does not support FP16")
                 if self.args.world_size > 1 or self.args.n_gpu > 1:
-                    raise ValueError(
-                        "GU requires a single process and at most one GPU"
-                    )
-                checkpointing_kwargs = (
-                    self.args.gradient_checkpointing_kwargs or {}
-                )
+                    raise ValueError("GU requires a single process and at most one GPU")
+                checkpointing_kwargs = self.args.gradient_checkpointing_kwargs or {}
                 if self.args.gradient_checkpointing and checkpointing_kwargs.get(
                     "use_reentrant", True
                 ):
@@ -199,113 +190,114 @@ class UnlearnTrainer(FinetuneTrainer):
                     )
 
                 output_dir = Path(os.path.abspath(self.args.output_dir))
-                directory_identities = []
-                current_path = Path(output_dir.anchor)
-                current_stat = current_path.stat(follow_symlinks=False)
-                directory_identities.append(
-                    (current_path, current_stat.st_dev, current_stat.st_ino)
+                output_parts = output_dir.parts[1:]
+                parent_parts = relative_diagnostics_path.parts[:-1]
+                directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                directory_descriptor = os.open(
+                    output_dir.anchor,
+                    directory_flags,
                 )
-                for part in output_dir.parts[1:]:
-                    current_path = current_path / part
-                    try:
-                        current_stat = current_path.stat(follow_symlinks=False)
-                    except FileNotFoundError:
-                        try:
-                            current_path.mkdir()
-                        except FileExistsError:
-                            pass
-                        current_stat = current_path.stat(follow_symlinks=False)
-                    if stat.S_ISLNK(current_stat.st_mode):
-                        raise ValueError(
-                            "GU diagnostics_path must not use symlinks"
-                        )
-                    if not stat.S_ISDIR(current_stat.st_mode):
-                        raise ValueError("GU output_dir must be a directory")
-                    directory_identities.append(
-                        (current_path, current_stat.st_dev, current_stat.st_ino)
-                    )
-
-                current_path = output_dir
-                for part in relative_diagnostics_path.parts[:-1]:
-                    current_path = current_path / part
-                    try:
-                        current_stat = current_path.stat(follow_symlinks=False)
-                    except FileNotFoundError:
-                        try:
-                            current_path.mkdir()
-                        except FileExistsError:
-                            pass
-                        current_stat = current_path.stat(follow_symlinks=False)
-                    if stat.S_ISLNK(current_stat.st_mode):
-                        raise ValueError(
-                            "GU diagnostics_path must not use symlinks"
-                        )
-                    if not stat.S_ISDIR(current_stat.st_mode):
-                        raise ValueError(
-                            "GU diagnostics_path parent must be a directory"
-                        )
-                    directory_identities.append(
-                        (current_path, current_stat.st_dev, current_stat.st_ino)
-                    )
-
-                candidate = current_path / relative_diagnostics_path.parts[-1]
                 try:
-                    candidate_stat = candidate.stat(follow_symlinks=False)
-                except FileNotFoundError:
-                    diagnostics_existed = False
-                else:
-                    diagnostics_existed = True
-                    if stat.S_ISLNK(candidate_stat.st_mode):
-                        raise ValueError(
-                            "GU diagnostics_path must not use symlinks"
-                        )
+                    for index, part in enumerate(output_parts + parent_parts):
+                        try:
+                            try:
+                                next_descriptor = os.open(
+                                    part,
+                                    directory_flags,
+                                    dir_fd=directory_descriptor,
+                                )
+                            except FileNotFoundError:
+                                try:
+                                    os.mkdir(part, dir_fd=directory_descriptor)
+                                except FileExistsError:
+                                    pass
+                                next_descriptor = os.open(
+                                    part,
+                                    directory_flags,
+                                    dir_fd=directory_descriptor,
+                                )
+                        except OSError as error:
+                            try:
+                                component_stat = os.stat(
+                                    part,
+                                    dir_fd=directory_descriptor,
+                                    follow_symlinks=False,
+                                )
+                            except OSError:
+                                component_stat = None
+                            if component_stat is not None and stat.S_ISLNK(
+                                component_stat.st_mode
+                            ):
+                                raise ValueError(
+                                    "GU diagnostics_path must not use symlinks"
+                                ) from error
+                            if index < len(output_parts):
+                                raise ValueError(
+                                    "GU output_dir must be a directory"
+                                ) from error
+                            raise ValueError(
+                                "GU diagnostics_path parent must be a directory"
+                            ) from error
+                        previous_descriptor = directory_descriptor
+                        directory_descriptor = next_descriptor
+                        os.close(previous_descriptor)
 
+                    diagnostics_parent_descriptor = directory_descriptor
+                    directory_descriptor = None
+                finally:
+                    if directory_descriptor is not None:
+                        os.close(directory_descriptor)
+
+                diagnostics_name = relative_diagnostics_path.parts[-1]
+                diagnostics_flags = (
+                    os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW
+                )
+                created_exclusively = False
                 try:
-                    file_descriptor = os.open(
-                        candidate,
-                        os.O_WRONLY
-                        | os.O_NOFOLLOW
-                        | os.O_APPEND
-                        | os.O_CREAT,
-                        0o666,
-                    )
-                    if not diagnostics_existed:
-                        diagnostics_created = candidate
+                    try:
+                        file_descriptor = os.open(
+                            diagnostics_name,
+                            diagnostics_flags | os.O_EXCL,
+                            0o666,
+                            dir_fd=diagnostics_parent_descriptor,
+                        )
+                        created_exclusively = True
+                    except FileExistsError:
+                        file_descriptor = os.open(
+                            diagnostics_name,
+                            diagnostics_flags,
+                            0o666,
+                            dir_fd=diagnostics_parent_descriptor,
+                        )
                     try:
                         opened_stat = os.fstat(file_descriptor)
                     finally:
                         os.close(file_descriptor)
                 except OSError as error:
+                    try:
+                        candidate_stat = os.stat(
+                            diagnostics_name,
+                            dir_fd=diagnostics_parent_descriptor,
+                            follow_symlinks=False,
+                        )
+                    except OSError:
+                        candidate_stat = None
+                    if candidate_stat is not None and stat.S_ISLNK(
+                        candidate_stat.st_mode
+                    ):
+                        raise ValueError(
+                            "GU diagnostics_path must not use symlinks"
+                        ) from error
                     raise ValueError(
                         "GU diagnostics_path is not append-writable"
                     ) from error
-
-                for path, device, inode in directory_identities:
-                    current_stat = path.stat(follow_symlinks=False)
-                    if (
-                        stat.S_ISLNK(current_stat.st_mode)
-                        or not stat.S_ISDIR(current_stat.st_mode)
-                        or (current_stat.st_dev, current_stat.st_ino)
-                        != (device, inode)
-                    ):
-                        raise ValueError(
-                            "GU diagnostics_path directory changed or used a symlink"
-                        )
-                candidate_stat = candidate.stat(follow_symlinks=False)
-                if (
-                    stat.S_ISLNK(candidate_stat.st_mode)
-                    or (candidate_stat.st_dev, candidate_stat.st_ino)
-                    != (opened_stat.st_dev, opened_stat.st_ino)
-                ):
-                    raise ValueError(
-                        "GU diagnostics_path changed or used a symlink"
+                if created_exclusively:
+                    diagnostics_created = (
+                        diagnostics_name,
+                        opened_stat.st_dev,
+                        opened_stat.st_ino,
                     )
-                resolved_output_dir = output_dir.resolve(strict=True)
-                resolved_candidate = candidate.resolve(strict=True)
-                if not resolved_candidate.is_relative_to(resolved_output_dir):
-                    raise ValueError(
-                        "GU diagnostics_path must remain under output_dir"
-                    )
+                resolved_candidate = output_dir / relative_diagnostics_path
 
                 selected = tuple(
                     (name, parameter)
@@ -313,9 +305,7 @@ class UnlearnTrainer(FinetuneTrainer):
                     if any(pattern.search(name) for pattern in compiled_patterns)
                 )
                 if not selected:
-                    raise ValueError(
-                        "GU parameter_regex did not select any parameters"
-                    )
+                    raise ValueError("GU parameter_regex did not select any parameters")
                 selected_ids = {id(parameter) for _, parameter in selected}
                 for parameter in self.model.parameters():
                     if id(parameter) not in selected_ids:
@@ -368,8 +358,31 @@ class UnlearnTrainer(FinetuneTrainer):
         except Exception:
             for parameter, requires_grad in original_requires_grad:
                 parameter.requires_grad_(requires_grad)
-            if diagnostics_created is not None:
-                diagnostics_created.unlink(missing_ok=True)
+            if (
+                diagnostics_created is not None
+                and diagnostics_parent_descriptor is not None
+            ):
+                diagnostics_name, device, inode = diagnostics_created
+                try:
+                    candidate_stat = os.stat(
+                        diagnostics_name,
+                        dir_fd=diagnostics_parent_descriptor,
+                        follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    pass
+                else:
+                    if not stat.S_ISLNK(candidate_stat.st_mode) and (
+                        candidate_stat.st_dev,
+                        candidate_stat.st_ino,
+                    ) == (device, inode):
+                        try:
+                            os.unlink(
+                                diagnostics_name,
+                                dir_fd=diagnostics_parent_descriptor,
+                            )
+                        except FileNotFoundError:
+                            pass
             for attribute in (
                 "_gu_parameter_patterns",
                 "_gu_selected",
@@ -379,6 +392,9 @@ class UnlearnTrainer(FinetuneTrainer):
                 if hasattr(self, attribute):
                     delattr(self, attribute)
             raise
+        finally:
+            if diagnostics_parent_descriptor is not None:
+                os.close(diagnostics_parent_descriptor)
 
         if setup_required:
             self._gu_parameter_patterns = compiled_patterns

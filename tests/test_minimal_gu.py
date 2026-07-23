@@ -450,18 +450,126 @@ def test_gu_rejects_symlink_in_output_dir_ancestor(tmp_path):
     assert not (outside / "nested" / "gu.jsonl").exists()
 
 
+def test_gu_anchors_diagnostics_open_when_parent_is_temporarily_swapped(
+    tmp_path,
+    monkeypatch,
+):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    diagnostics_dir = output_dir / "diagnostics"
+    diagnostics_dir.mkdir()
+    parked_diagnostics_dir = output_dir / "parked-diagnostics"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    original_open = os.open
+    swapped = False
+
+    def swap_parent_on_final_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if (
+            not swapped
+            and os.path.basename(os.fspath(path)) == "gu.jsonl"
+            and flags & os.O_CREAT
+        ):
+            diagnostics_dir.rename(parked_diagnostics_dir)
+            diagnostics_dir.symlink_to(outside, target_is_directory=True)
+            try:
+                file_descriptor = original_open(
+                    path,
+                    flags,
+                    mode,
+                    dir_fd=dir_fd,
+                )
+            finally:
+                diagnostics_dir.unlink()
+                parked_diagnostics_dir.rename(diagnostics_dir)
+            swapped = True
+            return file_descriptor
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", swap_parent_on_final_open)
+    trainer = make_trainer(
+        TinyCausalLM(),
+        output_dir,
+        gu=gu_config(diagnostics_path="diagnostics/gu.jsonl"),
+    )
+
+    initialization_error = None
+    try:
+        trainer.create_optimizer()
+    except Exception as error:
+        initialization_error = error
+
+    assert swapped
+    assert not (outside / "gu.jsonl").exists()
+    assert initialization_error is None
+    assert (diagnostics_dir / "gu.jsonl").is_file()
+
+
+def test_gu_rollback_preserves_file_concurrently_created_before_open(
+    tmp_path,
+    monkeypatch,
+):
+    model = TinyCausalLM()
+    optimizer = torch.optim.SGD([model.protected.weight], lr=1.0e-3)
+    output_dir = tmp_path / "output"
+    diagnostics_dir = output_dir / "diagnostics"
+    diagnostics_dir.mkdir(parents=True)
+    diagnostics_path = diagnostics_dir / "gu.jsonl"
+    original_open = os.open
+    concurrent_contents = b"concurrent actor\n"
+    created_concurrently = False
+
+    def create_file_before_diagnostics_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal created_concurrently
+        if (
+            not created_concurrently
+            and os.path.basename(os.fspath(path)) == diagnostics_path.name
+            and flags & os.O_CREAT
+        ):
+            concurrent_descriptor = original_open(
+                path,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                mode,
+                dir_fd=dir_fd,
+            )
+            try:
+                os.write(concurrent_descriptor, concurrent_contents)
+            finally:
+                os.close(concurrent_descriptor)
+            created_concurrently = True
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", create_file_before_diagnostics_open)
+    trainer = make_trainer(
+        model,
+        output_dir,
+        gu=gu_config(diagnostics_path="diagnostics/gu.jsonl"),
+        optimizers=(optimizer, None),
+    )
+
+    with pytest.raises(ValueError, match="AdamW"):
+        trainer.create_optimizer()
+
+    assert created_concurrently
+    assert diagnostics_path.read_bytes() == concurrent_contents
+
+
 def test_gu_opens_final_diagnostics_with_nofollow_append_create(
     tmp_path,
     monkeypatch,
 ):
     output_dir = tmp_path / "output"
     diagnostics_path = output_dir / "diagnostics" / "gu.jsonl"
-    opened_flags = []
+    opened_calls = []
     original_open = os.open
 
     def track_open(path, flags, mode=0o777, *, dir_fd=None):
-        if os.fspath(path) == os.fspath(diagnostics_path):
-            opened_flags.append(flags)
+        if (
+            os.path.basename(os.fspath(path)) == diagnostics_path.name
+            and flags & os.O_CREAT
+        ):
+            opened_calls.append((flags, dir_fd))
         return original_open(path, flags, mode, dir_fd=dir_fd)
 
     monkeypatch.setattr(os, "open", track_open)
@@ -473,10 +581,13 @@ def test_gu_opens_final_diagnostics_with_nofollow_append_create(
 
     trainer.create_optimizer()
 
-    assert opened_flags
-    assert opened_flags[-1] & os.O_NOFOLLOW
-    assert opened_flags[-1] & os.O_APPEND
-    assert opened_flags[-1] & os.O_CREAT
+    assert opened_calls
+    opened_flags, parent_descriptor = opened_calls[-1]
+    assert parent_descriptor is not None
+    assert opened_flags & os.O_WRONLY
+    assert opened_flags & os.O_NOFOLLOW
+    assert opened_flags & os.O_APPEND
+    assert opened_flags & os.O_CREAT
 
 
 def test_disabled_gu_matches_unmodified_objective_update(tmp_path):
