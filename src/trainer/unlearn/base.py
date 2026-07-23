@@ -4,6 +4,7 @@ import os
 import re
 import time
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from copy import deepcopy
 from numbers import Real
 from pathlib import Path
@@ -434,41 +435,35 @@ class UnlearnTrainer(FinetuneTrainer):
             retain_before = retain_after = zero_reason = None
             try:
                 if self.gu_config["retain_filter"] == "finite_step":
-                    retain_batches = self._gu_retain_inputs
                     was_training = self.model.training
                     try:
                         self.model.eval()
-                        with torch.no_grad():
+                        with torch.no_grad(), self.compute_loss_context_manager():
                             for before, (_, parameter) in zip(snapshot, self._gu_selected):
                                 parameter.copy_(before)
                             total, sequence_count = 0.0, 0
-                            for batch in retain_batches:
-                                with self.compute_loss_context_manager():
-                                    retain_nll, _ = compute_batch_nll(self.model, batch)
-                                total += retain_nll.double().sum().item()
-                                sequence_count += retain_nll.numel()
-                            retain_before = total / sequence_count
-                            if not math.isfinite(retain_before):
+                            for batch in self._gu_retain_inputs:
+                                retain_nll, _ = compute_batch_nll(self.model, batch)
+                                total, sequence_count = total + retain_nll.double().sum().item(), sequence_count + retain_nll.numel()
+                            if not math.isfinite(retain_before := total / sequence_count):
                                 raise ValueError("GU retain loss must be finite")
-                            for scale in self.gu_config["backtracking_scales"]:
-                                for before, delta, (_, parameter) in zip(
-                                    snapshot, proposal, self._gu_selected):
+                        for scale in self.gu_config["backtracking_scales"]:
+                            with torch.no_grad(), self.compute_loss_context_manager():
+                                for before, delta, (_, parameter) in zip(snapshot, proposal, self._gu_selected):
                                     parameter.copy_(before)
                                     parameter.add_(delta.mul(scale).to(parameter.dtype))
                                 total = 0.0
-                                for batch in retain_batches:
-                                    with self.compute_loss_context_manager():
-                                        retain_nll, _ = compute_batch_nll(self.model, batch)
+                                for batch in self._gu_retain_inputs:
+                                    retain_nll, _ = compute_batch_nll(self.model, batch)
                                     total += retain_nll.double().sum().item()
-                                retain_after = total / sequence_count
-                                if not math.isfinite(retain_after):
-                                    raise ValueError("GU retain loss must be finite")
-                                if retain_after - retain_before <= self.gu_config["retain_budget"]:
-                                    applied_scale = float(scale)
-                                    break
-                            else:
-                                applied_scale, retain_after = 0.0, retain_before
-                                zero_reason = "retain_budget_exceeded"
+                            if not math.isfinite(retain_after := total / sequence_count):
+                                raise ValueError("GU retain loss must be finite")
+                            if retain_after - retain_before <= self.gu_config["retain_budget"]:
+                                applied_scale = float(scale)
+                                break
+                        else:
+                            applied_scale, retain_after, zero_reason = 0.0, retain_before, "retain_budget_exceeded"
+                            with torch.no_grad():
                                 for before, (_, parameter) in zip(snapshot, self._gu_selected):
                                     parameter.copy_(before)
                     finally:
@@ -503,17 +498,23 @@ class UnlearnTrainer(FinetuneTrainer):
                     "optimizer_state_semantics": "proposal_state_committed",
                     "projection_seconds": projection_seconds, "filter_seconds": filter_seconds,
                 }
-                payload = (json.dumps(diagnostics, allow_nan=False) + "\n").encode()
-                with self._gu_diagnostics_path.open("ab", buffering=0) as output:
-                    offset = output.tell()
+                descriptor = os.open(self._gu_diagnostics_path, os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW)
+                try:
+                    offset = os.fstat(descriptor).st_size
                     try:
-                        if output.write(payload) != len(payload):
+                        if os.write(descriptor, payload := (json.dumps(diagnostics, allow_nan=False) + "\n").encode()) != len(payload):
                             raise OSError("GU diagnostics write was incomplete")
-                        output.flush()
-                        os.fsync(output.fileno())
+                        os.fsync(descriptor)
                     except Exception:
-                        output.truncate(offset)
+                        os.ftruncate(descriptor, offset)
+                        with suppress(OSError):
+                            os.fsync(descriptor)
                         raise
+                except Exception:
+                    os.close(descriptor)
+                    raise
+                with suppress(OSError):
+                    os.close(descriptor)
             except Exception:
                 with torch.no_grad():
                     for before, (_, parameter) in zip(snapshot, self._gu_selected):

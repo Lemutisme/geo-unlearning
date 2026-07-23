@@ -3,9 +3,7 @@ import inspect
 import json
 import math
 import os
-from contextlib import contextmanager
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pytest
 import torch
@@ -1747,6 +1745,7 @@ def test_finite_step_uses_largest_actual_safe_scale_and_exact_record(
 ):
     torch.manual_seed(1701)
     model = TinyCausalLM()
+    model.unmatched.data = model.unmatched.data.to(torch.bfloat16)
     trainer = make_trainer(
         model,
         tmp_path,
@@ -1766,13 +1765,7 @@ def test_finite_step_uses_largest_actual_safe_scale_and_exact_record(
     gradient = torch.autograd.grad(retain_loss.mean(), parameter)[0]
     delta = gradient.detach() * (0.2 / gradient.norm())
     constraint = (-delta.to(torch.float32),)
-    install_constraints(trainer, (constraint,))
-    trainer._gu_retain_inputs = (
-        {key: value.detach() for key, value in retain.items()},
-    )
     snapshot = parameter.detach().clone()
-    trainer.optimizer.state[parameter]["exp_avg_sq"] = torch.ones_like(parameter)
-    trainer._gu_optimizer_step_pre_hook(trainer.optimizer, (), {})
 
     model.eval()
     measured = []
@@ -1781,41 +1774,62 @@ def test_finite_step_uses_largest_actual_safe_scale_and_exact_record(
             parameter.copy_(snapshot + scale * delta)
             loss, _ = compute_batch_nll(model, retain)
             measured.append(loss.mean().item())
-        parameter.copy_(snapshot + delta)
+        parameter.copy_(snapshot)
     budget = (measured[1] + measured[2]) / 2 - measured[0]
     trainer.gu_config["retain_budget"] = budget
     assert measured[1] - measured[0] > budget
     assert measured[2] - measured[0] <= budget
     assert measured[3] - measured[0] <= budget
 
-    forward_modes = []
-    context_depth = 0
-    context_events = []
+    model.forward_observations = []
     original_forward = model.forward
 
-    @contextmanager
-    def bf16_context():
-        nonlocal context_depth
-        context_events.append("enter")
-        context_depth += 1
-        try:
-            yield
-        finally:
-            context_depth -= 1
-            context_events.append("exit")
+    def record_forward_output(*args, **kwargs):
+        outputs = original_forward(*args, **kwargs)
+        model.forward_observations.append(
+            (
+                kwargs["input_ids"].detach().clone(),
+                model.training,
+                torch.is_autocast_enabled("cpu"),
+                outputs.logits.dtype,
+            )
+        )
+        return outputs
 
-    def record_forward_mode(*args, **kwargs):
-        forward_modes.append((model.training, context_depth))
-        return original_forward(*args, **kwargs)
+    monkeypatch.setattr(
+        trainer,
+        "compute_loss_context_manager",
+        lambda: torch.autocast("cpu", dtype=torch.bfloat16),
+    )
+    monkeypatch.setattr(model, "forward", record_forward_output)
+    forget = torch.tensor([[2, 5, 3, 9]])
+    trainer.training_step(
+        model,
+        {
+            "forget": {"input_ids": forget, "labels": forget.clone()},
+            "retain": retain,
+        },
+    )
+    install_constraints(trainer, (constraint,))
+    trainer.optimizer.state[parameter]["exp_avg_sq"] = torch.ones_like(parameter)
+    trainer._gu_optimizer_step_pre_hook(trainer.optimizer, (), {})
+    with torch.no_grad():
+        parameter.copy_(snapshot + delta)
 
-    monkeypatch.setattr(trainer, "compute_loss_context_manager", bf16_context)
-    monkeypatch.setattr(model, "forward", record_forward_mode)
-    model.train()
     trainer._gu_optimizer_step_post_hook(trainer.optimizer, (), {})
 
     assert model.training
-    assert forward_modes == [(False, 1), (False, 1), (False, 1)]
-    assert context_events == ["enter", "exit"] * 3
+    assert [item[1] for item in model.forward_observations] == [
+        True, True, False, False, False,
+    ]
+    assert all(item[2] for item in model.forward_observations)
+    assert all(item[3] == torch.bfloat16 for item in model.forward_observations)
+    assert torch.equal(model.forward_observations[0][0], retain["input_ids"])
+    assert torch.equal(model.forward_observations[1][0], forget)
+    assert all(
+        torch.equal(item[0], retain["input_ids"])
+        for item in model.forward_observations[2:]
+    )
     assert torch.allclose(parameter, snapshot + 0.5 * delta)
     diagnostics = trainer.gu_last_diagnostics
     assert diagnostics["applied_scale"] == 0.5
@@ -1921,10 +1935,20 @@ def test_first_order_step_adds_no_retain_forward_and_writes_one_record(
     assert len(calls) == 2
     assert not hasattr(trainer, "_gu_retain_inputs")
 
+    writes = []
+    real_write = os.write
+
+    def record_write(descriptor, payload):
+        writes.append(payload)
+        return real_write(descriptor, payload)
+
+    monkeypatch.setattr(os, "write", record_write)
     trainer.optimizer.step()
 
     assert len(calls) == 2
-    records = trainer._gu_diagnostics_path.read_text().splitlines()
+    contents = trainer._gu_diagnostics_path.read_bytes()
+    records = contents.decode().splitlines()
+    assert writes == [contents]
     assert len(records) == 1
     assert json.loads(records[0]) == trainer.gu_last_diagnostics
     assert trainer.gu_last_diagnostics["retain_loss_before"] is None
@@ -1976,10 +2000,17 @@ def test_diagnostics_fsync_failure_truncates_record_before_rollback(
     existing = b'{"prior": true}\n'
     trainer._gu_diagnostics_path.write_bytes(existing)
 
-    def fail_fsync(_descriptor):
-        raise OSError("configured fsync failure")
+    fsync_calls = 0
+    real_fsync = os.fsync
 
-    monkeypatch.setattr(os, "fsync", fail_fsync)
+    def fail_first_fsync(descriptor):
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 1:
+            raise OSError("configured fsync failure")
+        return real_fsync(descriptor)
+
+    monkeypatch.setattr(os, "fsync", fail_first_fsync)
     with pytest.raises(OSError, match="configured fsync failure"):
         trainer.optimizer.step()
 
@@ -1988,6 +2019,7 @@ def test_diagnostics_fsync_failure_truncates_record_before_rollback(
     assert trainer._gu_constraint_history is history
     assert trainer.gu_projection_calls == 0
     assert trainer.gu_last_diagnostics is None
+    assert fsync_calls == 2
 
 
 def test_diagnostics_partial_write_leaves_no_partial_record(tmp_path, monkeypatch):
@@ -2001,23 +2033,83 @@ def test_diagnostics_partial_write_leaves_no_partial_record(tmp_path, monkeypatc
     parameter.grad = torch.ones_like(parameter)
     existing = b'{"prior": true}\n'
     trainer._gu_diagnostics_path.write_bytes(existing)
-    path_type = type(trainer._gu_diagnostics_path)
-    real_open = path_type.open
+    real_write = os.write
 
-    def partial_open(path, *args, **kwargs):
-        handle = real_open(path, *args, **kwargs)
-        if not args or args[0] != "ab":
-            return handle
-        output = MagicMock(wraps=handle)
-        output.__enter__.return_value = output
-        output.__exit__.side_effect = lambda *_: handle.close()
-        output.write.side_effect = lambda payload: handle.write(
-            payload[: max(1, len(payload) // 2)]
-        )
-        return output
+    def partial_write(descriptor, payload):
+        return real_write(descriptor, payload[: max(1, len(payload) // 2)])
 
-    monkeypatch.setattr(path_type, "open", partial_open)
+    monkeypatch.setattr(os, "write", partial_write)
     with pytest.raises(OSError, match="incomplete"):
+        trainer.optimizer.step()
+
+    assert trainer._gu_diagnostics_path.read_bytes() == existing
+    assert torch.equal(parameter, snapshot)
+    assert trainer._gu_constraint_history is history
+    assert trainer.gu_projection_calls == 0
+    assert trainer.gu_last_diagnostics is None
+
+
+def test_diagnostics_close_failure_after_fsync_keeps_committed_step(
+    tmp_path,
+    monkeypatch,
+):
+    trainer = make_trainer(TinyCausalLM(), tmp_path, gu=gu_config())
+    trainer.create_optimizer()
+    parameter = trainer._gu_selected[0][1]
+    constraint = coordinate_constraint(trainer, [(0, 0, 1.0)])
+    install_constraints(trainer, (constraint,))
+    parameter.grad = torch.ones_like(parameter)
+    close_calls = 0
+    real_close = os.close
+
+    def fail_after_close(descriptor):
+        nonlocal close_calls
+        close_calls += 1
+        real_close(descriptor)
+        raise OSError("configured close failure")
+
+    monkeypatch.setattr(os, "close", fail_after_close)
+    trainer.optimizer.step()
+
+    assert close_calls == 1
+    records = trainer._gu_diagnostics_path.read_text().splitlines()
+    assert len(records) == 1
+    assert json.loads(records[0]) == trainer.gu_last_diagnostics
+    assert trainer.gu_projection_calls == 1
+    assert trainer._gu_constraint_history[0] is constraint
+
+
+def test_diagnostics_close_failure_before_fsync_does_not_commit(
+    tmp_path,
+    monkeypatch,
+):
+    trainer = make_trainer(TinyCausalLM(), tmp_path, gu=gu_config())
+    trainer.create_optimizer()
+    parameter = trainer._gu_selected[0][1]
+    constraint = coordinate_constraint(trainer, [(0, 0, 1.0)])
+    install_constraints(trainer, (constraint,))
+    history = trainer._gu_constraint_history
+    snapshot = parameter.detach().clone()
+    parameter.grad = torch.ones_like(parameter)
+    existing = b'{"prior": true}\n'
+    trainer._gu_diagnostics_path.write_bytes(existing)
+    fsync_calls = 0
+    real_fsync, real_close = os.fsync, os.close
+
+    def fail_first_fsync(descriptor):
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 1:
+            raise OSError("configured fsync failure")
+        return real_fsync(descriptor)
+
+    def fail_after_close(descriptor):
+        real_close(descriptor)
+        raise OSError("configured close failure")
+
+    monkeypatch.setattr(os, "fsync", fail_first_fsync)
+    monkeypatch.setattr(os, "close", fail_after_close)
+    with pytest.raises(OSError, match="configured close failure"):
         trainer.optimizer.step()
 
     assert trainer._gu_diagnostics_path.read_bytes() == existing
