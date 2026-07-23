@@ -2148,12 +2148,61 @@ TASK7_SCRIPTS = (
 
 
 def task7_common_gu_mappings(text):
-    text = text.replace("\\\n", "").replace('\\"', '"')
+    text = text.replace('\\"', '"')
     text = re.sub(r"[$]\{[^}]+\}", "VALUE", text)
-    bodies = re.findall(r"\+trainer[.]method_args[.]gu=\{([^}\n]+)\}", text)
-    assert bodies
+    bodies = re.findall(r"\+trainer[.]method_args[.]gu=\{([^}]+)\}", text)
+    mappings = [
+        set(re.findall(r"(?:^|,)\s*\\?\s*([a-z_]+):", body))
+        for body in bodies
+    ]
+    dotted_keys = re.findall(
+        r"[+]trainer[.]method_args[.]gu[.]([a-z_]+)=",
+        text,
+    )
+    if dotted_keys:
+        mappings.append(set(dotted_keys))
+    assert mappings
+    return mappings
+
+
+def task7_capture_first_eval_train_argv(tmp_path):
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    capture_path = tmp_path / "accelerate.argv"
+    python_stub = stub_dir / "python"
+    python_stub.write_text(
+        "#!/bin/sh\n"
+        'if [ "${1:-}" = "-c" ]; then\n'
+        "    printf '12345\\n'\n"
+        "fi\n"
+    )
+    python_stub.chmod(0o755)
+    accelerate_stub = stub_dir / "accelerate"
+    accelerate_stub.write_text(
+        "#!/bin/sh\n"
+        'if [ ! -e "$TASK7_ARGV_CAPTURE" ]; then\n'
+        '    printf \'%s\\0\' "$@" > "$TASK7_ARGV_CAPTURE"\n'
+        "fi\n"
+    )
+    accelerate_stub.chmod(0o755)
+    environment = os.environ.copy()
+    environment["PATH"] = f"{stub_dir}:{environment['PATH']}"
+    environment["TASK7_ARGV_CAPTURE"] = str(capture_path)
+
+    result = subprocess.run(
+        ["bash", str(TASK7_SCRIPTS[1])],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
     return [
-        set(re.findall(r"(?:^|,)\s*([a-z_]+):", body)) for body in bodies
+        value.decode()
+        for value in capture_path.read_bytes().split(b"\0")
+        if value
     ]
 
 
@@ -2195,7 +2244,7 @@ def test_task7_legacy_yaml_defaults_to_pcgrad():
 
 def test_task7_mvp_uses_simnpo_and_exact_common_gu_contract():
     text = TASK7_SCRIPTS[0].read_text()
-    resolved_text = text.replace("\\\n", "").replace('\\"', '"')
+    resolved_text = text.replace('\\"', '"')
 
     assert "trainer=SimNPO" in text
     assert "trainer=GeometricUnlearn" not in text
@@ -2238,9 +2287,63 @@ def test_task7_eval_maps_supported_losses_to_objective_trainers_and_one_process(
     assert all(keys == TASK7_GU_KEYS for keys in task7_common_gu_mappings(text))
 
 
+def test_task7_eval_passes_each_gu_override_as_clean_argv(tmp_path):
+    argv = task7_capture_first_eval_train_argv(tmp_path)
+    expected_gu_overrides = [
+        "+trainer.method_args.gu.enabled=true",
+        '+trainer.method_args.gu.parameter_regex=["lm_head[.]weight"]',
+        "+trainer.method_args.gu.retain_history_rank=8",
+        "+trainer.method_args.gu.projection_eps=1e-6",
+        "+trainer.method_args.gu.retain_filter=first_order",
+        "+trainer.method_args.gu.retain_budget=1e-4",
+        "+trainer.method_args.gu.backtracking_scales=[1.0,0.5,0.25,0.125]",
+        "+trainer.method_args.gu.diagnostics_path=gu_diagnostics.jsonl",
+    ]
+    expected_argv = [
+        "launch",
+        "--config_file",
+        "configs/accelerate/default_config.yaml",
+        "--main_process_port",
+        "12345",
+        "--num_processes",
+        "1",
+        "src/train.py",
+        "--config-name=unlearn.yaml",
+        "experiment=unlearn/tofu/default",
+        "trainer=CEU",
+        "task_name=tofu_Llama-3.1-8B-Instruct_forget01_GU_CEU",
+        "model=Llama-3.1-8B-Instruct",
+        (
+            "model.model_args.pretrained_model_name_or_path="
+            "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+        ),
+        "forget_split=forget01",
+        "retain_split=retain99",
+        (
+            "retain_logs_path="
+            "saves/eval/tofu_Llama-3.1-8B-Instruct_retain99/TOFU_EVAL.json"
+        ),
+        "trainer.args.per_device_train_batch_size=4",
+        "trainer.args.gradient_accumulation_steps=4",
+        "trainer.args.ddp_find_unused_parameters=true",
+        "trainer.args.gradient_checkpointing=true",
+        "+trainer.args.gradient_checkpointing_kwargs.use_reentrant=false",
+        "trainer.args.do_eval=false",
+        "trainer.args.eval_on_start=false",
+        "trainer.args.eval_strategy=no",
+        *expected_gu_overrides,
+    ]
+
+    assert not any("\n" in argument or "\\\n" in argument for argument in argv)
+    assert argv == expected_argv
+    assert [
+        argument for argument in argv if "trainer.method_args.gu" in argument
+    ] == expected_gu_overrides
+
+
 def test_task7_smoke_routes_only_gu_arm_to_common_gu():
     text = TASK7_SCRIPTS[2].read_text()
-    resolved_text = text.replace("\\\n", "").replace('\\"', '"')
+    resolved_text = text.replace('\\"', '"')
     common_mappings = task7_common_gu_mappings(text)
 
     assert 'if [[ "${method}" == gu ]]; then' in text
@@ -2249,7 +2352,7 @@ def test_task7_smoke_routes_only_gu_arm_to_common_gu():
     assert '"trainer=${trainer_name}"' in text
     assert all(keys == TASK7_GU_KEYS for keys in common_mappings)
     common_mapping_text = re.findall(
-        r"\+trainer[.]method_args[.]gu=\{[^}\n]+\}",
+        r"\+trainer[.]method_args[.]gu=\{[^}]+\}",
         resolved_text,
     )[0]
     for legacy_key in (

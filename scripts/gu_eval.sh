@@ -15,15 +15,16 @@ gradient_accumulation_steps=4
 NUM_GPUS=1
 EVAL_GPU=4
 
-gu_override='+trainer.method_args.gu={\
-enabled:true,\
-parameter_regex:["lm_head[.]weight"],\
-retain_history_rank:8,\
-projection_eps:1e-6,\
-retain_filter:first_order,\
-retain_budget:1e-4,\
-backtracking_scales:[1.0,0.5,0.25,0.125],\
-diagnostics_path:gu_diagnostics.jsonl}'
+gu_overrides=(
+    '+trainer.method_args.gu.enabled=true'
+    '+trainer.method_args.gu.parameter_regex=["lm_head[.]weight"]'
+    '+trainer.method_args.gu.retain_history_rank=8'
+    '+trainer.method_args.gu.projection_eps=1e-6'
+    '+trainer.method_args.gu.retain_filter=first_order'
+    '+trainer.method_args.gu.retain_budget=1e-4'
+    '+trainer.method_args.gu.backtracking_scales=[1.0,0.5,0.25,0.125]'
+    '+trainer.method_args.gu.diagnostics_path=gu_diagnostics.jsonl'
+)
 
 resolve_trainer_config() {
     case "$1" in
@@ -114,7 +115,7 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
             trainer.args.do_eval=false \
             trainer.args.eval_on_start=false \
             trainer.args.eval_strategy=no \
-            "${gu_override}"
+            "${gu_overrides[@]}"
 
             CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \
             experiment=eval/tofu/default.yaml \
@@ -174,7 +175,7 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
             trainer.args.do_eval=false \
             trainer.args.eval_on_start=false \
             trainer.args.eval_strategy=no \
-            "${gu_override}"
+            "${gu_overrides[@]}"
 
             CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \
             experiment=eval/muse/default.yaml \
@@ -225,7 +226,7 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
         trainer.args.do_eval=false \
         trainer.args.eval_on_start=false \
         trainer.args.eval_strategy=no \
-        "${gu_override}"
+        "${gu_overrides[@]}"
 
         CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \
         experiment=eval/wmdp/default.yaml \
