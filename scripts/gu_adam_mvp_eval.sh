@@ -23,13 +23,22 @@ run_arm() {
     local arm=$1
     local gu_enabled=$2
     local task_name="tofu_${model_name}_${forget_split}_AdamMVP_${arm}_${timestamp}"
+    local gu_override="+trainer.method_args.gu={\
+enabled:${gu_enabled},\
+parameter_regex:[\"lm_head[.]weight\"],\
+retain_history_rank:8,\
+projection_eps:1e-6,\
+retain_filter:first_order,\
+retain_budget:1e-4,\
+backtracking_scales:[1.0,0.5,0.25,0.125],\
+diagnostics_path:gu_diagnostics.jsonl}"
 
     accelerate launch \
         --config_file configs/accelerate/gu_single_gpu.yaml \
         src/train.py \
         --config-name=unlearn.yaml \
         experiment=unlearn/tofu/default \
-        trainer=GeometricUnlearn \
+        trainer=SimNPO \
         task_name="${task_name}" \
         model="${model_name}" \
         model.model_args.pretrained_model_name_or_path="${base_model}" \
@@ -59,8 +68,7 @@ run_arm() {
         trainer.args.do_eval=true \
         trainer.args.eval_on_start=false \
         trainer.args.eval_strategy=no \
-        trainer.method_args.geometric_config.loss=simnpo \
-        trainer.method_args.geometric_config.gu_enabled="${gu_enabled}"
+        "${gu_override}"
 
     local checkpoint_file
     checkpoint_file=$(find "${experiment_dir}/${task_name}" -type f \

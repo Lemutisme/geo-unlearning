@@ -3,6 +3,9 @@ import inspect
 import json
 import math
 import os
+import re
+import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -2124,3 +2127,147 @@ def test_finite_scale_write_keeps_delta_scaling_in_fp32():
 
     assert "delta.mul(scale).to(parameter.dtype)" in source
     assert "delta.double() * scale" not in source
+
+
+TASK7_GU_KEYS = {
+    "enabled",
+    "parameter_regex",
+    "retain_history_rank",
+    "projection_eps",
+    "retain_filter",
+    "retain_budget",
+    "backtracking_scales",
+    "diagnostics_path",
+}
+TASK7_ROOT = Path(__file__).resolve().parents[1]
+TASK7_SCRIPTS = (
+    TASK7_ROOT / "scripts/gu_adam_mvp_eval.sh",
+    TASK7_ROOT / "scripts/gu_eval.sh",
+    TASK7_ROOT / "scripts/pcgrad_smoke_arm.sh",
+)
+
+
+def task7_common_gu_mappings(text):
+    text = text.replace("\\\n", "").replace('\\"', '"')
+    text = re.sub(r"[$]\{[^}]+\}", "VALUE", text)
+    bodies = re.findall(r"\+trainer[.]method_args[.]gu=\{([^}\n]+)\}", text)
+    assert bodies
+    return [
+        set(re.findall(r"(?:^|,)\s*([a-z_]+):", body)) for body in bodies
+    ]
+
+
+def test_task7_legacy_gu_has_exact_migration_and_safe_legacy_controls(tmp_path):
+    from tests.test_geometric_adam import make_geometric_trainer
+
+    message = (
+        "Legacy GU is retired; select the objective trainer and set "
+        "trainer.method_args.gu.enabled=true."
+    )
+    with pytest.raises(ValueError) as error:
+        make_geometric_trainer(
+            tmp_path / "legacy-gu",
+            geometric_overrides={"gradient_surgery": "gu"},
+        )
+    assert str(error.value) == message
+
+    disabled, _, _ = make_geometric_trainer(
+        tmp_path / "disabled",
+        gu_enabled=False,
+        geometric_overrides={"gradient_surgery": "gu"},
+    )
+    pcgrad, _, _ = make_geometric_trainer(
+        tmp_path / "pcgrad",
+        geometric_overrides={"gradient_surgery": "pcgrad"},
+    )
+    assert disabled.gu_enabled is False
+    assert disabled.gradient_surgery == "gu"
+    assert pcgrad.gradient_surgery == "pcgrad"
+
+
+def test_task7_legacy_yaml_defaults_to_pcgrad():
+    from omegaconf import OmegaConf
+
+    config = OmegaConf.load(TASK7_ROOT / "configs/trainer/GeometricUnlearn.yaml")
+
+    assert config.method_args.geometric_config.gradient_surgery == "pcgrad"
+
+
+def test_task7_mvp_uses_simnpo_and_exact_common_gu_contract():
+    text = TASK7_SCRIPTS[0].read_text()
+    resolved_text = text.replace("\\\n", "").replace('\\"', '"')
+
+    assert "trainer=SimNPO" in text
+    assert "trainer=GeometricUnlearn" not in text
+    assert "run_arm control false" in text
+    assert "run_arm gu true" in text
+    assert all(keys == TASK7_GU_KEYS for keys in task7_common_gu_mappings(text))
+    for setting in (
+        'parameter_regex:["lm_head[.]weight"]',
+        "retain_history_rank:8",
+        "projection_eps:1e-6",
+        "retain_filter:first_order",
+        "retain_budget:1e-4",
+        "backtracking_scales:[1.0,0.5,0.25,0.125]",
+        "diagnostics_path:",
+    ):
+        assert setting in resolved_text
+
+
+def test_task7_eval_maps_supported_losses_to_objective_trainers_and_one_process():
+    text = TASK7_SCRIPTS[1].read_text()
+    mappings = {
+        "simnpo": "SimNPO",
+        "npo": "NPO",
+        "dpo": "DPO",
+        "undial": "UNDIAL",
+        "ceu": "CEU",
+        "wga": "WGA",
+        "satimp": "SatImp",
+    }
+
+    for loss, trainer in mappings.items():
+        assert re.search(
+            rf"{loss}[)]\s+trainer_config={trainer}\s+;;",
+            text,
+        )
+    assert "trainer=GeometricUnlearn" not in text
+    assert '"trainer=${trainer_config}"' in text
+    assert "NUM_GPUS=1" in text
+    assert "--num_processes $NUM_GPUS" in text
+    assert all(keys == TASK7_GU_KEYS for keys in task7_common_gu_mappings(text))
+
+
+def test_task7_smoke_routes_only_gu_arm_to_common_gu():
+    text = TASK7_SCRIPTS[2].read_text()
+    resolved_text = text.replace("\\\n", "").replace('\\"', '"')
+    common_mappings = task7_common_gu_mappings(text)
+
+    assert 'if [[ "${method}" == gu ]]; then' in text
+    assert "trainer_name=SimNPO" in text
+    assert "trainer_name=GeometricUnlearn" in text
+    assert '"trainer=${trainer_name}"' in text
+    assert all(keys == TASK7_GU_KEYS for keys in common_mappings)
+    common_mapping_text = re.findall(
+        r"\+trainer[.]method_args[.]gu=\{[^}\n]+\}",
+        resolved_text,
+    )[0]
+    for legacy_key in (
+        "geometric_config",
+        "component_buffer_device",
+        "actual_delta_mode",
+        "actual_delta_steps",
+        "actual_delta_sample_elements",
+    ):
+        assert legacy_key not in common_mapping_text
+        assert legacy_key in text
+
+
+def test_task7_shipped_gu_scripts_have_valid_bash_syntax():
+    for path in TASK7_SCRIPTS:
+        result = subprocess.run(
+            ["bash", "-n", str(path)],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr

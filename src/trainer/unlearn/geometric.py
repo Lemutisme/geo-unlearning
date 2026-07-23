@@ -102,7 +102,7 @@ class GeometricUnlearn(GradDiff):
         if self.ref_model is None and self.loss_name in {"npo", "dpo", "undial"}:
             self.ref_model = self._prepare_ref_model(self.model)
 
-        self.gu_enabled = bool(getattr(self.geometric_config, "gu_enabled", True))
+        self.gu_enabled = bool(getattr(self.geometric_config, "gu_enabled", True)) and (str(getattr(self.geometric_config, "gradient_surgery", "gu")).lower() != "gu" or (_ for _ in ()).throw(ValueError("Legacy GU is retired; select the objective trainer and set trainer.method_args.gu.enabled=true.")))
         self.gradient_surgery = str(
             getattr(self.geometric_config, "gradient_surgery", "gu")
         ).lower()

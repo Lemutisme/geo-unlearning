@@ -123,10 +123,10 @@ def test_pcgrad_lifecycle_runs_once_per_optimizer_update(tmp_path):
     assert trainer.component_buffers.empty
 
 
-def test_historical_config_without_strategy_defaults_to_gu(tmp_path):
+def test_legacy_test_helper_defaults_to_pcgrad(tmp_path):
     trainer, _, _ = make_geometric_trainer(tmp_path)
 
-    assert trainer.gradient_surgery == "gu"
+    assert trainer.gradient_surgery == "pcgrad"
 
 
 def test_unknown_gradient_surgery_fails_during_initialization(tmp_path):
@@ -142,7 +142,7 @@ def test_geometric_config_exposes_pcgrad_and_streaming_defaults():
     config = OmegaConf.load("configs/trainer/GeometricUnlearn.yaml")
     geometric = config.method_args.geometric_config
 
-    assert geometric.gradient_surgery == "gu"
+    assert geometric.gradient_surgery == "pcgrad"
     assert geometric.component_buffer_device == "parameter"
     assert geometric.diagnostics_path is None
     assert geometric.actual_delta_mode == "off"

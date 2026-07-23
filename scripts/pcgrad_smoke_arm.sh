@@ -58,12 +58,18 @@ export TOKENIZERS_PARALLELISM=false
 
 case "${method}" in
     control)
+        trainer_name=GeometricUnlearn
         gu_enabled=false
         gradient_surgery=gu
         ;;
-    gu|pcgrad)
+    gu)
+        trainer_name=SimNPO
         gu_enabled=true
-        gradient_surgery=${method}
+        ;;
+    pcgrad)
+        trainer_name=GeometricUnlearn
+        gu_enabled=true
+        gradient_surgery=pcgrad
         ;;
     *)
         echo "Unsupported method: ${method}" >&2
@@ -149,13 +155,15 @@ case "${dataset}" in
         summary_name=MUSE_SUMMARY.json
         dataset_overrides=("data_split=${data_split}")
 
-        selected_numel=6738415616
-        required_host_bytes=$((selected_numel * 8 * 12 / 10))
-        available_host_kib=$(awk '/MemAvailable:/{print $2}' /proc/meminfo)
-        available_host_bytes=$((available_host_kib * 1024))
-        if (( available_host_bytes < required_host_bytes )); then
-            echo "Insufficient host memory for GU component buffers: requires ${required_host_bytes}, found ${available_host_bytes}." >&2
-            exit 1
+        if [[ "${method}" != gu ]]; then
+            selected_numel=6738415616
+            required_host_bytes=$((selected_numel * 8 * 12 / 10))
+            available_host_kib=$(awk '/MemAvailable:/{print $2}' /proc/meminfo)
+            available_host_bytes=$((available_host_kib * 1024))
+            if (( available_host_bytes < required_host_bytes )); then
+                echo "Insufficient host memory for GU component buffers: requires ${required_host_bytes}, found ${available_host_bytes}." >&2
+                exit 1
+            fi
         fi
         ;;
     *)
@@ -185,6 +193,31 @@ elif [[ "${dataset}" == tofu01 && "${method}" == pcgrad ]]; then
     actual_delta_mode=full
 fi
 
+if [[ "${method}" == gu ]]; then
+    trainer_method_overrides=(
+        "+trainer.method_args.gu={\
+enabled:true,\
+parameter_regex:[\"lm_head[.]weight\"],\
+retain_history_rank:8,\
+projection_eps:1e-6,\
+retain_filter:first_order,\
+retain_budget:1e-4,\
+backtracking_scales:[1.0,0.5,0.25,0.125],\
+diagnostics_path:gu_diagnostics.jsonl}"
+    )
+else
+    trainer_method_overrides=(
+        trainer.method_args.geometric_config.loss=simnpo
+        "trainer.method_args.geometric_config.gu_enabled=${gu_enabled}"
+        "trainer.method_args.geometric_config.gradient_surgery=${gradient_surgery}"
+        "trainer.method_args.geometric_config.component_buffer_device=${component_buffer_device}"
+        "trainer.method_args.geometric_config.diagnostics_path=${diagnostics_path}"
+        "trainer.method_args.geometric_config.actual_delta_mode=${actual_delta_mode}"
+        'trainer.method_args.geometric_config.actual_delta_steps=[1,10]'
+        trainer.method_args.geometric_config.actual_delta_sample_elements=1000000
+    )
+fi
+
 command=(
     accelerate launch
     --config_file configs/accelerate/gu_single_gpu.yaml
@@ -192,7 +225,7 @@ command=(
     src/train.py
     --config-name=unlearn.yaml
     "experiment=${experiment}"
-    trainer=GeometricUnlearn
+    "trainer=${trainer_name}"
     "task_name=${task_name}"
     "model=${model_name}"
     "model.model_args.pretrained_model_name_or_path=${base_model}"
@@ -222,14 +255,7 @@ command=(
     trainer.args.eval_on_start=false
     trainer.args.eval_strategy=no
     trainer.args.seed=0
-    trainer.method_args.geometric_config.loss=simnpo
-    "trainer.method_args.geometric_config.gu_enabled=${gu_enabled}"
-    "trainer.method_args.geometric_config.gradient_surgery=${gradient_surgery}"
-    "trainer.method_args.geometric_config.component_buffer_device=${component_buffer_device}"
-    "trainer.method_args.geometric_config.diagnostics_path=${diagnostics_path}"
-    "trainer.method_args.geometric_config.actual_delta_mode=${actual_delta_mode}"
-    'trainer.method_args.geometric_config.actual_delta_steps=[1,10]'
-    trainer.method_args.geometric_config.actual_delta_sample_elements=1000000
+    "${trainer_method_overrides[@]}"
     "${dataset_overrides[@]}"
 )
 
@@ -253,6 +279,7 @@ persist_artifacts() {
     for artifact in \
         run.log \
         GeometricUnlearn.log \
+        SimNPO.log \
         gu_diagnostics.jsonl \
         gu_diagnostics.summary.json; do
         if [[ -f "${local_arm_dir}/${artifact}" ]]; then

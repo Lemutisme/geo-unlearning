@@ -1,28 +1,52 @@
 #!/bin/bash
 
 # ==============================================================================
-# Comprehensive Evaluation Script for GeometricUnlearn Method with Various Losses
+# Comprehensive Evaluation Script for Common GU with Various Losses
 # ==============================================================================
 
 export MASTER_PORT=$(python -c "import socket; s=socket.socket(); s.bind(('', 0)); print(s.getsockname()[1]); s.close()")
 echo "Master Port: $MASTER_PORT"
 
-export CUDA_VISIBLE_DEVICES=6,7
+export CUDA_VISIBLE_DEVICES=6
 
 
 per_device_train_batch_size=4
 gradient_accumulation_steps=4
-NUM_GPUS=2
+NUM_GPUS=1
 EVAL_GPU=4
+
+gu_override='+trainer.method_args.gu={\
+enabled:true,\
+parameter_regex:["lm_head[.]weight"],\
+retain_history_rank:8,\
+projection_eps:1e-6,\
+retain_filter:first_order,\
+retain_budget:1e-4,\
+backtracking_scales:[1.0,0.5,0.25,0.125],\
+diagnostics_path:gu_diagnostics.jsonl}'
+
+resolve_trainer_config() {
+    case "$1" in
+        simnpo) trainer_config=SimNPO ;;
+        npo) trainer_config=NPO ;;
+        dpo) trainer_config=DPO ;;
+        undial) trainer_config=UNDIAL ;;
+        ceu) trainer_config=CEU ;;
+        wga) trainer_config=WGA ;;
+        satimp) trainer_config=SatImp ;;
+        *)
+            echo "Unknown loss function: $1" >&2
+            return 1
+            ;;
+    esac
+}
 
 EVAL_DIR="saves/exp/GU/$(date +%m%d%H%M)"
 
 LOSS_FUNCTIONS=(
-    "graddiff"
     "ceu"
     "dpo"
     "simnpo"
-    "gradascent"
     "npo"
     "undial"
     "wga"
@@ -35,7 +59,7 @@ echo "EVAL SAVED IN ${EVAL_DIR}"
 # TOFU Benchmark Evaluation
 ###################################################################################################
 echo "================================================="
-echo "Starting GeometricUnlearn on TOFU Benchmark"
+echo "Starting common GU on TOFU Benchmark"
 echo "================================================="
 
 tofu_models=(
@@ -51,40 +75,8 @@ tofu_splits=(
 
 for loss_func in "${LOSS_FUNCTIONS[@]}"; do
 
-    METHOD_NAME=""
-        case "$loss_func" in
-            "graddiff")
-                METHOD_NAME="GradDiff"
-                ;;
-            "ceu")
-                METHOD_NAME="CEU"
-                ;;
-            "npo")
-                METHOD_NAME="NPO"
-                ;;
-            "simnpo")
-                METHOD_NAME="SimNPO"
-                ;;
-            "dpo")
-                METHOD_NAME="DPO"
-                ;;
-            "undial")
-                METHOD_NAME="UNDIAL"
-                ;;
-            "wga")
-                METHOD_NAME="WGA"
-                ;;
-            "satimp")
-                METHOD_NAME="SatImp"
-                ;;
-            "gradascent")
-                METHOD_NAME="GradAscent"
-                ;;
-            *)
-                echo "unkown loss function: $loss_func"
-                continue
-                ;;
-        esac
+    resolve_trainer_config "${loss_func}"
+    METHOD_NAME=${trainer_config}
     for model in "${tofu_models[@]}"; do
         for split in "${tofu_splits[@]}"; do
 
@@ -107,7 +99,7 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
             accelerate launch --config_file configs/accelerate/default_config.yaml --main_process_port $MASTER_PORT --num_processes $NUM_GPUS \
             src/train.py --config-name=unlearn.yaml \
             experiment=${experiment_config} \
-            trainer=GeometricUnlearn \
+            "trainer=${trainer_config}" \
             task_name=${task_name} \
             model=${model} \
             model.model_args.pretrained_model_name_or_path=${model_path} \
@@ -122,7 +114,7 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
             trainer.args.do_eval=false \
             trainer.args.eval_on_start=false \
             trainer.args.eval_strategy=no \
-            trainer.method_args.geometric_config.loss=${loss_func}
+            "${gu_override}"
 
             CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \
             experiment=eval/tofu/default.yaml \
@@ -154,37 +146,8 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
         "Books"
     )
 
-    METHOD_NAME=""
-    case "$loss_func" in
-        "graddiff")
-            METHOD_NAME="GradDiff"
-            ;;
-        "ceu")
-            METHOD_NAME="CEU"
-            ;;
-        "npo")
-            METHOD_NAME="NPO"
-            ;;
-        "simnpo")
-            METHOD_NAME="SimNPO"
-            ;;
-        "dpo")
-            METHOD_NAME="DPO"
-            ;;
-        "undial")
-            METHOD_NAME="UNDIAL"
-            ;;
-        "wga")
-            METHOD_NAME="WGA"
-            ;;
-        "satimp")
-            METHOD_NAME="SatImp"
-            ;;
-        *)
-            echo "unkown loss function: $loss_func"
-            continue
-            ;;
-    esac
+    resolve_trainer_config "${loss_func}"
+    METHOD_NAME=${trainer_config}
 
     for model in "${muse_models[@]}"; do
         for data_split in "${muse_data_splits[@]}"; do
@@ -198,7 +161,7 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
             accelerate launch --config_file configs/accelerate/default_config.yaml --main_process_port $MASTER_PORT --num_processes $NUM_GPUS \
             src/train.py --config-name=unlearn.yaml \
             experiment=unlearn/muse/default \
-            trainer=GeometricUnlearn \
+            "trainer=${trainer_config}" \
             task_name=${task_name} \
             model=${model} \
             model.model_args.pretrained_model_name_or_path=${model_path} \
@@ -211,7 +174,7 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
             trainer.args.do_eval=false \
             trainer.args.eval_on_start=false \
             trainer.args.eval_strategy=no \
-            trainer.method_args.geometric_config.loss=${loss_func}
+            "${gu_override}"
 
             CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \
             experiment=eval/muse/default.yaml \
@@ -232,38 +195,8 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
     echo "================================================="
     echo "Starting ${loss_func} on WMDP Benchmark"
     echo "================================================="
-    METHOD_NAME=""
-    case "$loss_func" in
-        "graddiff")
-            METHOD_NAME="GradDiff"
-            ;;
-        "ceu")
-            METHOD_NAME="CEU"
-            ;;
-        "npo")
-            METHOD_NAME="NPO"
-            ;;
-        "simnpo")
-            METHOD_NAME="SimNPO"
-            ;;
-        "dpo")
-            METHOD_NAME="DPO"
-            ;;
-        "undial")
-            METHOD_NAME="UNDIAL"
-            ;;
-        "wga")
-            METHOD_NAME="WGA"
-            ;;
-        "satimp")
-            METHOD_NAME="SatImp"
-            ;;
-        *)
-
-            echo "unkown loss function: $loss_func"
-            continue
-            ;;
-    esac
+    resolve_trainer_config "${loss_func}"
+    METHOD_NAME=${trainer_config}
 
     wmdp_data_splits=(
         "cyber"
@@ -281,7 +214,7 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
         accelerate launch --config_file configs/accelerate/default_config.yaml --main_process_port $MASTER_PORT --num_processes $NUM_GPUS \
         src/train.py --config-name=unlearn.yaml \
         experiment=unlearn/wmdp/default \
-        trainer=GeometricUnlearn \
+        "trainer=${trainer_config}" \
         task_name=${task_name} \
         model=${wmdp_model} \
         data_split=${data_split} \
@@ -292,7 +225,7 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
         trainer.args.do_eval=false \
         trainer.args.eval_on_start=false \
         trainer.args.eval_strategy=no \
-        trainer.method_args.geometric_config.loss=${loss_func}
+        "${gu_override}"
 
         CUDA_VISIBLE_DEVICES=$EVAL_GPU python src/eval.py \
         experiment=eval/wmdp/default.yaml \

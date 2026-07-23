@@ -34,6 +34,7 @@ def make_geometric_trainer(
     geometric_config = SimpleNamespace(
         loss="simnpo",
         gu_enabled=gu_enabled,
+        gradient_surgery="pcgrad",
         projection_eps=1e-12,
         trainable_params_regex=[".*"],
         auto_last_k_layers=1,
@@ -346,7 +347,7 @@ def test_training_projects_once_per_optimizer_update(tmp_path):
 
     assert trainer.gu_projection_calls == trainer.state.global_step == 2
     assert trainer.component_buffers.empty
-    assert trainer.last_gu_diagnostics["mode"] == "gu"
+    assert trainer.last_gu_diagnostics["mode"] == "pcgrad"
 
 
 def test_short_final_accumulation_window_is_projected(tmp_path):
@@ -551,6 +552,7 @@ def test_geometric_yaml_uses_supported_approximate_adam_contract():
     assert config.args.max_steps == -1
     assert config.args.gradient_checkpointing_kwargs.use_reentrant is False
     assert config.method_args.geometric_config.gu_enabled is True
+    assert config.method_args.geometric_config.gradient_surgery == "pcgrad"
     assert config.method_args.geometric_config.sign_selective is False
     assert config.method_args.geometric_config.trainable_params_regex == [".*"]
     assert config.method_args.simnpo_config.gamma == 0.125

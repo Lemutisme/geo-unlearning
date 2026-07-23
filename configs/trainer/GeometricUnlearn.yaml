@@ -25,7 +25,7 @@ method_args:
   geometric_config:
     loss: "simnpo"
     gu_enabled: true
-    gradient_surgery: gu
+    gradient_surgery: pcgrad
     projection_eps: 1.0e-12
     sign_selective: false
     component_buffer_device: parameter
