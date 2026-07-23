@@ -1,7 +1,6 @@
 import math
 import os
 import re
-import stat
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from numbers import Real
@@ -49,7 +48,6 @@ class UnlearnTrainer(FinetuneTrainer):
             (parameter, parameter.requires_grad)
             for parameter in self.model.parameters()
         )
-        diagnostics_parent_descriptor = None
         setup_required = not getattr(self, "_gu_setup_complete", False)
         try:
             required_keys = {
@@ -102,15 +100,6 @@ class UnlearnTrainer(FinetuneTrainer):
                         "GU retain_history_rank must be an integer from 0 to 8"
                     )
 
-                projection_eps = self.gu_config["projection_eps"]
-                if (
-                    isinstance(projection_eps, bool)
-                    or not isinstance(projection_eps, Real)
-                    or not math.isfinite(projection_eps)
-                    or projection_eps <= 0
-                ):
-                    raise ValueError("GU projection_eps must be finite and positive")
-
                 retain_filter = self.gu_config["retain_filter"]
                 if not isinstance(retain_filter, str) or retain_filter not in {
                     "first_order",
@@ -120,38 +109,48 @@ class UnlearnTrainer(FinetuneTrainer):
                         "GU retain_filter must be first_order or finite_step"
                     )
 
-                retain_budget = self.gu_config["retain_budget"]
-                if (
-                    isinstance(retain_budget, bool)
-                    or not isinstance(retain_budget, Real)
-                    or not math.isfinite(retain_budget)
-                    or retain_budget < 0
+                for key, must_be_positive in (
+                    ("projection_eps", True),
+                    ("retain_budget", False),
                 ):
-                    raise ValueError("GU retain_budget must be finite and nonnegative")
+                    value = self.gu_config[key]
+                    if (
+                        isinstance(value, bool)
+                        or not isinstance(value, Real)
+                        or not math.isfinite(value)
+                        or value < 0
+                        or (must_be_positive and value == 0)
+                    ):
+                        bound = "positive" if must_be_positive else "nonnegative"
+                        raise ValueError(f"GU {key} must be finite and {bound}")
 
                 backtracking_scales = self.gu_config["backtracking_scales"]
-                if (
-                    not isinstance(backtracking_scales, Sequence)
-                    or isinstance(backtracking_scales, (str, bytes))
-                    or not backtracking_scales
-                ):
-                    raise ValueError(
-                        "GU backtracking_scales must be a nonempty sequence"
+                valid_scales = (
+                    isinstance(backtracking_scales, Sequence)
+                    and not isinstance(backtracking_scales, (str, bytes))
+                    and bool(backtracking_scales)
+                )
+                if valid_scales:
+                    valid_scales = all(
+                        isinstance(scale, Real)
+                        and not isinstance(scale, bool)
+                        and math.isfinite(scale)
+                        and 0 < scale <= 1
+                        for scale in backtracking_scales
                     )
-                previous_scale = math.inf
-                for scale in backtracking_scales:
-                    if (
-                        isinstance(scale, bool)
-                        or not isinstance(scale, Real)
-                        or not math.isfinite(scale)
-                        or not 0 < scale <= 1
-                        or scale >= previous_scale
-                    ):
-                        raise ValueError(
-                            "GU backtracking_scales must be finite, unique, and "
-                            "strictly descending in (0, 1]"
+                if valid_scales:
+                    valid_scales = all(
+                        left > right
+                        for left, right in zip(
+                            backtracking_scales,
+                            backtracking_scales[1:],
                         )
-                    previous_scale = scale
+                    )
+                if not valid_scales:
+                    raise ValueError(
+                        "GU backtracking_scales must be finite, unique, and "
+                        "strictly descending in (0, 1]"
+                    )
 
                 diagnostics_path = self.gu_config["diagnostics_path"]
                 if (
@@ -204,13 +203,10 @@ class UnlearnTrainer(FinetuneTrainer):
                 selected = self._gu_selected
 
             optimizer = super().create_optimizer()
-            optimizer_parameters = [
-                parameter
+            optimizer_parameter_ids = [
+                id(parameter)
                 for group in optimizer.param_groups
                 for parameter in group["params"]
-            ]
-            optimizer_parameter_ids = [
-                id(parameter) for parameter in optimizer_parameters
             ]
             selected_parameter_ids = {id(parameter) for _, parameter in selected}
             if (
@@ -246,143 +242,55 @@ class UnlearnTrainer(FinetuneTrainer):
                     "paged AdamW"
                 )
 
-            if setup_required:
-                output_dir = Path(os.path.abspath(self.args.output_dir))
-                output_parts = output_dir.parts[1:]
-                parent_parts = relative_diagnostics_path.parts[:-1]
-                directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-                directory_descriptor = os.open(
-                    output_dir.anchor,
-                    directory_flags,
-                )
-                try:
-                    for index, part in enumerate(output_parts + parent_parts):
-                        try:
-                            try:
-                                next_descriptor = os.open(
-                                    part,
-                                    directory_flags,
-                                    dir_fd=directory_descriptor,
-                                )
-                            except FileNotFoundError:
-                                try:
-                                    os.mkdir(part, dir_fd=directory_descriptor)
-                                except FileExistsError:
-                                    pass
-                                next_descriptor = os.open(
-                                    part,
-                                    directory_flags,
-                                    dir_fd=directory_descriptor,
-                                )
-                        except OSError as error:
-                            try:
-                                component_stat = os.stat(
-                                    part,
-                                    dir_fd=directory_descriptor,
-                                    follow_symlinks=False,
-                                )
-                            except OSError:
-                                component_stat = None
-                            if component_stat is not None and stat.S_ISLNK(
-                                component_stat.st_mode
-                            ):
-                                raise ValueError(
-                                    "GU diagnostics_path must not use symlinks"
-                                ) from error
-                            if index < len(output_parts):
-                                raise ValueError(
-                                    "GU output_dir must be a directory"
-                                ) from error
-                            raise ValueError(
-                                "GU diagnostics_path parent must be a directory"
-                            ) from error
-                        previous_descriptor = directory_descriptor
-                        directory_descriptor = next_descriptor
-                        os.close(previous_descriptor)
-
-                    diagnostics_parent_descriptor = directory_descriptor
-                    directory_descriptor = None
-                finally:
-                    if directory_descriptor is not None:
-                        os.close(directory_descriptor)
-
-                diagnostics_name = relative_diagnostics_path.parts[-1]
-                resolved_candidate = output_dir / relative_diagnostics_path
-                diagnostics_flags = (
-                    os.O_WRONLY
-                    | os.O_APPEND
-                    | os.O_CREAT
-                    | os.O_EXCL
-                    | os.O_NOFOLLOW
-                )
-                try:
-                    file_descriptor = os.open(
-                        diagnostics_name,
-                        diagnostics_flags,
-                        0o666,
-                        dir_fd=diagnostics_parent_descriptor,
-                    )
-                except OSError as error:
-                    try:
-                        candidate_stat = os.stat(
-                            diagnostics_name,
-                            dir_fd=diagnostics_parent_descriptor,
-                            follow_symlinks=False,
-                        )
-                    except OSError:
-                        candidate_stat = None
-                    if candidate_stat is not None and stat.S_ISLNK(
-                        candidate_stat.st_mode
-                    ):
-                        raise ValueError(
-                            "GU diagnostics_path must not use symlinks"
-                        ) from error
-                    raise ValueError(
-                        "GU diagnostics_path is not append-writable"
-                    ) from error
-                try:
-                    os.close(file_descriptor)
-                except OSError:
-                    pass
-                self._gu_parameter_patterns = compiled_patterns
-                self._gu_selected = selected
-                self._gu_diagnostics_path = resolved_candidate
-                self._gu_setup_complete = True
-
             if getattr(self, "_gu_hooked_optimizer", None) is not optimizer:
                 pre_hook_handle = optimizer.register_step_pre_hook(
                     self._gu_optimizer_step_pre_hook
                 )
                 try:
-                    post_hook_handle = optimizer.register_step_post_hook(
+                    optimizer.register_step_post_hook(
                         self._gu_optimizer_step_post_hook
                     )
                 except Exception:
                     pre_hook_handle.remove()
                     raise
                 self._gu_hooked_optimizer = optimizer
-                self._gu_optimizer_step_hook_handles = (
-                    pre_hook_handle,
-                    post_hook_handle,
-                )
+
+            if setup_required:
+                resolved_candidate = Path(
+                    os.path.abspath(self.args.output_dir)
+                ) / relative_diagnostics_path
+                if any(
+                    component.is_symlink()
+                    for component in (
+                        resolved_candidate,
+                        *resolved_candidate.parents,
+                    )
+                ):
+                    raise ValueError("GU diagnostics_path must not use symlinks")
+                try:
+                    resolved_candidate.parent.mkdir(parents=True, exist_ok=True)
+                    file_descriptor = os.open(
+                        resolved_candidate,
+                        os.O_WRONLY
+                        | os.O_APPEND
+                        | os.O_CREAT
+                        | os.O_EXCL
+                        | os.O_NOFOLLOW,
+                        0o666,
+                    )
+                    os.close(file_descriptor)
+                except OSError as error:
+                    raise ValueError(
+                        "GU diagnostics_path is not append-writable"
+                    ) from error
+                self._gu_parameter_patterns = compiled_patterns
+                self._gu_selected = selected
+                self._gu_diagnostics_path = resolved_candidate
+                self._gu_setup_complete = True
         except Exception:
             for parameter, requires_grad in original_requires_grad:
                 parameter.requires_grad_(requires_grad)
-            for attribute in (
-                "_gu_parameter_patterns",
-                "_gu_selected",
-                "_gu_diagnostics_path",
-                "_gu_setup_complete",
-            ):
-                if hasattr(self, attribute):
-                    delattr(self, attribute)
             raise
-        finally:
-            if diagnostics_parent_descriptor is not None:
-                try:
-                    os.close(diagnostics_parent_descriptor)
-                except OSError:
-                    pass
         return optimizer
 
     def _gu_optimizer_step_pre_hook(self, optimizer, _args, _kwargs):
@@ -393,7 +301,6 @@ class UnlearnTrainer(FinetuneTrainer):
             self, "_gu_pending_history_covector"
         ):
             raise ValueError("GU optimizer step requires ready constraints")
-
         constraints = self._gu_constraints_used
         pending = self._gu_pending_history_covector
         if (
@@ -402,22 +309,23 @@ class UnlearnTrainer(FinetuneTrainer):
             or constraints[0] is not pending
         ):
             raise ValueError("GU optimizer step received stale constraints")
-        if not isinstance(pending, tuple) or len(pending) != len(self._gu_selected):
+        if (
+            not isinstance(pending, tuple)
+            or len(pending) != len(self._gu_selected)
+            or any(
+                not isinstance(block, torch.Tensor)
+                or block.shape != parameter.shape
+                for block, (_, parameter) in zip(pending, self._gu_selected)
+            )
+        ):
             raise ValueError("GU optimizer step received stale pending covector")
-        for block, (name, parameter) in zip(pending, self._gu_selected):
-            if not isinstance(block, torch.Tensor) or block.shape != parameter.shape:
-                raise ValueError(
-                    "GU optimizer step received stale pending covector for "
-                    f"parameter {name}"
-                )
 
         self._gu_parameter_snapshot = tuple(
-            parameter.detach().float().clone()
+            parameter.detach().clone()
             for _, parameter in self._gu_selected
         )
-        for attribute in ("_gu_proposal_delta", "_gu_metric_diagonal"):
-            if hasattr(self, attribute):
-                delattr(self, attribute)
+        if hasattr(self, "_gu_proposal_delta"):
+            del self._gu_proposal_delta
 
     def _gu_optimizer_step_post_hook(self, optimizer, _args, _kwargs):
         if not hasattr(self, "_gu_parameter_snapshot"):
@@ -426,76 +334,48 @@ class UnlearnTrainer(FinetuneTrainer):
         snapshot = self._gu_parameter_snapshot
         pending = self._gu_pending_history_covector
         proposal_delta = []
-        metric_diagonal = []
         try:
             for before, (name, parameter) in zip(snapshot, self._gu_selected):
                 if before.shape != parameter.shape:
-                    raise ValueError(
-                        "GU parameter snapshot shape does not match selected "
-                        f"parameter {name}"
-                    )
-                proposal_delta.append(parameter.detach().float() - before)
+                    raise ValueError(f"GU parameter snapshot shape mismatch for {name}")
+                proposal_delta.append(
+                    parameter.detach().float() - before.float()
+                )
 
                 state = optimizer.state.get(parameter)
-                if not isinstance(state, Mapping):
-                    raise ValueError(
-                        "GU optimizer second-moment state is missing for selected "
-                        f"parameter {name}"
-                    )
-                if "exp_avg_sq" in state:
-                    second_moment = state["exp_avg_sq"]
-                elif "state2" in state:
-                    second_moment = state["state2"]
-                else:
-                    raise ValueError(
-                        "GU optimizer second-moment state is missing for selected "
-                        f"parameter {name}"
-                    )
+                if not isinstance(state, Mapping) or not (
+                    "exp_avg_sq" in state or "state2" in state
+                ):
+                    raise ValueError(f"GU optimizer state is missing for {name}")
+                state_key = "exp_avg_sq" if "exp_avg_sq" in state else "state2"
+                second_moment = state[state_key]
                 if not isinstance(second_moment, torch.Tensor) or not (
                     torch.is_floating_point(second_moment)
                 ):
-                    raise ValueError(
-                        "GU optimizer second-moment state must be a floating tensor "
-                        f"for selected parameter {name}"
-                    )
+                    raise ValueError(f"GU second moment must be floating for {name}")
                 if second_moment.shape != parameter.shape:
-                    raise ValueError(
-                        "GU optimizer second-moment state shape does not match "
-                        f"selected parameter {name}"
-                    )
+                    raise ValueError(f"GU second-moment shape mismatch for {name}")
                 if not torch.isfinite(second_moment).all():
-                    raise ValueError(
-                        "GU optimizer second-moment state must be finite for "
-                        f"selected parameter {name}"
-                    )
+                    raise ValueError(f"GU second moment must be finite for {name}")
                 if (second_moment < 0).any():
-                    raise ValueError(
-                        "GU optimizer second-moment state must be nonnegative for "
-                        f"selected parameter {name}"
-                    )
+                    raise ValueError(f"GU second moment must be nonnegative for {name}")
 
-                parameter_group = next(
-                    group
+                epsilon = next(
+                    group["eps"]
                     for group in optimizer.param_groups
                     if any(
                         candidate is parameter for candidate in group["params"]
                     )
                 )
                 diagonal = second_moment.detach().float().sqrt()
-                diagonal.add_(parameter_group["eps"])
+                diagonal.add_(epsilon)
                 if not torch.isfinite(diagonal).all():
-                    raise ValueError(
-                        "GU optimizer metric diagonal must be finite for selected "
-                        f"parameter {name}"
-                    )
-                metric_diagonal.append(diagonal)
+                    raise ValueError(f"GU metric diagonal must be finite for {name}")
 
             self._gu_proposal_delta = tuple(proposal_delta)
-            self._gu_metric_diagonal = tuple(metric_diagonal)
             retain_history_rank = self.gu_config["retain_history_rank"]
-            history = getattr(self, "_gu_constraint_history", ())
             self._gu_constraint_history = (
-                (pending, *history)[:retain_history_rank]
+                (pending, *getattr(self, "_gu_constraint_history", ()))[:retain_history_rank]
                 if retain_history_rank
                 else ()
             )

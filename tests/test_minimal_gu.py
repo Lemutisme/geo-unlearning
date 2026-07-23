@@ -1,5 +1,4 @@
 import copy
-import os
 
 import pytest
 import torch
@@ -472,145 +471,6 @@ def test_gu_rejects_symlink_in_output_dir_ancestor(tmp_path):
         trainer.create_optimizer()
 
     assert not (outside / "nested" / "gu.jsonl").exists()
-
-
-def test_gu_anchors_diagnostics_open_when_parent_is_temporarily_swapped(
-    tmp_path,
-    monkeypatch,
-):
-    output_dir = tmp_path / "output"
-    output_dir.mkdir()
-    diagnostics_dir = output_dir / "diagnostics"
-    diagnostics_dir.mkdir()
-    parked_diagnostics_dir = output_dir / "parked-diagnostics"
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    original_open = os.open
-    swapped = False
-
-    def swap_parent_on_final_open(path, flags, mode=0o777, *, dir_fd=None):
-        nonlocal swapped
-        if (
-            not swapped
-            and os.path.basename(os.fspath(path)) == "gu.jsonl"
-            and flags & os.O_CREAT
-        ):
-            diagnostics_dir.rename(parked_diagnostics_dir)
-            diagnostics_dir.symlink_to(outside, target_is_directory=True)
-            try:
-                file_descriptor = original_open(
-                    path,
-                    flags,
-                    mode,
-                    dir_fd=dir_fd,
-                )
-            finally:
-                diagnostics_dir.unlink()
-                parked_diagnostics_dir.rename(diagnostics_dir)
-            swapped = True
-            return file_descriptor
-        return original_open(path, flags, mode, dir_fd=dir_fd)
-
-    monkeypatch.setattr(os, "open", swap_parent_on_final_open)
-    trainer = make_trainer(
-        TinyCausalLM(),
-        output_dir,
-        gu=gu_config(diagnostics_path="diagnostics/gu.jsonl"),
-    )
-
-    initialization_error = None
-    try:
-        trainer.create_optimizer()
-    except Exception as error:
-        initialization_error = error
-
-    assert swapped
-    assert not (outside / "gu.jsonl").exists()
-    assert initialization_error is None
-    assert (diagnostics_dir / "gu.jsonl").is_file()
-
-
-def test_gu_exclusive_commit_rejects_and_preserves_concurrent_file(
-    tmp_path,
-    monkeypatch,
-):
-    output_dir = tmp_path / "output"
-    diagnostics_dir = output_dir / "diagnostics"
-    diagnostics_dir.mkdir(parents=True)
-    diagnostics_path = diagnostics_dir / "gu.jsonl"
-    original_open = os.open
-    concurrent_contents = b"concurrent actor\n"
-    created_concurrently = False
-
-    def create_file_before_diagnostics_open(path, flags, mode=0o777, *, dir_fd=None):
-        nonlocal created_concurrently
-        if (
-            not created_concurrently
-            and os.path.basename(os.fspath(path)) == diagnostics_path.name
-            and flags & os.O_CREAT
-            and flags & os.O_EXCL
-        ):
-            concurrent_descriptor = original_open(
-                path,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                mode,
-                dir_fd=dir_fd,
-            )
-            try:
-                os.write(concurrent_descriptor, concurrent_contents)
-            finally:
-                os.close(concurrent_descriptor)
-            created_concurrently = True
-        return original_open(path, flags, mode, dir_fd=dir_fd)
-
-    monkeypatch.setattr(os, "open", create_file_before_diagnostics_open)
-    trainer = make_trainer(
-        TinyCausalLM(),
-        output_dir,
-        gu=gu_config(diagnostics_path="diagnostics/gu.jsonl"),
-    )
-
-    with pytest.raises(ValueError, match="append-writable"):
-        trainer.create_optimizer()
-
-    assert created_concurrently
-    assert diagnostics_path.read_bytes() == concurrent_contents
-
-
-def test_gu_opens_final_diagnostics_with_nofollow_append_create(
-    tmp_path,
-    monkeypatch,
-):
-    output_dir = tmp_path / "output"
-    diagnostics_path = output_dir / "diagnostics" / "gu.jsonl"
-    opened_calls = []
-    original_open = os.open
-
-    def track_open(path, flags, mode=0o777, *, dir_fd=None):
-        if (
-            os.path.basename(os.fspath(path)) == diagnostics_path.name
-            and flags & os.O_CREAT
-        ):
-            opened_calls.append((flags, dir_fd))
-        return original_open(path, flags, mode, dir_fd=dir_fd)
-
-    monkeypatch.setattr(os, "open", track_open)
-    trainer = make_trainer(
-        TinyCausalLM(),
-        output_dir,
-        gu=gu_config(diagnostics_path="diagnostics/gu.jsonl"),
-    )
-
-    trainer.create_optimizer()
-
-    assert opened_calls
-    opened_flags, parent_descriptor = opened_calls[-1]
-    assert parent_descriptor is not None
-    assert opened_flags & os.O_WRONLY
-    assert opened_flags & os.O_NOFOLLOW
-    assert opened_flags & os.O_APPEND
-    assert opened_flags & os.O_CREAT
-    assert opened_flags & os.O_EXCL
 
 
 def test_disabled_gu_matches_unmodified_objective_update(tmp_path):
@@ -1094,7 +954,7 @@ def test_gu_parent_failure_clears_accumulator_and_pending_state(
     assert not hasattr(trainer, "_gu_pending_history_covector")
 
 
-def test_gu_captures_full_realized_adamw_delta_and_metric(tmp_path):
+def test_gu_captures_full_realized_adamw_delta_without_persisting_metric(tmp_path):
     torch.manual_seed(2468)
     trainer = make_trainer(
         TinyCausalLM(),
@@ -1146,21 +1006,7 @@ def test_gu_captures_full_realized_adamw_delta_and_metric(tmp_path):
         )
         for actual, raw_gradient in zip(observed, raw_gradients)
     )
-
-    for metric, (_, parameter) in zip(
-        trainer._gu_metric_diagonal,
-        trainer._gu_selected,
-    ):
-        state = trainer.optimizer.state[parameter]
-        expected = state["exp_avg_sq"].detach().float().sqrt()
-        parameter_group = next(
-            group
-            for group in trainer.optimizer.param_groups
-            if any(candidate is parameter for candidate in group["params"])
-        )
-        expected.add_(parameter_group["eps"])
-        assert metric.dtype == torch.float32
-        torch.testing.assert_close(metric, expected, rtol=0.0, atol=0.0)
+    assert not hasattr(trainer, "_gu_metric_diagonal")
 
 
 def test_gu_commits_history_only_after_post_hook_and_truncates_fifo(tmp_path):
@@ -1210,7 +1056,7 @@ def test_gu_commits_history_only_after_post_hook_and_truncates_fifo(tmp_path):
         ):
             assert not hasattr(trainer, attribute)
         assert hasattr(trainer, "_gu_proposal_delta")
-        assert hasattr(trainer, "_gu_metric_diagonal")
+        assert not hasattr(trainer, "_gu_metric_diagonal")
 
 
 def test_gu_rank_zero_commits_empty_history_after_step(tmp_path):
@@ -1274,6 +1120,24 @@ def test_gu_pre_hook_rejects_unready_or_duplicate_state(
     assert not trainer.optimizer.state
 
 
+def test_gu_bf16_snapshot_uses_native_dtype_and_storage(tmp_path):
+    model = TinyCausalLM().to(dtype=torch.bfloat16)
+    trainer = make_trainer(model, tmp_path, gu=gu_config())
+    trainer.create_optimizer()
+    parameter = trainer._gu_selected[0][1]
+    pending = (torch.ones_like(parameter),)
+    trainer._gu_constraints_used = (pending,)
+    trainer._gu_pending_history_covector = pending
+
+    trainer._gu_optimizer_step_pre_hook(trainer.optimizer, (), {})
+
+    (snapshot,) = trainer._gu_parameter_snapshot
+    assert snapshot.dtype == torch.bfloat16
+    assert snapshot.untyped_storage().nbytes() == (
+        parameter.numel() * parameter.element_size()
+    )
+
+
 def test_gu_registers_bound_optimizer_hooks_exactly_once(tmp_path, monkeypatch):
     model = TinyCausalLM()
     optimizer = torch.optim.AdamW([model.protected.weight], lr=1.0e-3)
@@ -1318,6 +1182,7 @@ def test_gu_registers_bound_optimizer_hooks_exactly_once(tmp_path, monkeypatch):
         pytest.param("negative", "nonnegative", id="negative"),
         pytest.param("shape", "shape", id="shape"),
         pytest.param("integer", "floating", id="integer"),
+        pytest.param("metric", "metric diagonal", id="metric"),
     ],
 )
 def test_gu_invalid_second_moment_does_not_commit_or_rewind_proposal(
@@ -1342,6 +1207,8 @@ def test_gu_invalid_second_moment_does_not_commit_or_rewind_proposal(
             state["exp_avg_sq"].fill_(-1.0)
         elif corruption == "shape":
             state["exp_avg_sq"] = torch.zeros(1)
+        elif corruption == "metric":
+            stepped_optimizer.param_groups[0]["eps"] = float("inf")
         else:
             state["exp_avg_sq"] = torch.zeros_like(parameter, dtype=torch.int64)
 
@@ -1381,7 +1248,7 @@ def test_gu_invalid_second_moment_does_not_commit_or_rewind_proposal(
         assert not hasattr(trainer, attribute)
 
 
-def test_gu_reads_state2_second_moment_without_optimizer_adapter(tmp_path):
+def test_gu_validates_state2_without_persisting_metric(tmp_path):
     model = TinyCausalLM()
     parameter = model.protected.weight
     optimizer = torch.optim.AdamW([parameter], lr=1.0e-3, eps=3.0e-7)
@@ -1409,13 +1276,8 @@ def test_gu_reads_state2_second_moment_without_optimizer_adapter(tmp_path):
 
     trainer.optimizer.step()
 
-    expected = optimizer.state[parameter]["state2"].float().sqrt().add(3.0e-7)
-    torch.testing.assert_close(
-        trainer._gu_metric_diagonal[0],
-        expected,
-        rtol=0.0,
-        atol=0.0,
-    )
+    assert torch.isfinite(optimizer.state[parameter]["state2"]).all()
+    assert not hasattr(trainer, "_gu_metric_diagonal")
     assert trainer._gu_constraint_history[0] is pending
 
 
