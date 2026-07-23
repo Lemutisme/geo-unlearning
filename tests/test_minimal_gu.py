@@ -1,4 +1,5 @@
 import copy
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -129,6 +130,22 @@ def gu_batch(forget_tokens, retain_tokens):
             "labels": retain_tokens.clone(),
         },
     }
+
+
+def install_constraints(trainer, constraints):
+    trainer._gu_constraints_used = tuple(constraints)
+    trainer._gu_pending_history_covector = constraints[0]
+    trainer._gu_constraint_history = tuple(constraints[1:])
+
+
+def coordinate_constraint(trainer, entries):
+    blocks = [
+        torch.zeros_like(parameter, dtype=torch.float32)
+        for _, parameter in trainer._gu_selected
+    ]
+    for block_index, coordinate, value in entries:
+        blocks[block_index].view(-1)[coordinate] = value
+    return tuple(blocks)
 
 
 @pytest.mark.parametrize(
@@ -954,6 +971,241 @@ def test_gu_parent_failure_clears_accumulator_and_pending_state(
     assert not hasattr(trainer, "_gu_pending_history_covector")
 
 
+def test_gu_constrains_actual_multi_active_adamw_delta_and_reports_kkt(tmp_path):
+    trainer = make_trainer(
+        TinyCausalLM(),
+        tmp_path,
+        gu=gu_config(retain_history_rank=2),
+    )
+    trainer.create_optimizer()
+    parameter = trainer._gu_selected[0][1]
+    constraints = tuple(
+        coordinate_constraint(trainer, [(0, coordinate, -1.0)])
+        for coordinate in range(3)
+    )
+    install_constraints(trainer, constraints)
+    before = parameter.detach().clone()
+    parameter.grad = torch.ones_like(parameter)
+
+    trainer.optimizer.step()
+
+    actual_delta = parameter.detach().float() - before.float()
+    for constraint in constraints:
+        violation = sum(
+            (block.double() * actual_delta.double()).sum()
+            for block in constraint
+        )
+        assert violation.item() <= 1.0e-7
+    diagnostics = trainer.gu_last_diagnostics
+    assert diagnostics["constraint_count"] == 3
+    assert diagnostics["active_constraints"] == [0, 1, 2]
+    assert diagnostics["max_violation_before"] > 0.0
+    assert diagnostics["max_violation_after"] <= 1.0e-12
+    assert diagnostics["kkt_residual"] <= 1.0e-8
+    assert trainer.gu_projection_calls == 1
+    assert trainer._gu_constraint_history == constraints[:2]
+    for attribute in (
+        "_gu_constraints_used",
+        "_gu_pending_history_covector",
+        "_gu_parameter_snapshot",
+        "_gu_proposal_delta",
+    ):
+        assert not hasattr(trainer, attribute)
+
+
+def test_gu_safe_proposal_is_bitwise_unchanged(tmp_path):
+    model = TinyCausalLM()
+    trainer = make_trainer(model, tmp_path, gu=gu_config())
+    trainer.create_optimizer()
+    parameter = trainer._gu_selected[0][1]
+    expected = nn.Parameter(parameter.detach().clone())
+    group = trainer.optimizer.param_groups[0]
+    control = torch.optim.AdamW(
+        [expected],
+        lr=group["lr"],
+        betas=group["betas"],
+        eps=group["eps"],
+        weight_decay=group["weight_decay"],
+    )
+    constraint = coordinate_constraint(trainer, [(0, 0, 1.0)])
+    install_constraints(trainer, (constraint,))
+    parameter.grad = torch.ones_like(parameter)
+    expected.grad = torch.ones_like(expected)
+
+    control.step()
+    trainer.optimizer.step()
+
+    assert torch.equal(parameter, expected)
+    diagnostics = trainer.gu_last_diagnostics
+    assert diagnostics["active_constraints"] == []
+    assert diagnostics["correction_ratio"] == 0.0
+    assert diagnostics["proposal_norm"] == diagnostics["corrected_norm"]
+    assert not hasattr(trainer, "_gu_proposal_delta")
+
+
+def test_gu_dependent_constraints_use_feasible_nonsingular_active_set(tmp_path):
+    trainer = make_trainer(TinyCausalLM(), tmp_path, gu=gu_config())
+    trainer.create_optimizer()
+    parameter = trainer._gu_selected[0][1]
+    constraint = coordinate_constraint(trainer, [(0, 0, -1.0)])
+    dependent = tuple(block.clone() for block in constraint)
+    constraints = (constraint, dependent)
+    install_constraints(trainer, constraints)
+    before = parameter.detach().clone()
+    parameter.grad = torch.ones_like(parameter)
+
+    trainer.optimizer.step()
+
+    actual_delta = parameter.detach().float() - before.float()
+    assert all(
+        sum(
+            (block.double() * actual_delta.double()).sum()
+            for block in candidate
+        ).item()
+        <= 1.0e-7
+        for candidate in constraints
+    )
+    assert trainer.gu_last_diagnostics["active_constraints"] == [0]
+    assert trainer.gu_last_diagnostics["kkt_residual"] <= 1.0e-8
+
+
+def test_gu_uses_one_global_dual_coefficient_across_parameter_blocks(tmp_path):
+    model = TinyCausalLM()
+    parameters = (model.embed.weight, model.protected.weight)
+    optimizer = torch.optim.AdamW(parameters, lr=1.0e-3)
+    proposal_parameters = []
+
+    def capture_proposal(_optimizer, _args, _kwargs):
+        proposal_parameters[:] = [
+            parameter.detach().clone() for parameter in parameters
+        ]
+
+    optimizer.register_step_post_hook(capture_proposal)
+    trainer = make_trainer(
+        model,
+        tmp_path,
+        gu=gu_config(parameter_regex=["embed[.]weight", "protected[.]weight"]),
+        optimizers=(optimizer, None),
+    )
+    trainer.create_optimizer()
+    constraint = coordinate_constraint(
+        trainer,
+        [(0, 0, -1.0), (1, 0, -1.0)],
+    )
+    install_constraints(trainer, (constraint,))
+    before = [parameter.detach().clone() for parameter in parameters]
+    parameters[0].grad = torch.ones_like(parameters[0])
+    parameters[1].grad = torch.full_like(parameters[1], 2.0)
+
+    optimizer.step()
+
+    coefficients = []
+    for parameter, proposed in zip(parameters, proposal_parameters):
+        metric = optimizer.state[parameter]["exp_avg_sq"].double().sqrt()
+        metric.add_(optimizer.param_groups[0]["eps"])
+        adjustment = parameter.detach().double() - proposed.double()
+        coefficients.append((adjustment.view(-1)[0] * metric.view(-1)[0]).item())
+    assert coefficients[0] == pytest.approx(coefficients[1], rel=1.0e-4)
+    applied = [
+        parameter.detach().float() - old.float()
+        for parameter, old in zip(parameters, before)
+    ]
+    violation = sum(
+        (block.double() * delta.double()).sum()
+        for block, delta in zip(constraint, applied)
+    )
+    assert violation.item() <= 1.0e-7
+
+
+@pytest.mark.parametrize("solver_failure", ["rank", "negative", "nonfinite"])
+def test_gu_infeasible_solver_result_does_not_correct_or_commit(
+    tmp_path,
+    monkeypatch,
+    solver_failure,
+):
+    model = TinyCausalLM()
+    parameter = model.protected.weight
+    optimizer = torch.optim.AdamW([parameter], lr=1.0e-3)
+    ordinary_proposal = []
+
+    def capture_proposal(_optimizer, _args, _kwargs):
+        ordinary_proposal.append(parameter.detach().clone())
+
+    optimizer.register_step_post_hook(capture_proposal)
+    trainer = make_trainer(
+        model,
+        tmp_path,
+        gu=gu_config(),
+        optimizers=(optimizer, None),
+    )
+    trainer.create_optimizer()
+    constraint = coordinate_constraint(trainer, [(0, 0, -1.0)])
+    install_constraints(trainer, (constraint,))
+    history = trainer._gu_constraint_history
+    parameter.grad = torch.ones_like(parameter)
+    real_lstsq = torch.linalg.lstsq
+
+    def invalid_lstsq(matrix, right_hand_side, *, rcond):
+        result = real_lstsq(matrix, right_hand_side, rcond=rcond)
+        if solver_failure == "rank":
+            return SimpleNamespace(
+                solution=result.solution,
+                rank=torch.zeros_like(result.rank),
+            )
+        fill = -1.0 if solver_failure == "negative" else float("nan")
+        return SimpleNamespace(
+            solution=torch.full_like(result.solution, fill),
+            rank=result.rank,
+        )
+
+    monkeypatch.setattr(torch.linalg, "lstsq", invalid_lstsq)
+
+    with pytest.raises(ValueError, match="feasible"):
+        optimizer.step()
+
+    assert len(ordinary_proposal) == 1
+    assert torch.equal(parameter, ordinary_proposal[0])
+    assert trainer._gu_constraint_history is history
+    assert trainer.gu_projection_calls == 0
+    for attribute in (
+        "_gu_constraints_used",
+        "_gu_pending_history_covector",
+        "_gu_parameter_snapshot",
+        "_gu_proposal_delta",
+    ):
+        assert not hasattr(trainer, attribute)
+
+
+def test_gu_nonfinite_constraint_does_not_correct_or_commit(tmp_path):
+    model = TinyCausalLM()
+    parameter = model.protected.weight
+    optimizer = torch.optim.AdamW([parameter], lr=1.0e-3)
+    ordinary_proposal = []
+    optimizer.register_step_post_hook(
+        lambda _optimizer, _args, _kwargs: ordinary_proposal.append(
+            parameter.detach().clone()
+        )
+    )
+    trainer = make_trainer(
+        model,
+        tmp_path,
+        gu=gu_config(),
+        optimizers=(optimizer, None),
+    )
+    trainer.create_optimizer()
+    constraint = coordinate_constraint(trainer, [(0, 0, float("nan"))])
+    install_constraints(trainer, (constraint,))
+    history = trainer._gu_constraint_history
+    parameter.grad = torch.ones_like(parameter)
+
+    with pytest.raises(ValueError, match="finite"):
+        optimizer.step()
+
+    assert torch.equal(parameter, ordinary_proposal[0])
+    assert trainer._gu_constraint_history is history
+    assert not hasattr(trainer, "_gu_proposal_delta")
+
+
 def test_gu_captures_full_realized_adamw_delta_without_persisting_metric(tmp_path):
     torch.manual_seed(2468)
     trainer = make_trainer(
@@ -996,9 +1248,6 @@ def test_gu_captures_full_realized_adamw_delta_without_persisting_metric(tmp_pat
         parameter.detach().float() - old
         for (_, parameter), old in zip(trainer._gu_selected, before)
     )
-    for captured, actual in zip(trainer._gu_proposal_delta, observed):
-        assert captured.dtype == torch.float32
-        torch.testing.assert_close(captured, actual, rtol=0.0, atol=0.0)
     assert any(
         not torch.allclose(
             actual,
@@ -1006,6 +1255,7 @@ def test_gu_captures_full_realized_adamw_delta_without_persisting_metric(tmp_pat
         )
         for actual, raw_gradient in zip(observed, raw_gradients)
     )
+    assert not hasattr(trainer, "_gu_proposal_delta")
     assert not hasattr(trainer, "_gu_metric_diagonal")
 
 
@@ -1055,7 +1305,7 @@ def test_gu_commits_history_only_after_post_hook_and_truncates_fifo(tmp_path):
             "_gu_parameter_snapshot",
         ):
             assert not hasattr(trainer, attribute)
-        assert hasattr(trainer, "_gu_proposal_delta")
+        assert not hasattr(trainer, "_gu_proposal_delta")
         assert not hasattr(trainer, "_gu_metric_diagonal")
 
 

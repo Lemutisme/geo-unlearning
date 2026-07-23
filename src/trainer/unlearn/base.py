@@ -333,14 +333,25 @@ class UnlearnTrainer(FinetuneTrainer):
 
         snapshot = self._gu_parameter_snapshot
         pending = self._gu_pending_history_covector
-        proposal_delta = []
+        constraints = self._gu_constraints_used
         try:
-            for before, (name, parameter) in zip(snapshot, self._gu_selected):
+            if len(snapshot) != len(self._gu_selected) or not 1 <= len(
+                constraints) <= 9 or any(not isinstance(item, tuple)
+                or len(item) != len(self._gu_selected) for item in constraints):
+                raise ValueError("GU constraints must align with selected parameters")
+            proposal = tuple(parameter.detach().float() - before.float()
+                for before, (_, parameter) in zip(snapshot, self._gu_selected))
+            count, tolerance = len(constraints), float(self.gu_config["projection_eps"])
+            violations_before = torch.zeros(count, dtype=torch.float64)
+            gram = torch.zeros((count, count), dtype=torch.float64)
+            proposal_squared = 0.0
+            for block_index, (before, (name, parameter), delta) in enumerate(
+                zip(snapshot, self._gu_selected, proposal)
+            ):
                 if before.shape != parameter.shape:
                     raise ValueError(f"GU parameter snapshot shape mismatch for {name}")
-                proposal_delta.append(
-                    parameter.detach().float() - before.float()
-                )
+                if not torch.isfinite(delta).all():
+                    raise ValueError(f"GU proposal must be finite for {name}")
 
                 state = optimizer.state.get(parameter)
                 if not isinstance(state, Mapping) or not (
@@ -367,12 +378,91 @@ class UnlearnTrainer(FinetuneTrainer):
                         candidate is parameter for candidate in group["params"]
                     )
                 )
-                diagonal = second_moment.detach().float().sqrt()
+                diagonal = second_moment.detach().double().sqrt()
                 diagonal.add_(epsilon)
-                if not torch.isfinite(diagonal).all():
+                if not torch.isfinite(diagonal).all() or (diagonal <= 0).any():
                     raise ValueError(f"GU metric diagonal must be finite for {name}")
-
-            self._gu_proposal_delta = tuple(proposal_delta)
+                blocks = tuple(item[block_index] for item in constraints)
+                if any(not isinstance(block, torch.Tensor) or block.shape != parameter.shape
+                    or not torch.isfinite(block).all() for block in blocks):
+                    raise ValueError(f"GU constraint must be finite for {name}")
+                delta64 = delta.double()
+                proposal_squared += delta64.square().sum().item()
+                for left, left_block in enumerate(blocks):
+                    left64 = left_block.double()
+                    violations_before[left] += (left64 * delta64).sum().item()
+                    for right, right_block in enumerate(blocks):
+                        value = (left64 * right_block.double() / diagonal.double()).sum().item()
+                        gram[left, right] += value
+            if not torch.isfinite(violations_before).all() or not torch.isfinite(gram).all():
+                raise ValueError("GU proposal violations and Gram matrix must be finite")
+            multipliers, active_constraints = torch.zeros(count, dtype=torch.float64), []
+            violations_after = violations_before.clone()
+            if (violations_before > tolerance).any():
+                best = None
+                for mask in range(1, 1 << count):
+                    active = [index for index in range(count) if mask & 1 << index]
+                    result = torch.linalg.lstsq(gram[active][:, active],
+                        violations_before[active], rcond=tolerance)
+                    dual = result.solution
+                    if result.rank.item() != len(active) or not torch.isfinite(
+                        dual
+                    ).all() or (dual < 0).any():
+                        continue
+                    candidate = torch.zeros_like(multipliers)
+                    candidate[active] = dual
+                    candidate_violations = violations_before - gram @ candidate
+                    if not torch.isfinite(candidate_violations).all() or (
+                        candidate_violations > tolerance
+                    ).any() or (candidate_violations[active].abs() > tolerance).any():
+                        continue
+                    cost = (candidate @ gram @ candidate).item()
+                    if math.isfinite(cost) and cost >= 0 and (best is None or cost < best[0]):
+                        best = (cost, candidate, candidate_violations, active)
+                if best is None:
+                    raise ValueError("GU projection has no feasible active set")
+                _, multipliers, violations_after, active_constraints = best
+            kkt_residual = max(max(violations_after.max().item(), 0.0), max(
+                (-multipliers).max().item(), 0.0), (multipliers *
+                violations_after).abs().max().item(), max((abs(
+                    violations_after[i].item()) for i in active_constraints), default=0.0))
+            if not math.isfinite(kkt_residual) or kkt_residual > tolerance:
+                raise ValueError("GU projection failed its KKT residual check")
+            corrected_squared = correction_squared = 0.0
+            violations_after.zero_()
+            with torch.no_grad():
+                for block_index, (delta, (_, parameter)) in enumerate(
+                    zip(proposal, self._gu_selected)):
+                    state = optimizer.state[parameter]
+                    key = "exp_avg_sq" if "exp_avg_sq" in state else "state2"
+                    metric = state[key].detach().double().sqrt()
+                    metric.add_(next(group["eps"] for group in optimizer.param_groups
+                        if any(item is parameter for item in group["params"])))
+                    weighted = sum((item[block_index].double() * value.item()
+                        for value, item in zip(multipliers, constraints)),
+                        start=torch.zeros_like(delta, dtype=torch.float64))
+                    corrected = delta.double() - weighted / metric
+                    if not torch.isfinite(corrected).all():
+                        raise ValueError("GU corrected delta must be finite")
+                    parameter.add_((corrected - delta.double()).to(parameter.dtype))
+                    applied = parameter.detach().float() - snapshot[block_index].float()
+                    corrected_squared += applied.double().square().sum().item()
+                    correction_squared += (applied.double() - delta.double()).square().sum().item()
+                    for index, constraint in enumerate(constraints):
+                        violations_after[index] += (constraint[block_index].double()
+                            * applied.double()).sum().item()
+            self.gu_last_diagnostics = {
+                "proposal_norm": math.sqrt(proposal_squared),
+                "corrected_norm": math.sqrt(corrected_squared),
+                "correction_ratio": math.sqrt(correction_squared / proposal_squared)
+                if proposal_squared else 0.0,
+                "constraint_count": count,
+                "active_constraints": active_constraints,
+                "max_violation_before": violations_before.max().item(),
+                "max_violation_after": violations_after.max().item(),
+                "kkt_residual": kkt_residual,
+            }
+            self.gu_projection_calls += 1
             retain_history_rank = self.gu_config["retain_history_rank"]
             self._gu_constraint_history = (
                 (pending, *getattr(self, "_gu_constraint_history", ()))[:retain_history_rank]
@@ -385,6 +475,7 @@ class UnlearnTrainer(FinetuneTrainer):
                 "_gu_constraints_used",
                 "_gu_pending_history_covector",
                 "_gu_parameter_snapshot",
+                "_gu_proposal_delta",
             ):
                 if hasattr(self, attribute):
                     delattr(self, attribute)
