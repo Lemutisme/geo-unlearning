@@ -70,6 +70,12 @@ class GeometricUnlearn(GradDiff):
 
     def __init__(self, *args, **kwargs):
         self.geometric_config = kwargs.pop("geometric_config")
+        self.gu_enabled = bool(getattr(self.geometric_config, "gu_enabled", True))
+        self.gradient_surgery = str(
+            getattr(self.geometric_config, "gradient_surgery", "gu")
+        ).lower()
+        if self.gu_enabled and self.gradient_surgery == "gu":
+            raise ValueError("Legacy GU is retired; select the objective trainer and set trainer.method_args.gu.enabled=true.")
         self.simnpo_config = kwargs.pop("simnpo_config", None)
         self.npo_config = kwargs.pop("npo_config", None)
         self.dpo_config = kwargs.pop("dpo_config", None)
@@ -102,11 +108,6 @@ class GeometricUnlearn(GradDiff):
         if self.ref_model is None and self.loss_name in {"npo", "dpo", "undial"}:
             self.ref_model = self._prepare_ref_model(self.model)
 
-        self.gu_enabled = bool(getattr(self.geometric_config, "gu_enabled", True))
-        self.gradient_surgery = str(
-            getattr(self.geometric_config, "gradient_surgery", "gu")
-        ).lower()
-        if self.gu_enabled and self.gradient_surgery == "gu": raise ValueError("Legacy GU is retired; select the objective trainer and set trainer.method_args.gu.enabled=true.")  # noqa: E701
         self.projection_eps = float(
             getattr(self.geometric_config, "projection_eps", 1e-12)
         )

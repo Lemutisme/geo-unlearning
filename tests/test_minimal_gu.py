@@ -2338,7 +2338,14 @@ def test_task7_legacy_gu_has_exact_migration_and_safe_legacy_controls(tmp_path):
 
     source = inspect.getsource(type(pcgrad).__init__)
     assert "(_ for _ in ())" not in source
-    assert 'if self.gu_enabled and self.gradient_surgery == "gu":' in source
+    assert "# noqa" not in source
+    guard = 'if self.gu_enabled and self.gradient_surgery == "gu":\n'
+    assert guard in source
+    guard_index = source.index(guard)
+    assert source.index("self.gradient_surgery") < guard_index
+    assert guard_index < source.index("self.simnpo_config")
+    assert guard_index < source.index("super().__init__")
+    assert guard_index < source.index("raise ValueError(")
 
 
 def test_task7_legacy_yaml_defaults_to_pcgrad():

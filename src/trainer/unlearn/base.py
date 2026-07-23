@@ -63,7 +63,6 @@ class UnlearnTrainer(FinetuneTrainer):
                 raise ValueError("GU enabled must be bool")
             if not self.gu_config["enabled"]:
                 return super().create_optimizer()
-
             if setup_required:
                 parameter_regex = self.gu_config["parameter_regex"]
                 if (
@@ -162,7 +161,6 @@ class UnlearnTrainer(FinetuneTrainer):
                     or ".." in relative_diagnostics_path.parts
                 ):
                     raise ValueError("GU diagnostics_path must be a safe relative path")
-
                 if getattr(self, "is_deepspeed_enabled", False):
                     raise ValueError("GU does not support DeepSpeed")
                 if getattr(self, "is_fsdp_enabled", False) or getattr(
@@ -194,7 +192,6 @@ class UnlearnTrainer(FinetuneTrainer):
                         parameter.requires_grad_(False)
             else:
                 selected = self._gu_selected
-
             optimizer = super().create_optimizer()
             optimizer_parameter_ids = [
                 id(parameter)
@@ -210,7 +207,6 @@ class UnlearnTrainer(FinetuneTrainer):
                     "GU optimizer parameters must match selected parameters exactly "
                     "without duplicates"
                 )
-
             supported_optimizer = isinstance(optimizer, torch.optim.AdamW)
             if not supported_optimizer:
                 try:
@@ -587,7 +583,6 @@ class UnlearnTrainer(FinetuneTrainer):
             del retain_gradients, gradient, gradient_block
 
             loss = super().training_step(model, inputs)
-
             if self.accelerator.sync_gradients:
                 squared_norm = sum(
                     block.double().square().sum() for block in accumulator
