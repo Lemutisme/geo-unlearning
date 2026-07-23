@@ -2055,7 +2055,7 @@ def test_gu_reports_bf16_quantized_zero_applied_delta(tmp_path):
     assert torch.equal(parameter, snapshot)
     assert trainer.gu_last_diagnostics["applied_scale"] == 1.0
     assert trainer.gu_last_diagnostics["zero_step"] is True
-    assert trainer.gu_last_diagnostics["zero_step_reason"] == "quantized_zero"
+    assert trainer.gu_last_diagnostics["zero_step_reason"] == "zero_delta"
     assert trainer._gu_constraint_history[0] is pending
 
 

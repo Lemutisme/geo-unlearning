@@ -42,7 +42,6 @@ class UnlearnTrainer(FinetuneTrainer):
         self.gu_projection_calls = 0
         self.gu_last_diagnostics = None
         super().__init__(*args, **kwargs)
-
     def create_optimizer(self):
         if self.gu_config is None:
             return super().create_optimizer()
@@ -274,6 +273,7 @@ class UnlearnTrainer(FinetuneTrainer):
                 parameter.requires_grad_(requires_grad)
             raise
         return optimizer
+
     def _gu_optimizer_step_pre_hook(self, optimizer, _args, _kwargs):
         del optimizer
         if hasattr(self, "_gu_parameter_snapshot"):
@@ -293,6 +293,7 @@ class UnlearnTrainer(FinetuneTrainer):
             raise ValueError("GU optimizer step received stale pending covector")
         self._gu_parameter_snapshot = tuple(parameter.detach().clone()
             for _, parameter in self._gu_selected)
+
     def _gu_optimizer_step_post_hook(self, optimizer, _args, _kwargs):
         if not hasattr(self, "_gu_parameter_snapshot"):
             raise ValueError("GU optimizer step is missing its parameter snapshot")
@@ -483,7 +484,7 @@ class UnlearnTrainer(FinetuneTrainer):
                     "kkt_residual": kkt_residual, "projection_tolerance": tolerance,
                     "applied_scale": applied_scale, "retain_loss_before": retain_before,
                     "retain_loss_after": retain_after, "zero_step": final_squared == 0.0,
-                    "zero_step_reason": zero_reason or ("quantized_zero" if final_squared == 0.0 else None),
+                    "zero_step_reason": zero_reason or ("zero_delta" if final_squared == 0.0 else None),
                     "optimizer_state_semantics": "proposal_state_committed",
                     "projection_seconds": projection_seconds, "filter_seconds": filter_seconds,
                 }
@@ -607,7 +608,6 @@ class UnlearnTrainer(FinetuneTrainer):
                 if hasattr(self, attribute):
                     delattr(self, attribute)
             raise
-
     # Adapted from Huggingface DPO Trainer: https://github.com/huggingface/accelerate/blob/739b135f8367becb67ffaada12fe76e3aa60fefd/src/accelerate/accelerator.py#L1473
     def _prepare_deepspeed(self, model):
         # Adapted from accelerate: https://github.com/huggingface/accelerate/blob/739b135f8367becb67ffaada12fe76e3aa60fefd/src/accelerate/accelerator.py#L1473
