@@ -334,7 +334,7 @@ def test_component_gradient_buffers_accumulate_in_fp32_and_clear(tmp_path):
     assert trainer.component_buffers.empty
 
 
-def test_training_projects_once_per_optimizer_update(tmp_path):
+def test_pcgrad_surgery_runs_once_per_optimizer_update(tmp_path):
     dataset = unbatch(make_unlearn_batch(batch_size=4, sequence_length=6))
     trainer, _, _ = make_geometric_trainer(
         tmp_path,
@@ -345,12 +345,12 @@ def test_training_projects_once_per_optimizer_update(tmp_path):
 
     trainer.train()
 
-    assert trainer.gu_projection_calls == trainer.state.global_step == 2
+    assert trainer.surgery_calls == trainer.state.global_step == 2
     assert trainer.component_buffers.empty
-    assert trainer.last_gu_diagnostics["mode"] == "pcgrad"
+    assert trainer.last_surgery_diagnostics["mode"] == "pcgrad"
 
 
-def test_short_final_accumulation_window_is_projected(tmp_path):
+def test_short_final_accumulation_window_runs_pcgrad_surgery(tmp_path):
     dataset = unbatch(make_unlearn_batch(batch_size=2, sequence_length=6))
     trainer, _, _ = make_geometric_trainer(
         tmp_path,
@@ -362,7 +362,7 @@ def test_short_final_accumulation_window_is_projected(tmp_path):
 
     trainer.train()
 
-    assert trainer.gu_projection_calls == trainer.state.global_step == 1
+    assert trainer.surgery_calls == trainer.state.global_step == 1
     assert trainer.component_buffers.empty
 
 
@@ -394,10 +394,20 @@ def test_gradient_accumulation_matches_full_effective_batch(tmp_path):
     seed_nonuniform_adam_state(accumulated_trainer)
     accumulated_trainer.train()
 
-    assert full_batch_trainer.last_gu_diagnostics["identity_fallback_parameters"] == 0
-    assert accumulated_trainer.last_gu_diagnostics["identity_fallback_parameters"] == 0
-    assert full_batch_trainer.last_gu_diagnostics["coefficient"] == pytest.approx(
-        accumulated_trainer.last_gu_diagnostics["coefficient"],
+    assert (
+        full_batch_trainer.last_surgery_diagnostics["identity_fallback_parameters"]
+        == 0
+    )
+    assert (
+        accumulated_trainer.last_surgery_diagnostics[
+            "identity_fallback_parameters"
+        ]
+        == 0
+    )
+    assert full_batch_trainer.last_surgery_diagnostics[
+        "coefficient"
+    ] == pytest.approx(
+        accumulated_trainer.last_surgery_diagnostics["coefficient"],
         rel=1e-5,
         abs=1e-6,
     )

@@ -70,11 +70,10 @@ class GeometricUnlearn(GradDiff):
 
     def __init__(self, *args, **kwargs):
         self.geometric_config = kwargs.pop("geometric_config")
-        self.gu_enabled = bool(getattr(self.geometric_config, "gu_enabled", True))
         self.gradient_surgery = str(
             getattr(self.geometric_config, "gradient_surgery", "gu")
         ).lower()
-        if self.gu_enabled and self.gradient_surgery == "gu":
+        if bool(getattr(self.geometric_config, "gu_enabled", True)) and self.gradient_surgery == "gu":
             raise ValueError("Legacy GU is retired; select the objective trainer and set trainer.method_args.gu.enabled=true.")
         self.simnpo_config = kwargs.pop("simnpo_config", None)
         self.npo_config = kwargs.pop("npo_config", None)
@@ -99,6 +98,7 @@ class GeometricUnlearn(GradDiff):
             kwargs["retain_loss_type"] = str(method_config.retain_loss_type)
 
         super().__init__(*args, **kwargs)
+        self.gu_enabled = bool(getattr(self.geometric_config, "gu_enabled", True))
 
         if self.gamma <= 0:
             raise ValueError("GU requires gamma > 0.")

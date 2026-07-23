@@ -1,7 +1,7 @@
 # Minimal Correct GU Design
 
-**Status:** Approved for implementation planning  
-**Branch:** `feat/GU`  
+**Status:** Approved for implementation planning
+**Branch:** `feat/GU`
 **Base:** `dev0`
 
 ## Goal
@@ -42,7 +42,7 @@ trainer:
       parameter_regex:
         - 'model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight'
       retain_history_rank: 8
-      projection_eps: 1.0e-12
+      projection_eps: 1.0e-6
       retain_filter: first_order  # first_order | finite_step
       retain_budget: 1.0e-4
       backtracking_scales: [1.0, 0.5, 0.25, 0.125, 0.0625, 0.03125, 0.015625]
@@ -152,6 +152,9 @@ There are at most nine constraints. The implementation enumerates active sets,
 solves the corresponding FP64 Gram systems, and selects the feasible solution
 with minimum objective. It then verifies primal feasibility, nonnegative duals,
 complementarity, and a bounded KKT residual before changing parameters.
+The public projection tolerance is `1.0e-6`; exact-coordinate solver tests may
+set it to `1.0e-12` to distinguish numerical residuals from representational
+rounding.
 
 If the proposal is already safe, it is applied unchanged and recorded with a
 zero correction ratio.

@@ -123,10 +123,15 @@ def test_pcgrad_lifecycle_runs_once_per_optimizer_update(tmp_path):
     assert trainer.component_buffers.empty
 
 
-def test_legacy_test_helper_defaults_to_pcgrad(tmp_path):
-    trainer, _, _ = make_geometric_trainer(tmp_path)
+@pytest.mark.parametrize("enabled", [False, True])
+def test_shipped_pcgrad_enable_flag_survives_common_gu_initialization(
+    tmp_path,
+    enabled,
+):
+    trainer, _, _ = make_geometric_trainer(tmp_path, gu_enabled=enabled)
 
     assert trainer.gradient_surgery == "pcgrad"
+    assert trainer.gu_enabled is enabled
 
 
 def test_unknown_gradient_surgery_fails_during_initialization(tmp_path):

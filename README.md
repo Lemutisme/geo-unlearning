@@ -152,6 +152,39 @@ python src/train.py --config-name=unlearn.yaml experiment=unlearn/tofu/default \
 - `forget_split/retain_split`- Sets the forget and retain dataset splits.
 - `trainer`- Load [`configs/trainer/GradAscent.yaml`](configs/trainer/GradAscent.yaml) and override the unlearning method with the handler (see config) implemented in [`src/trainer/unlearn/grad_ascent.py`](src/trainer/unlearn/grad_ascent.py).
 
+#### Geometric Unlearning (GU)
+
+GU is enabled on an existing objective trainer. This is the supported entry;
+the objective continues to own its loss while the common trainer constrains the
+real AdamW parameter update:
+
+```bash
+python src/train.py --config-name=unlearn.yaml experiment=unlearn/tofu/default \
+  forget_split=forget10 retain_split=retain90 trainer=SimNPO task_name=SAMPLE_GU \
+  trainer.args.optim=adamw_torch trainer.args.fp16=false trainer.args.bf16=true \
+  trainer.args.gradient_checkpointing=true \
+  +trainer.args.gradient_checkpointing_kwargs.use_reentrant=false \
+  +trainer.method_args.gu.enabled=true \
+  '+trainer.method_args.gu.parameter_regex=["lm_head[.]weight"]' \
+  +trainer.method_args.gu.retain_history_rank=8 \
+  +trainer.method_args.gu.projection_eps=1e-6 \
+  +trainer.method_args.gu.retain_filter=first_order \
+  +trainer.method_args.gu.retain_budget=1e-4 \
+  '+trainer.method_args.gu.backtracking_scales=[1.0,0.5,0.25,0.125]' \
+  +trainer.method_args.gu.diagnostics_path=gu_diagnostics.jsonl
+```
+
+The complete `gu` mapping above is required. GU supports one process on one GPU
+in BF16 or FP32 with Torch AdamW (`adamw_torch`) or shipped 32-bit paged AdamW
+(`paged_adamw_32bit`). The default `first_order` filter enforces the realized
+delta half-space constraint with projection tolerance `1e-6`; it does not claim
+finite-step retain-loss safety. Set `retain_filter=finite_step` to evaluate the
+configured scales against the actual retain NLL and `retain_budget`.
+`gu_diagnostics.jsonl` is written relative to the training output directory,
+once per optimizer update. Unsupported optimizers, FP16, multiple processes or
+GPUs, DDP/FSDP/DeepSpeed, Apex, and reentrant gradient checkpointing fail before
+training.
+
 ### 📊 Perform an Evaluation
 
 An example command for launching a TOFU evaluation process on `forget10` split:

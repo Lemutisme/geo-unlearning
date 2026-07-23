@@ -78,7 +78,7 @@ def gu_config(**overrides):
         "enabled": True,
         "parameter_regex": ["protected[.]weight"],
         "retain_history_rank": 8,
-        "projection_eps": 1.0e-12,
+        "projection_eps": 1.0e-6,
         "retain_filter": "first_order",
         "retain_budget": 1.0e-4,
         "backtracking_scales": [1.0, 0.5, 0.25, 0.125],

@@ -2339,13 +2339,17 @@ def test_task7_legacy_gu_has_exact_migration_and_safe_legacy_controls(tmp_path):
     source = inspect.getsource(type(pcgrad).__init__)
     assert "(_ for _ in ())" not in source
     assert "# noqa" not in source
-    guard = 'if self.gu_enabled and self.gradient_surgery == "gu":\n'
+    guard = (
+        'if bool(getattr(self.geometric_config, "gu_enabled", True)) '
+        'and self.gradient_surgery == "gu":\n'
+    )
     assert guard in source
     guard_index = source.index(guard)
     assert source.index("self.gradient_surgery") < guard_index
     assert guard_index < source.index("self.simnpo_config")
     assert guard_index < source.index("super().__init__")
     assert guard_index < source.index("raise ValueError(")
+    assert source.index("super().__init__") < source.index("self.gu_enabled = bool(")
 
 
 def test_task7_legacy_yaml_defaults_to_pcgrad():
@@ -2669,3 +2673,356 @@ def test_task7_shipped_gu_scripts_have_valid_bash_syntax():
             text=True,
         )
         assert result.returncode == 0, result.stderr
+
+
+TASK8_DIAGNOSTIC_FIELDS = {
+    "step",
+    "objective",
+    "selected_parameter_count",
+    "proposal_norm",
+    "corrected_norm",
+    "correction_ratio",
+    "constraint_count",
+    "active_constraints",
+    "max_violation_before",
+    "max_violation_after",
+    "kkt_residual",
+    "projection_tolerance",
+    "applied_scale",
+    "retain_loss_before",
+    "retain_loss_after",
+    "zero_step",
+    "zero_step_reason",
+    "optimizer_state_semantics",
+    "projection_seconds",
+    "filter_seconds",
+}
+
+
+def task8_unbatch(batch):
+    return [
+        {
+            component: {
+                key: tensor[index]
+                for key, tensor in component_batch.items()
+            }
+            for component, component_batch in batch.items()
+        }
+        for index in range(batch["forget"]["input_ids"].shape[0])
+    ]
+
+
+def task8_assert_no_trainer_artifacts(output_dir):
+    forbidden_names = {
+        "model.safetensors",
+        "optimizer.pt",
+        "pytorch_model.bin",
+        "trainer_state.json",
+        "training_args.bin",
+    }
+    paths = tuple(output_dir.rglob("*"))
+    assert not forbidden_names.intersection(path.name for path in paths)
+    assert not any(
+        path.is_dir() and path.name.startswith("checkpoint-") for path in paths
+    )
+
+
+def test_task8_hydra_flag_reaches_common_gu_branch_and_diagnostic(tmp_path):
+    from hydra import compose, initialize_config_dir
+
+    from tests.helpers import TinyCausalLM as ShippedTinyCausalLM
+    from tests.helpers import make_unlearn_batch, nested_collator
+    from trainer import load_trainer
+
+    output_dir = tmp_path / "hydra-trace"
+    overrides = [
+        "trainer=SimNPO",
+        "task_name=task8_hydra_trace",
+        f"paths.output_dir={output_dir}",
+        "trainer.args.per_device_train_batch_size=1",
+        "trainer.args.gradient_accumulation_steps=1",
+        "+trainer.args.max_steps=1",
+        "+trainer.args.use_cpu=true",
+        "trainer.args.bf16=false",
+        "trainer.args.bf16_full_eval=false",
+        "trainer.args.optim=adamw_torch",
+        "trainer.args.report_to=none",
+        "+trainer.args.disable_tqdm=true",
+        "trainer.args.do_eval=false",
+        "trainer.args.eval_on_start=false",
+        "trainer.args.eval_strategy=no",
+        "+trainer.method_args.gu.enabled=true",
+        "+trainer.method_args.gu.parameter_regex=[\"lm_head[.]weight\"]",
+        "+trainer.method_args.gu.retain_history_rank=8",
+        "+trainer.method_args.gu.projection_eps=1e-6",
+        "+trainer.method_args.gu.retain_filter=first_order",
+        "+trainer.method_args.gu.retain_budget=1e-4",
+        "+trainer.method_args.gu.backtracking_scales=[1.0,0.5,0.25,0.125]",
+        "+trainer.method_args.gu.diagnostics_path=gu_diagnostics.jsonl",
+    ]
+    with initialize_config_dir(
+        config_dir=str(TASK7_ROOT / "configs"),
+        version_base=None,
+    ):
+        config = compose(config_name="unlearn.yaml", overrides=overrides)
+
+    dataset = task8_unbatch(
+        make_unlearn_batch(batch_size=1, sequence_length=6, seed=71)
+    )
+    trainer, _ = load_trainer(
+        trainer_cfg=config.trainer,
+        model=ShippedTinyCausalLM(),
+        train_dataset=dataset,
+        data_collator=nested_collator,
+    )
+    assert config.trainer.method_args.gu.enabled is True
+    assert trainer.gu_enabled is True
+
+    trainer.train()
+
+    records = [
+        json.loads(line)
+        for line in (output_dir / "gu_diagnostics.jsonl").read_text().splitlines()
+    ]
+    assert trainer.gu_projection_calls == trainer.state.global_step == 1
+    assert len(records) == 1
+    assert set(records[0]) == TASK8_DIAGNOSTIC_FIELDS
+    assert records[0]["objective"] == "SimNPO"
+    assert records[0]["max_violation_after"] <= records[0][
+        "projection_tolerance"
+    ]
+    task8_assert_no_trainer_artifacts(output_dir)
+
+
+def test_task8_registered_objectives_inherit_common_gu_without_dispatch(tmp_path):
+    from trainer import TRAINER_REGISTRY
+    from trainer.unlearn.geometric import GeometricUnlearn
+    from trainer.unlearn.grad_ascent import GradAscent
+    from trainer.unlearn.npo import NPO
+    from trainer.unlearn.pdu import PDU
+    from trainer.unlearn.rmu import RMU
+
+    registered = {
+        name: trainer_class
+        for name, trainer_class in TRAINER_REGISTRY.items()
+        if issubclass(trainer_class, UnlearnTrainer)
+    }
+    assert registered
+    for trainer_class in registered.values():
+        assert UnlearnTrainer in trainer_class.__mro__
+        assert (
+            trainer_class._gu_optimizer_step_pre_hook
+            is UnlearnTrainer._gu_optimizer_step_pre_hook
+        )
+        assert (
+            trainer_class._gu_optimizer_step_post_hook
+            is UnlearnTrainer._gu_optimizer_step_post_hook
+        )
+        if trainer_class is not GeometricUnlearn:
+            assert trainer_class.training_step is UnlearnTrainer.training_step
+
+    common_source = "\n".join(
+        inspect.getsource(method)
+        for method in (
+            UnlearnTrainer.create_optimizer,
+            UnlearnTrainer.training_step,
+            UnlearnTrainer._gu_optimizer_step_pre_hook,
+            UnlearnTrainer._gu_optimizer_step_post_hook,
+        )
+    )
+    assert "TRAINER_REGISTRY" not in common_source
+    for objective_name in registered:
+        assert objective_name not in common_source
+
+    cases = (
+        (GradAscent, {}),
+        (NPO, {"beta": 1.0, "gamma": 1.0, "alpha": 1.0, "retain_loss_type": "NLL"}),
+        (
+            RMU,
+            {
+                "module_regex": "protected",
+                "trainable_params_regex": ["protected[.]weight"],
+                "gamma": 1.0,
+                "alpha": 1.0,
+                "retain_loss_type": "NLL",
+            },
+        ),
+        (
+            PDU,
+            {
+                "primal_dual": False,
+                "gamma": 1.0,
+                "alpha": 1.0,
+                "retain_loss_type": "NLL",
+            },
+        ),
+    )
+    for trainer_class, method_args in cases:
+        args = TrainingArguments(
+            output_dir=str(tmp_path / trainer_class.__name__),
+            use_cpu=True,
+            report_to=[],
+            save_strategy="no",
+        )
+        trainer = trainer_class(
+            model=TinyCausalLM(),
+            args=args,
+            gu=gu_config(enabled=False),
+            **method_args,
+        )
+        assert trainer.gu_enabled is False
+        assert type(trainer).training_step is UnlearnTrainer.training_step
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_task8_bf16_trainer_applies_one_safe_delta_per_update(tmp_path):
+    from tests.helpers import TinyCausalLM as ShippedTinyCausalLM
+    from tests.helpers import make_unlearn_batch, nested_collator
+    from trainer.unlearn.simnpo import SimNPO
+
+    output_dir = tmp_path / "bf16-trainer"
+    model = ShippedTinyCausalLM().to(device="cuda", dtype=torch.bfloat16)
+    dataset = task8_unbatch(
+        make_unlearn_batch(batch_size=4, sequence_length=6, seed=17)
+    )
+    args = TrainingArguments(
+        output_dir=str(output_dir),
+        per_device_train_batch_size=1,
+        gradient_accumulation_steps=2,
+        max_steps=2,
+        learning_rate=1.0e-2,
+        optim="adamw_torch",
+        bf16=True,
+        gradient_checkpointing=False,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        report_to=[],
+        save_strategy="no",
+        remove_unused_columns=False,
+        disable_tqdm=True,
+    )
+    trainer = SimNPO(
+        model=model,
+        args=args,
+        train_dataset=dataset,
+        data_collator=nested_collator,
+        beta=4.5,
+        delta=0.0,
+        gamma=0.125,
+        alpha=1.0,
+        retain_loss_type="NLL",
+        gu=gu_config(
+            parameter_regex=["lm_head[.]weight"],
+            diagnostics_path="gu_diagnostics.jsonl",
+        ),
+    )
+    trainer.create_optimizer()
+    assert isinstance(trainer.optimizer, torch.optim.AdamW)
+    before = tuple(
+        parameter.detach().clone() for _, parameter in trainer._gu_selected
+    )
+
+    trainer.train()
+
+    after = tuple(
+        parameter.detach().clone() for _, parameter in trainer._gu_selected
+    )
+    records = [
+        json.loads(line)
+        for line in (output_dir / "gu_diagnostics.jsonl").read_text().splitlines()
+    ]
+    assert trainer.gu_projection_calls == trainer.state.global_step == 2
+    assert any(
+        not torch.equal(before_value, after_value)
+        for before_value, after_value in zip(before, after)
+    )
+    assert len(records) == 2
+    assert all(
+        len(record) == 20 and set(record) == TASK8_DIAGNOSTIC_FIELDS
+        for record in records
+    )
+    assert all(
+        record["max_violation_after"] <= record["projection_tolerance"]
+        for record in records
+    )
+    task8_assert_no_trainer_artifacts(output_dir)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_task8_paged_adamw32_trainer_commits_finite_safe_delta(tmp_path):
+    bitsandbytes = pytest.importorskip("bitsandbytes")
+    from tests.helpers import TinyCausalLM as ShippedTinyCausalLM
+    from tests.helpers import make_unlearn_batch, nested_collator
+    from trainer.unlearn.simnpo import SimNPO
+
+    output_dir = tmp_path / "paged-adamw32-trainer"
+    model = ShippedTinyCausalLM().to(device="cuda", dtype=torch.float32)
+    optimizer = bitsandbytes.optim.PagedAdamW32bit(
+        [model.lm_head.weight],
+        lr=1.0e-2,
+    )
+    dataset = task8_unbatch(
+        make_unlearn_batch(batch_size=2, sequence_length=6, seed=37)
+    )
+    args = TrainingArguments(
+        output_dir=str(output_dir),
+        per_device_train_batch_size=1,
+        max_steps=1,
+        learning_rate=1.0e-2,
+        optim="paged_adamw_32bit",
+        report_to=[],
+        save_strategy="no",
+        remove_unused_columns=False,
+        disable_tqdm=True,
+    )
+    trainer = SimNPO(
+        model=model,
+        args=args,
+        train_dataset=dataset,
+        data_collator=nested_collator,
+        optimizers=(optimizer, None),
+        beta=4.5,
+        delta=0.0,
+        gamma=0.125,
+        alpha=1.0,
+        retain_loss_type="NLL",
+        gu=gu_config(
+            parameter_regex=["lm_head[.]weight"],
+            diagnostics_path="gu_diagnostics.jsonl",
+        ),
+    )
+    trainer.create_optimizer()
+    before = tuple(
+        parameter.detach().clone() for _, parameter in trainer._gu_selected
+    )
+
+    trainer.train()
+
+    after = tuple(
+        parameter.detach().clone() for _, parameter in trainer._gu_selected
+    )
+    assert trainer.gu_projection_calls == trainer.state.global_step == 1
+    assert any(
+        not torch.equal(before_value, after_value)
+        for before_value, after_value in zip(before, after)
+    )
+    constraint = trainer._gu_constraint_history[0]
+    actual_violation = sum(
+        (block.double() * (after_value - before_value).double()).sum().item()
+        for block, before_value, after_value in zip(constraint, before, after)
+    )
+    assert actual_violation <= trainer.gu_config["projection_eps"]
+    for _, parameter in trainer._gu_selected:
+        state2 = optimizer.state[parameter]["state2"]
+        assert state2.shape == parameter.shape
+        assert torch.isfinite(state2).all()
+        assert torch.count_nonzero(state2).item() > 0
+    records = [
+        json.loads(line)
+        for line in (output_dir / "gu_diagnostics.jsonl").read_text().splitlines()
+    ]
+    assert len(records) == 1
+    assert set(records[0]) == TASK8_DIAGNOSTIC_FIELDS
+    assert records[0]["max_violation_after"] <= records[0][
+        "projection_tolerance"
+    ]
+    task8_assert_no_trainer_artifacts(output_dir)
