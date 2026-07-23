@@ -41,6 +41,8 @@ class RMU(GradDiff):
         self.control_vec = None
 
     def create_optimizer(self):
+        if self.gu_enabled and getattr(self, "_gu_setup_complete", False):
+            return super().create_optimizer()
         self._freeze_all_params(self.model, False)
         # This makes the optimizer to select only trainable params
         self._set_trainable_params(self.model, self.trainable_params_regex, True)

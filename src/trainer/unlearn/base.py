@@ -274,7 +274,6 @@ class UnlearnTrainer(FinetuneTrainer):
                 parameter.requires_grad_(requires_grad)
             raise
         return optimizer
-
     def _gu_optimizer_step_pre_hook(self, optimizer, _args, _kwargs):
         del optimizer
         if hasattr(self, "_gu_parameter_snapshot"):
@@ -297,13 +296,15 @@ class UnlearnTrainer(FinetuneTrainer):
     def _gu_optimizer_step_post_hook(self, optimizer, _args, _kwargs):
         if not hasattr(self, "_gu_parameter_snapshot"):
             raise ValueError("GU optimizer step is missing its parameter snapshot")
-        snapshot, pending, constraints = (self._gu_parameter_snapshot,
-            self._gu_pending_history_covector, self._gu_constraints_used)
-        projection_start = time.perf_counter()
+        snapshot = self._gu_parameter_snapshot
         try:
+            pending, constraints = (self._gu_pending_history_covector,
+                self._gu_constraints_used)
+            projection_start = time.perf_counter()
             if len(snapshot) != len(self._gu_selected) or not 1 <= len(
                 constraints) <= 9 or any(not isinstance(item, tuple)
-                or len(item) != len(self._gu_selected) for item in constraints):
+                or len(item) != len(self._gu_selected) for item in constraints
+                ) or constraints[0] is not pending:
                 raise ValueError("GU constraints must align with selected parameters")
             proposal = [parameter.detach().float() - before.float()
                 for before, (_, parameter) in zip(snapshot, self._gu_selected)]

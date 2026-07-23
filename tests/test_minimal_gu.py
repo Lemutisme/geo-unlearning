@@ -1136,6 +1136,52 @@ def test_gu_rejects_primal_safe_dtype_cast_with_stationarity_error(
     assert trainer._gu_diagnostics_path.read_text() == ""
 
 
+@pytest.mark.parametrize(
+    "corruption",
+    ["missing_pending", "missing_constraints", "stale_pending", "stale_constraints"],
+)
+def test_gu_post_hook_entry_corruption_restores_snapshot_and_clears_state(
+    tmp_path,
+    corruption,
+):
+    trainer = make_trainer(TinyCausalLM(), tmp_path, gu=gu_config())
+    trainer.create_optimizer()
+    parameter = trainer._gu_selected[0][1]
+    pending = (torch.ones_like(parameter, dtype=torch.float32),)
+    install_constraints(trainer, (pending,))
+    history = trainer._gu_constraint_history
+    trainer.optimizer.state[parameter]["exp_avg_sq"] = torch.ones_like(parameter)
+    trainer._gu_optimizer_step_pre_hook(trainer.optimizer, (), {})
+    snapshot = parameter.detach().clone()
+    with torch.no_grad():
+        parameter.add_(1.0e-2)
+    if corruption == "missing_pending":
+        del trainer._gu_pending_history_covector
+    elif corruption == "missing_constraints":
+        del trainer._gu_constraints_used
+    elif corruption == "stale_pending":
+        trainer._gu_pending_history_covector = tuple(block.clone() for block in pending)
+    else:
+        trainer._gu_constraints_used = (
+            tuple(block.clone() for block in pending),
+        )
+
+    with pytest.raises((AttributeError, TypeError, ValueError)):
+        trainer._gu_optimizer_step_post_hook(trainer.optimizer, (), {})
+
+    assert torch.equal(parameter, snapshot)
+    assert trainer._gu_constraint_history is history
+    assert trainer.gu_projection_calls == 0
+    assert trainer.gu_last_diagnostics is None
+    assert trainer._gu_diagnostics_path.read_text() == ""
+    for attribute in (
+        "_gu_constraints_used",
+        "_gu_pending_history_covector",
+        "_gu_parameter_snapshot",
+    ):
+        assert not hasattr(trainer, attribute)
+
+
 def test_gu_safe_proposal_is_bitwise_unchanged(tmp_path):
     model = TinyCausalLM()
     trainer = make_trainer(model, tmp_path, gu=gu_config())
@@ -2998,7 +3044,15 @@ def test_rmu_common_gu_keeps_exact_scope_and_gradients(tmp_path):
         gu=gu_config(parameter_regex=["lm_head[.]weight"]),
     )
     trainer.create_optimizer()
+    optimizer = trainer.optimizer
+    pre_hooks = tuple(optimizer._optimizer_step_pre_hooks.values())
+    post_hooks = tuple(optimizer._optimizer_step_post_hooks.values())
 
+    trainer.create_optimizer()
+
+    assert trainer.optimizer is optimizer
+    assert tuple(optimizer._optimizer_step_pre_hooks.values()) == pre_hooks
+    assert tuple(optimizer._optimizer_step_post_hooks.values()) == post_hooks
     assert model.embed.weight.requires_grad is False
     assert model.lm_head.weight.requires_grad is True
     assert [parameter for group in trainer.optimizer.param_groups
