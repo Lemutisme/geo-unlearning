@@ -159,7 +159,8 @@ the objective continues to own its loss while the common trainer constrains the
 real AdamW parameter update:
 
 ```bash
-python src/train.py --config-name=unlearn.yaml experiment=unlearn/tofu/default \
+CUDA_VISIBLE_DEVICES=0 python src/train.py --config-name=unlearn.yaml \
+  experiment=unlearn/tofu/default \
   forget_split=forget10 retain_split=retain90 trainer=SimNPO task_name=SAMPLE_GU \
   trainer.args.optim=adamw_torch trainer.args.fp16=false trainer.args.bf16=true \
   trainer.args.gradient_checkpointing=true \

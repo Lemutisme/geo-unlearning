@@ -86,4 +86,4 @@ diagnostics_path:gu_diagnostics.jsonl}"
 run_arm control false
 run_arm gu true
 
-echo "Approximate Adam GU validation outputs: ${experiment_dir}"
+echo "Realized-delta GU validation outputs: ${experiment_dir}"
