@@ -1,4 +1,5 @@
 import copy
+import os
 
 import pytest
 import torch
@@ -164,6 +165,34 @@ def test_gu_rejects_nonexact_configuration_keys(tmp_path, change):
         trainer.create_optimizer()
 
 
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ("missing_enabled", "keys"),
+        ("extra_disabled", "keys"),
+        ("zero", "enabled.*bool"),
+        ("none", "enabled.*bool"),
+        ("empty", "enabled.*bool"),
+    ],
+)
+def test_gu_validates_contract_before_disabled_branch(tmp_path, change, message):
+    config = gu_config(enabled=False)
+    if change == "missing_enabled":
+        del config["enabled"]
+    elif change == "extra_disabled":
+        config["unexpected"] = True
+    elif change == "zero":
+        config["enabled"] = 0
+    elif change == "none":
+        config["enabled"] = None
+    else:
+        config["enabled"] = ""
+    trainer = make_trainer(TinyCausalLM(), tmp_path, gu=config)
+
+    with pytest.raises(ValueError, match=message):
+        trainer.create_optimizer()
+
+
 def test_gu_rejects_parameter_regex_without_a_match(tmp_path):
     trainer = make_trainer(
         TinyCausalLM(),
@@ -218,6 +247,38 @@ def test_gu_rejects_sgd_optimizer(tmp_path):
 
     with pytest.raises(ValueError, match="AdamW"):
         trainer.create_optimizer()
+
+
+def test_gu_rejected_optimizer_rolls_back_entire_setup(tmp_path):
+    model = TinyCausalLM()
+    model.embed.weight.requires_grad_(False)
+    original_requires_grad = {
+        name: parameter.requires_grad for name, parameter in model.named_parameters()
+    }
+    optimizer = torch.optim.SGD([model.protected.weight], lr=1.0e-3)
+    output_dir = tmp_path / "output"
+    diagnostics_path = output_dir / "diagnostics" / "gu.jsonl"
+    trainer = make_trainer(
+        model,
+        output_dir,
+        gu=gu_config(diagnostics_path="diagnostics/gu.jsonl"),
+        optimizers=(optimizer, None),
+    )
+
+    with pytest.raises(ValueError, match="AdamW"):
+        trainer.create_optimizer()
+
+    assert {
+        name: parameter.requires_grad for name, parameter in model.named_parameters()
+    } == original_requires_grad
+    assert not diagnostics_path.exists()
+    for attribute in (
+        "_gu_selected",
+        "_gu_parameter_patterns",
+        "_gu_diagnostics_path",
+        "_gu_setup_complete",
+    ):
+        assert not hasattr(trainer, attribute)
 
 
 def test_gu_rejects_optimizer_parameters_outside_selected_scope(tmp_path):
@@ -337,28 +398,85 @@ def test_gu_rejects_absolute_or_traversing_diagnostics_path(
         trainer.create_optimizer()
 
 
-@pytest.mark.parametrize("target_is_directory", [False, True])
-def test_gu_rejects_symlink_diagnostics_paths(tmp_path, target_is_directory):
+def test_gu_rejects_symlink_diagnostics_directory(tmp_path):
     output_dir = tmp_path / "output"
     output_dir.mkdir()
-    if target_is_directory:
-        outside = tmp_path / "outside"
-        outside.mkdir()
-        (output_dir / "linked").symlink_to(outside, target_is_directory=True)
-        diagnostics_path = "linked/gu.jsonl"
-    else:
-        outside = tmp_path / "outside.jsonl"
-        outside.write_text("", encoding="utf-8")
-        (output_dir / "gu.jsonl").symlink_to(outside)
-        diagnostics_path = "gu.jsonl"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (output_dir / "linked").symlink_to(outside, target_is_directory=True)
     trainer = make_trainer(
         TinyCausalLM(),
         output_dir,
-        gu=gu_config(diagnostics_path=diagnostics_path),
+        gu=gu_config(diagnostics_path="linked/gu.jsonl"),
     )
 
     with pytest.raises(ValueError, match="symlink"):
         trainer.create_optimizer()
+
+
+def test_gu_rejects_final_symlink_diagnostics_path(tmp_path):
+    output_dir = tmp_path / "output"
+    output_dir.mkdir()
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text("unchanged\n", encoding="utf-8")
+    (output_dir / "gu.jsonl").symlink_to(outside)
+    trainer = make_trainer(
+        TinyCausalLM(),
+        output_dir,
+        gu=gu_config(diagnostics_path="gu.jsonl"),
+    )
+
+    with pytest.raises(ValueError, match="symlink"):
+        trainer.create_optimizer()
+
+    assert outside.read_text(encoding="utf-8") == "unchanged\n"
+
+
+def test_gu_rejects_symlink_in_output_dir_ancestor(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    linked_output = tmp_path / "linked-output"
+    linked_output.symlink_to(outside, target_is_directory=True)
+    output_dir = linked_output / "nested"
+    trainer = make_trainer(
+        TinyCausalLM(),
+        output_dir,
+        gu=gu_config(diagnostics_path="gu.jsonl"),
+    )
+
+    with pytest.raises(ValueError, match="symlink"):
+        trainer.create_optimizer()
+
+    assert not (outside / "nested" / "gu.jsonl").exists()
+
+
+def test_gu_opens_final_diagnostics_with_nofollow_append_create(
+    tmp_path,
+    monkeypatch,
+):
+    output_dir = tmp_path / "output"
+    diagnostics_path = output_dir / "diagnostics" / "gu.jsonl"
+    opened_flags = []
+    original_open = os.open
+
+    def track_open(path, flags, mode=0o777, *, dir_fd=None):
+        if os.fspath(path) == os.fspath(diagnostics_path):
+            opened_flags.append(flags)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", track_open)
+    trainer = make_trainer(
+        TinyCausalLM(),
+        output_dir,
+        gu=gu_config(diagnostics_path="diagnostics/gu.jsonl"),
+    )
+
+    trainer.create_optimizer()
+
+    assert opened_flags
+    assert opened_flags[-1] & os.O_NOFOLLOW
+    assert opened_flags[-1] & os.O_APPEND
+    assert opened_flags[-1] & os.O_CREAT
 
 
 def test_disabled_gu_matches_unmodified_objective_update(tmp_path):
