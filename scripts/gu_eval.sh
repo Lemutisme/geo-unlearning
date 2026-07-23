@@ -29,19 +29,34 @@ gu_overrides=(
     '+trainer.method_args.gu.diagnostics_path=gu_diagnostics.jsonl'
 )
 
-legacy_training_overrides=(
+common_training_overrides=(
     'trainer.args.learning_rate=1e-5'
-    'trainer.args.num_train_epochs=5'
-    '+trainer.args.max_steps=-1'
     'trainer.args.optim=adamw_torch'
     '+trainer.args.adam_beta1=0.0'
-    'trainer.args.weight_decay=0.0'
     '+trainer.args.fp16=false'
     'trainer.args.bf16=false'
     'trainer.args.bf16_full_eval=false'
     'trainer.args.gradient_checkpointing=true'
     '+trainer.args.gradient_checkpointing_kwargs.use_reentrant=false'
     'trainer.args.save_strategy=no'
+)
+
+tofu_training_overrides=(
+    'trainer.args.num_train_epochs=10'
+    '+trainer.args.max_steps=-1'
+    'trainer.args.weight_decay=0.01'
+)
+
+muse_training_overrides=(
+    'trainer.args.num_train_epochs=10'
+    '+trainer.args.max_steps=-1'
+    'trainer.args.weight_decay=0.0'
+)
+
+wmdp_training_overrides=(
+    'trainer.args.num_train_epochs=5'
+    'trainer.args.max_steps=80'
+    'trainer.args.weight_decay=0.0'
 )
 
 resolve_trainer_config() {
@@ -129,7 +144,8 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
             trainer.args.do_eval=false \
             trainer.args.eval_on_start=false \
             trainer.args.eval_strategy=no \
-            "${legacy_training_overrides[@]}" \
+            "${common_training_overrides[@]}" \
+            "${tofu_training_overrides[@]}" \
             "${gu_overrides[@]}"
 
             CUDA_VISIBLE_DEVICES="${EVAL_GPU}" python src/eval.py \
@@ -189,7 +205,8 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
             trainer.args.do_eval=false \
             trainer.args.eval_on_start=false \
             trainer.args.eval_strategy=no \
-            "${legacy_training_overrides[@]}" \
+            "${common_training_overrides[@]}" \
+            "${muse_training_overrides[@]}" \
             "${gu_overrides[@]}"
 
             CUDA_VISIBLE_DEVICES="${EVAL_GPU}" python src/eval.py \
@@ -240,7 +257,8 @@ for loss_func in "${LOSS_FUNCTIONS[@]}"; do
         trainer.args.do_eval=false \
         trainer.args.eval_on_start=false \
         trainer.args.eval_strategy=no \
-        "${legacy_training_overrides[@]}" \
+        "${common_training_overrides[@]}" \
+        "${wmdp_training_overrides[@]}" \
         "${gu_overrides[@]}"
 
         CUDA_VISIBLE_DEVICES="${EVAL_GPU}" python src/eval.py \

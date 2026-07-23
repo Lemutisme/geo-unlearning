@@ -2147,22 +2147,37 @@ TASK7_SCRIPTS = (
 )
 
 
-def task7_common_gu_mappings(text):
-    start = text.index("+trainer.method_args.gu={")
-    end = text.index('}"', start) + 1
-    bodies = [text[start:end]]
-    mappings = [
-        set(re.findall(r"(?:[{,])\s*\\?\s*([a-z_]+):", body))
-        for body in bodies
+def task7_gu_keys_from_argv(argv):
+    mapping_arguments = [
+        argument
+        for argument in argv
+        if argument.startswith("+trainer.method_args.gu=")
     ]
-    dotted_keys = re.findall(
-        r"[+]trainer[.]method_args[.]gu[.]([a-z_]+)=",
-        text,
-    )
-    if dotted_keys:
-        mappings.append(set(dotted_keys))
-    assert mappings
-    return mappings
+    dotted_arguments = [
+        argument
+        for argument in argv
+        if argument.startswith("+trainer.method_args.gu.")
+    ]
+    assert bool(mapping_arguments) != bool(dotted_arguments)
+    if mapping_arguments:
+        assert len(mapping_arguments) == 1
+        return set(
+            re.findall(r"(?:[{,])\s*([a-z_]+):", mapping_arguments[0])
+        )
+    return {
+        argument.removeprefix("+trainer.method_args.gu.").split("=", 1)[0]
+        for argument in dotted_arguments
+    }
+
+
+def task7_read_commands(path):
+    if not path.exists():
+        return []
+    return [
+        [value.decode() for value in record.split(b"\0") if value]
+        for record in path.read_bytes().split(b"\x1e")
+        if record
+    ]
 
 
 def task7_run_eval_script(tmp_path, accelerate_exit_code=0):
@@ -2204,16 +2219,94 @@ def task7_run_eval_script(tmp_path, accelerate_exit_code=0):
         timeout=30,
     )
 
-    def read_commands(path):
-        if not path.exists():
-            return []
-        return [
-            [value.decode() for value in record.split(b"\0") if value]
-            for record in path.read_bytes().split(b"\x1e")
-            if record
-        ]
+    return (
+        result,
+        task7_read_commands(capture_path),
+        task7_read_commands(eval_capture_path),
+    )
 
-    return result, read_commands(capture_path), read_commands(eval_capture_path)
+
+def task7_stub_launch_environment(tmp_path, create_tofu_summary=False):
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir(exist_ok=True)
+    conda_base = tmp_path / "conda"
+    profile = conda_base / "etc/profile.d/conda.sh"
+    profile.parent.mkdir(parents=True)
+    profile.write_text("conda() { :; }\n")
+    conda_stub = stub_dir / "conda"
+    conda_stub.write_text('#!/bin/sh\nprintf \'%s\\n\' "$TASK7_CONDA_BASE"\n')
+    conda_stub.chmod(0o755)
+    capture_path = tmp_path / "launch.argv"
+    accelerate_stub = stub_dir / "accelerate"
+    accelerate_stub.write_text(
+        "#!/bin/sh\n"
+        'printf \'%s\\0\' "$@" >> "$TASK7_ARGV_CAPTURE"\n'
+        'printf \'\\036\' >> "$TASK7_ARGV_CAPTURE"\n'
+        "output_dir=\n"
+        'for argument in "$@"; do\n'
+        '    case "$argument" in\n'
+        '        paths.output_dir=*) output_dir=${argument#paths.output_dir=} ;;\n'
+        "    esac\n"
+        "done\n"
+        'if [ -n "$output_dir" ]; then\n'
+        '    mkdir -p "$output_dir/.hydra"\n'
+        '    printf \'{}\\n\' > "$output_dir/.hydra/config.yaml"\n'
+        "fi\n"
+        'if [ "${TASK7_CREATE_TOFU_SUMMARY:-0}" = 1 ]; then\n'
+        '    mkdir -p "$output_dir/checkpoint-10/evals"\n'
+        '    printf \'{}\\n\' > "$output_dir/checkpoint-10/evals/TOFU_SUMMARY.json"\n'
+        "fi\n"
+    )
+    accelerate_stub.chmod(0o755)
+    environment = os.environ.copy()
+    environment["PATH"] = f"{stub_dir}:{environment['PATH']}"
+    environment["CONDA_EXE"] = str(conda_stub)
+    environment["TASK7_CONDA_BASE"] = str(conda_base)
+    environment["TASK7_ARGV_CAPTURE"] = str(capture_path)
+    environment["TASK7_CREATE_TOFU_SUMMARY"] = str(int(create_tofu_summary))
+    environment["PCGRAD_LOCAL_ROOT"] = str(tmp_path / "local")
+    return environment, capture_path
+
+
+def task7_run_mvp_script(tmp_path):
+    environment, capture_path = task7_stub_launch_environment(tmp_path)
+    result = subprocess.run(
+        ["bash", str(TASK7_SCRIPTS[0])],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return result, task7_read_commands(capture_path)
+
+
+def task7_run_smoke_arms(tmp_path):
+    environment, capture_path = task7_stub_launch_environment(
+        tmp_path,
+        create_tofu_summary=True,
+    )
+    results = []
+    for method in ("control", "gu", "pcgrad"):
+        results.append(
+            subprocess.run(
+                [
+                    "bash",
+                    str(TASK7_SCRIPTS[2]),
+                    "tofu01",
+                    method,
+                    "0",
+                    "task7",
+                    "production",
+                ],
+                cwd=tmp_path,
+                env=environment,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        )
+    return results, task7_read_commands(capture_path)
 
 
 def test_task7_legacy_gu_has_exact_migration_and_safe_legacy_controls(tmp_path):
@@ -2256,24 +2349,37 @@ def test_task7_legacy_yaml_defaults_to_pcgrad():
     assert config.method_args.geometric_config.gradient_surgery == "pcgrad"
 
 
-def test_task7_mvp_uses_simnpo_and_exact_common_gu_contract():
-    text = TASK7_SCRIPTS[0].read_text()
+def test_task7_mvp_expands_both_arms_with_exact_common_gu_contract(tmp_path):
+    result, commands = task7_run_mvp_script(tmp_path)
 
-    assert "trainer=SimNPO" in text
-    assert "trainer=GeometricUnlearn" not in text
-    assert "run_arm control false" in text
-    assert "run_arm gu true" in text
-    assert all(keys == TASK7_GU_KEYS for keys in task7_common_gu_mappings(text))
-    for setting in (
-        "lm_head[.]weight",
-        "retain_history_rank:8",
-        "projection_eps:1e-6",
-        "retain_filter:first_order",
-        "retain_budget:1e-4",
-        "backtracking_scales:[1.0,0.5,0.25,0.125]",
-        "diagnostics_path:",
-    ):
-        assert setting in text
+    assert result.returncode == 0, result.stderr
+    assert len(commands) == 2
+    runtime_knobs = (
+        "trainer.args.max_steps=10",
+        "trainer.args.learning_rate=1e-5",
+        "trainer.args.optim=adamw_torch",
+        "trainer.args.adam_beta1=0.0",
+        "trainer.args.weight_decay=0.0",
+        "trainer.args.fp16=false",
+        "trainer.args.bf16=false",
+        "trainer.args.bf16_full_eval=false",
+        "trainer.args.gradient_checkpointing=true",
+        "trainer.args.gradient_checkpointing_kwargs.use_reentrant=false",
+        "trainer.args.save_strategy=no",
+    )
+    for argv, enabled in zip(commands, (False, True)):
+        assert "trainer=SimNPO" in argv
+        assert "trainer=GeometricUnlearn" not in argv
+        assert task7_gu_keys_from_argv(argv) == TASK7_GU_KEYS
+        gu_argument = next(
+            argument
+            for argument in argv
+            if argument.startswith("+trainer.method_args.gu=")
+        )
+        assert f"enabled:{str(enabled).lower()}" in gu_argument
+        assert "parameter_regex:[\"lm_head[.]weight\"]" in gu_argument
+        for argument in runtime_knobs:
+            assert argv.count(argument) == 1
 
 
 def test_task7_eval_maps_supported_losses_to_objective_trainers_and_one_process():
@@ -2326,13 +2432,10 @@ def test_task7_eval_preserves_exact_runtime_contract_at_every_launch(tmp_path):
         "src/train.py",
         "--config-name=unlearn.yaml",
     ]
-    expected_legacy_knobs = [
+    expected_common_knobs = [
         "trainer.args.learning_rate=1e-5",
-        "trainer.args.num_train_epochs=5",
-        "+trainer.args.max_steps=-1",
         "trainer.args.optim=adamw_torch",
         "+trainer.args.adam_beta1=0.0",
-        "trainer.args.weight_decay=0.0",
         "+trainer.args.fp16=false",
         "trainer.args.bf16=false",
         "trainer.args.bf16_full_eval=false",
@@ -2346,18 +2449,29 @@ def test_task7_eval_preserves_exact_runtime_contract_at_every_launch(tmp_path):
         "trainer.args.eval_on_start=false",
         "trainer.args.eval_strategy=no",
     ]
+    expected_benchmark_knobs = {
+        "tofu": [
+            "trainer.args.num_train_epochs=10",
+            "+trainer.args.max_steps=-1",
+            "trainer.args.weight_decay=0.01",
+        ],
+        "muse": [
+            "trainer.args.num_train_epochs=10",
+            "+trainer.args.max_steps=-1",
+            "trainer.args.weight_decay=0.0",
+        ],
+        "wmdp": [
+            "trainer.args.num_train_epochs=5",
+            "trainer.args.max_steps=80",
+            "trainer.args.weight_decay=0.0",
+        ],
+    }
     trainers = {"SimNPO", "NPO", "DPO", "UNDIAL", "CEU", "WGA", "SatImp"}
     site_trainers = {"tofu": set(), "muse": set(), "wmdp": set()}
 
     for argv in commands:
         assert argv[: len(expected_prefix)] == expected_prefix
         assert not any("\n" in argument or "\\\n" in argument for argument in argv)
-        for argument in (
-            *expected_legacy_knobs,
-            *expected_eval_knobs,
-            *expected_gu_overrides,
-        ):
-            assert argv.count(argument) == 1
         trainer = next(
             argument.removeprefix("trainer=")
             for argument in argv
@@ -2371,6 +2485,14 @@ def test_task7_eval_preserves_exact_runtime_contract_at_every_launch(tmp_path):
         site = task_name.split("_", 1)[0]
         site_trainers[site].add(trainer)
         assert trainer in trainers
+        for argument in (
+            *expected_common_knobs,
+            *expected_benchmark_knobs[site],
+            *expected_eval_knobs,
+            *expected_gu_overrides,
+        ):
+            assert argv.count(argument) == 1
+        assert task7_gu_keys_from_argv(argv) == TASK7_GU_KEYS
         if site == "tofu":
             assert "trainer.args.per_device_train_batch_size=4" in argv
             assert "trainer.args.gradient_accumulation_steps=4" in argv
@@ -2398,7 +2520,7 @@ def test_task7_eval_preserves_exact_runtime_contract_at_every_launch(tmp_path):
     assert site_trainers == {site: trainers for site in site_trainers}
 
 
-def test_task7_eval_single_gpu_config_and_hydra_objectives_disable_deepspeed(
+def test_task7_eval_all_benchmark_objectives_compose_to_legacy_effective_configs(
     tmp_path,
 ):
     from hydra import compose, initialize_config_dir
@@ -2413,36 +2535,58 @@ def test_task7_eval_single_gpu_config_and_hydra_objectives_disable_deepspeed(
     assert accelerate_config.distributed_type == "NO"
     assert "deepspeed_config" not in accelerate_config
 
-    trainers = sorted(
-        {
+    representatives = {}
+    for command in commands:
+        trainer = next(
             argument.removeprefix("trainer=")
-            for command in commands
             for argument in command
             if argument.startswith("trainer=")
-        }
-    )
+        )
+        task_name = next(
+            argument.removeprefix("task_name=")
+            for argument in command
+            if argument.startswith("task_name=")
+        )
+        representatives.setdefault((task_name.split("_", 1)[0], trainer), command)
+    trainers = {"SimNPO", "NPO", "DPO", "UNDIAL", "CEU", "WGA", "SatImp"}
+    assert set(representatives) == {
+        (benchmark, trainer)
+        for benchmark in ("tofu", "muse", "wmdp")
+        for trainer in trainers
+    }
+    expected = {
+        "tofu": (10, -1, 0.01),
+        "muse": (10, -1, 0.0),
+        "wmdp": (5, 80, 0.0),
+    }
     with initialize_config_dir(
         config_dir=str(TASK7_ROOT / "configs"),
         version_base=None,
     ):
-        for trainer in trainers:
+        for (benchmark, _), command in representatives.items():
+            config_name_index = command.index("--config-name=unlearn.yaml")
             config = compose(
                 config_name="unlearn.yaml",
-                overrides=[
-                    "experiment=unlearn/tofu/default",
-                    f"trainer={trainer}",
-                    "task_name=runtime-contract",
-                    *[
-                        argument
-                        for argument in commands[0]
-                        if argument.startswith("trainer.args.")
-                        or argument.startswith("+trainer.args.")
-                        or argument.startswith("+trainer.method_args.gu.")
-                    ],
-                ],
+                overrides=command[config_name_index + 1 :],
             )
+            epochs, max_steps, weight_decay = expected[benchmark]
             assert "deepspeed" not in config.trainer.args
             assert config.trainer.args.learning_rate == pytest.approx(1.0e-5)
+            assert config.trainer.args.num_train_epochs == epochs
+            assert config.trainer.args.max_steps == max_steps
+            assert config.trainer.args.optim == "adamw_torch"
+            assert config.trainer.args.adam_beta1 == pytest.approx(0.0)
+            assert config.trainer.args.weight_decay == pytest.approx(weight_decay)
+            assert config.trainer.args.fp16 is False
+            assert config.trainer.args.bf16 is False
+            assert config.trainer.args.bf16_full_eval is False
+            assert config.trainer.args.gradient_checkpointing is True
+            assert (
+                config.trainer.args.gradient_checkpointing_kwargs.use_reentrant
+                is False
+            )
+            assert config.trainer.args.save_strategy == "no"
+            assert set(config.trainer.method_args.gu) == TASK7_GU_KEYS
 
 
 def test_task7_eval_stops_before_eval_and_success_after_training_failure(tmp_path):
@@ -2457,28 +2601,57 @@ def test_task7_eval_stops_before_eval_and_success_after_training_failure(tmp_pat
     assert "All benchmarks completed!" not in result.stdout
 
 
-def test_task7_smoke_routes_only_gu_arm_to_common_gu():
-    text = TASK7_SCRIPTS[2].read_text()
-    common_mappings = task7_common_gu_mappings(text)
+def test_task7_smoke_expands_control_gu_and_pcgrad_arms(tmp_path):
+    results, commands = task7_run_smoke_arms(tmp_path)
 
-    assert 'if [[ "${method}" == gu ]]; then' in text
-    assert "trainer_name=SimNPO" in text
-    assert "trainer_name=GeometricUnlearn" in text
-    assert '"trainer=${trainer_name}"' in text
-    assert all(keys == TASK7_GU_KEYS for keys in common_mappings)
-    common_mapping_text = re.findall(
-        r"\+trainer[.]method_args[.]gu=\{[^}]+\}",
-        text,
-    )[0]
-    for legacy_key in (
-        "geometric_config",
-        "component_buffer_device",
-        "actual_delta_mode",
-        "actual_delta_steps",
-        "actual_delta_sample_elements",
+    assert len(commands) == 3
+    assert all(result.returncode == 0 for result in results), [
+        result.stderr for result in results
+    ]
+    common_runtime_knobs = (
+        "trainer.args.max_steps=10",
+        "trainer.args.learning_rate=1e-5",
+        "trainer.args.adam_beta1=0.0",
+        "trainer.args.weight_decay=0.0",
+        "trainer.args.fp16=false",
+        "trainer.args.gradient_checkpointing=true",
+        "trainer.args.gradient_checkpointing_kwargs.use_reentrant=false",
+        "trainer.args.save_strategy=no",
+    )
+    by_method = {}
+    for argv in commands:
+        task_name = next(
+            argument.removeprefix("task_name=")
+            for argument in argv
+            if argument.startswith("task_name=")
+        )
+        method = task_name.split("_")[3]
+        by_method[method] = argv
+        for argument in common_runtime_knobs:
+            assert argv.count(argument) == 1
+
+    assert set(by_method) == {"control", "gu", "pcgrad"}
+    assert "trainer=SimNPO" in by_method["gu"]
+    assert task7_gu_keys_from_argv(by_method["gu"]) == TASK7_GU_KEYS
+    assert not any(
+        "geometric_config" in argument for argument in by_method["gu"]
+    )
+    for method, enabled, surgery in (
+        ("control", "false", "gu"),
+        ("pcgrad", "true", "pcgrad"),
     ):
-        assert legacy_key not in common_mapping_text
-        assert legacy_key in text
+        argv = by_method[method]
+        assert "trainer=GeometricUnlearn" in argv
+        assert (
+            f"trainer.method_args.geometric_config.gu_enabled={enabled}" in argv
+        )
+        assert (
+            f"trainer.method_args.geometric_config.gradient_surgery={surgery}"
+            in argv
+        )
+        assert not any(
+            argument.startswith("+trainer.method_args.gu") for argument in argv
+        )
 
 
 def test_task7_shipped_gu_scripts_have_valid_bash_syntax():
