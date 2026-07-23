@@ -46,21 +46,13 @@ class UnlearnTrainer(FinetuneTrainer):
         if self.gu_config is None:
             return super().create_optimizer()
 
-        original_requires_grad = tuple(
-            (parameter, parameter.requires_grad)
-            for parameter in self.model.parameters()
-        )
+        original_requires_grad = tuple((parameter, parameter.requires_grad)
+            for parameter in self.model.parameters())
         setup_required = not getattr(self, "_gu_setup_complete", False)
         try:
             required_keys = {
-                "enabled",
-                "parameter_regex",
-                "retain_history_rank",
-                "projection_eps",
-                "retain_filter",
-                "retain_budget",
-                "backtracking_scales",
-                "diagnostics_path",
+                "enabled", "parameter_regex", "retain_history_rank", "projection_eps",
+                "retain_filter", "retain_budget", "backtracking_scales", "diagnostics_path",
             }
             if set(self.gu_config) != required_keys:
                 raise ValueError(
@@ -190,11 +182,9 @@ class UnlearnTrainer(FinetuneTrainer):
                         "GU does not support reentrant gradient checkpointing"
                     )
 
-                selected = tuple(
-                    (name, parameter)
+                selected = tuple((name, parameter)
                     for name, parameter in self.model.named_parameters()
-                    if any(pattern.search(name) for pattern in compiled_patterns)
-                )
+                    if any(pattern.search(name) for pattern in compiled_patterns))
                 if not selected:
                     raise ValueError("GU parameter_regex did not select any parameters")
                 selected_ids = {id(parameter) for _, parameter in selected}
@@ -444,25 +434,33 @@ class UnlearnTrainer(FinetuneTrainer):
             retain_before = retain_after = zero_reason = None
             try:
                 if self.gu_config["retain_filter"] == "finite_step":
+                    retain_batches = self._gu_retain_inputs
                     was_training = self.model.training
                     try:
                         self.model.eval()
                         with torch.no_grad():
                             for before, (_, parameter) in zip(snapshot, self._gu_selected):
                                 parameter.copy_(before)
-                            retain_nll, _ = compute_batch_nll(self.model,
-                                self._gu_retain_inputs)
-                            retain_before = retain_nll.mean().item()
+                            total, sequence_count = 0.0, 0
+                            for batch in retain_batches:
+                                with self.compute_loss_context_manager():
+                                    retain_nll, _ = compute_batch_nll(self.model, batch)
+                                total += retain_nll.double().sum().item()
+                                sequence_count += retain_nll.numel()
+                            retain_before = total / sequence_count
                             if not math.isfinite(retain_before):
                                 raise ValueError("GU retain loss must be finite")
                             for scale in self.gu_config["backtracking_scales"]:
                                 for before, delta, (_, parameter) in zip(
                                     snapshot, proposal, self._gu_selected):
                                     parameter.copy_(before)
-                                    parameter.add_((delta.double() * scale).to(parameter.dtype))
-                                retain_nll, _ = compute_batch_nll(self.model,
-                                    self._gu_retain_inputs)
-                                retain_after = retain_nll.mean().item()
+                                    parameter.add_(delta.mul(scale).to(parameter.dtype))
+                                total = 0.0
+                                for batch in retain_batches:
+                                    with self.compute_loss_context_manager():
+                                        retain_nll, _ = compute_batch_nll(self.model, batch)
+                                    total += retain_nll.double().sum().item()
+                                retain_after = total / sequence_count
                                 if not math.isfinite(retain_after):
                                     raise ValueError("GU retain loss must be finite")
                                 if retain_after - retain_before <= self.gu_config["retain_budget"]:
@@ -505,10 +503,17 @@ class UnlearnTrainer(FinetuneTrainer):
                     "optimizer_state_semantics": "proposal_state_committed",
                     "projection_seconds": projection_seconds, "filter_seconds": filter_seconds,
                 }
-                line = json.dumps(diagnostics, allow_nan=False)
-                with self._gu_diagnostics_path.open("a", encoding="utf-8") as output:
-                    output.write(line + "\n")
-                    output.flush()
+                payload = (json.dumps(diagnostics, allow_nan=False) + "\n").encode()
+                with self._gu_diagnostics_path.open("ab", buffering=0) as output:
+                    offset = output.tell()
+                    try:
+                        if output.write(payload) != len(payload):
+                            raise OSError("GU diagnostics write was incomplete")
+                        output.flush()
+                        os.fsync(output.fileno())
+                    except Exception:
+                        output.truncate(offset)
+                        raise
             except Exception:
                 with torch.no_grad():
                     for before, (_, parameter) in zip(snapshot, self._gu_selected):
@@ -539,6 +544,10 @@ class UnlearnTrainer(FinetuneTrainer):
             retain_inputs = inputs.get("retain")
             if not isinstance(retain_inputs, Mapping):
                 raise ValueError("GU retain inputs must be a mapping")
+            if self.gu_config["retain_filter"] == "finite_step":
+                retain_batches = getattr(self, "_gu_retain_inputs", [])
+                retain_batches.append(nested_detach(retain_inputs))
+                self._gu_retain_inputs = retain_batches
             with self.compute_loss_context_manager():
                 retain_nll, _ = compute_batch_nll(model, retain_inputs)
                 retain_loss = retain_nll.mean()
@@ -595,7 +604,7 @@ class UnlearnTrainer(FinetuneTrainer):
                 self._gu_constraints_used = (current, *history)
                 self._gu_pending_history_covector = current
                 if self.gu_config["retain_filter"] == "finite_step":
-                    self._gu_retain_inputs = nested_detach(retain_inputs)
+                    self._gu_retain_inputs = tuple(self._gu_retain_inputs)
                 del self._gu_constraint_accumulator
 
             return loss

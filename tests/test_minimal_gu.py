@@ -1,7 +1,11 @@
 import copy
+import inspect
 import json
 import math
+import os
+from contextlib import contextmanager
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 import torch
@@ -895,7 +899,7 @@ def test_gu_exception_before_parent_clears_accumulator_and_pending_state(tmp_pat
         TinyCausalLM(),
         tmp_path,
         gradient_accumulation_steps=2,
-        gu=gu_config(),
+        gu=gu_config(retain_filter="finite_step"),
     )
     trainer.create_optimizer()
     tokens = torch.tensor([[1, 2, 3, 4]])
@@ -919,6 +923,7 @@ def test_gu_exception_before_parent_clears_accumulator_and_pending_state(tmp_pat
     assert not hasattr(trainer, "_gu_constraint_accumulator")
     assert not hasattr(trainer, "_gu_constraints_used")
     assert not hasattr(trainer, "_gu_pending_history_covector")
+    assert not hasattr(trainer, "_gu_retain_inputs")
 
 
 def test_gu_parent_failure_clears_accumulator_and_pending_state(
@@ -929,7 +934,7 @@ def test_gu_parent_failure_clears_accumulator_and_pending_state(
         TinyCausalLM(),
         tmp_path,
         gradient_accumulation_steps=2,
-        gu=gu_config(),
+        gu=gu_config(retain_filter="finite_step"),
     )
     trainer.create_optimizer()
     original_compute_loss = trainer.compute_loss
@@ -971,6 +976,7 @@ def test_gu_parent_failure_clears_accumulator_and_pending_state(
     assert not hasattr(trainer, "_gu_constraint_accumulator")
     assert not hasattr(trainer, "_gu_constraints_used")
     assert not hasattr(trainer, "_gu_pending_history_covector")
+    assert not hasattr(trainer, "_gu_retain_inputs")
 
 
 def test_gu_constrains_actual_multi_active_adamw_delta_and_reports_kkt(tmp_path):
@@ -1648,6 +1654,93 @@ def test_disabled_gu_registers_no_hooks_or_transient_state(tmp_path, monkeypatch
         assert not hasattr(trainer, attribute)
 
 
+def test_finite_step_filters_all_gas_microbatches_by_sequence_count(tmp_path):
+    torch.manual_seed(1703)
+    model = TinyCausalLM()
+    trainer = make_trainer(
+        model,
+        tmp_path,
+        gradient_accumulation_steps=2,
+        gu=gu_config(
+            retain_filter="finite_step",
+            retain_budget=1.0,
+            backtracking_scales=[1.0, 0.5, 0.25],
+        ),
+    )
+    trainer.create_optimizer()
+    parameter = trainer._gu_selected[0][1]
+    retain_batches = [
+        {
+            "input_ids": torch.tensor([[1, 4, 2, 8], [7, 2, 6, 1]]),
+            "labels": torch.tensor([[-100, -100, 2, 8], [-100, 2, 6, 1]]),
+        },
+        {
+            "input_ids": torch.tensor([[3, 9, 5, 2]]),
+            "labels": torch.tensor([[-100, 9, 5, 2]]),
+        },
+    ]
+    gradients = []
+    for retain in retain_batches:
+        nll, _ = compute_batch_nll(model, retain)
+        gradients.append(torch.autograd.grad(nll.mean(), parameter)[0])
+    direction = gradients[0] - (
+        (gradients[0] * gradients[1]).sum() / gradients[1].square().sum()
+    ) * gradients[1]
+    delta = direction.detach() * (0.2 / direction.norm())
+    snapshot = parameter.detach().clone()
+    losses = []
+    with torch.no_grad():
+        for scale in (0.0, 1.0, 0.5):
+            parameter.copy_(snapshot + scale * delta)
+            losses.append([compute_batch_nll(model, batch)[0] for batch in retain_batches])
+        parameter.copy_(snapshot)
+    aggregate_changes = [
+        torch.cat(candidate).mean().item() - torch.cat(losses[0]).mean().item()
+        for candidate in losses[1:]
+    ]
+    microbatch_mean_change = sum(value.mean().item() for value in losses[1]) / 2 - sum(
+        value.mean().item() for value in losses[0]
+    ) / 2
+    budget = (aggregate_changes[0] + microbatch_mean_change) / 2
+    trainer.gu_config["retain_budget"] = budget
+    assert losses[1][-1].mean().item() - losses[0][-1].mean().item() <= budget
+    assert aggregate_changes[0] > budget
+    assert microbatch_mean_change < budget
+    assert aggregate_changes[1] <= budget
+
+    for index, retain in enumerate(retain_batches):
+        forget = torch.tensor([[1 + index, 3 + index, 5 + index, 7 + index]])
+        with trainer.accelerator.accumulate(model):
+            trainer.training_step(
+                model,
+                {
+                    "forget": {"input_ids": forget, "labels": forget.clone()},
+                    "retain": retain,
+                },
+            )
+            if index == 0:
+                assert isinstance(trainer._gu_retain_inputs, list)
+                assert len(trainer._gu_retain_inputs) == 1
+    assert isinstance(trainer._gu_retain_inputs, tuple)
+    assert len(trainer._gu_retain_inputs) == 2
+
+    pending = (-delta.to(torch.float32),)
+    install_constraints(trainer, (pending,))
+    trainer.optimizer.state[parameter]["exp_avg_sq"] = torch.ones_like(parameter)
+    trainer._gu_optimizer_step_pre_hook(trainer.optimizer, (), {})
+    with torch.no_grad():
+        parameter.copy_(snapshot + delta)
+
+    trainer._gu_optimizer_step_post_hook(trainer.optimizer, (), {})
+
+    assert torch.allclose(parameter, snapshot + 0.5 * delta)
+    assert trainer.gu_last_diagnostics["applied_scale"] == 0.5
+    assert trainer.gu_last_diagnostics["retain_loss_before"] == pytest.approx(
+        torch.cat(losses[0]).mean().item()
+    )
+    assert not hasattr(trainer, "_gu_retain_inputs")
+
+
 def test_finite_step_uses_largest_actual_safe_scale_and_exact_record(
     tmp_path,
     monkeypatch,
@@ -1674,9 +1767,9 @@ def test_finite_step_uses_largest_actual_safe_scale_and_exact_record(
     delta = gradient.detach() * (0.2 / gradient.norm())
     constraint = (-delta.to(torch.float32),)
     install_constraints(trainer, (constraint,))
-    trainer._gu_retain_inputs = {
-        key: value.detach() for key, value in retain.items()
-    }
+    trainer._gu_retain_inputs = (
+        {key: value.detach() for key, value in retain.items()},
+    )
     snapshot = parameter.detach().clone()
     trainer.optimizer.state[parameter]["exp_avg_sq"] = torch.ones_like(parameter)
     trainer._gu_optimizer_step_pre_hook(trainer.optimizer, (), {})
@@ -1696,18 +1789,33 @@ def test_finite_step_uses_largest_actual_safe_scale_and_exact_record(
     assert measured[3] - measured[0] <= budget
 
     forward_modes = []
+    context_depth = 0
+    context_events = []
     original_forward = model.forward
 
+    @contextmanager
+    def bf16_context():
+        nonlocal context_depth
+        context_events.append("enter")
+        context_depth += 1
+        try:
+            yield
+        finally:
+            context_depth -= 1
+            context_events.append("exit")
+
     def record_forward_mode(*args, **kwargs):
-        forward_modes.append(model.training)
+        forward_modes.append((model.training, context_depth))
         return original_forward(*args, **kwargs)
 
+    monkeypatch.setattr(trainer, "compute_loss_context_manager", bf16_context)
     monkeypatch.setattr(model, "forward", record_forward_mode)
     model.train()
     trainer._gu_optimizer_step_post_hook(trainer.optimizer, (), {})
 
     assert model.training
-    assert forward_modes == [False, False, False]
+    assert forward_modes == [(False, 1), (False, 1), (False, 1)]
+    assert context_events == ["enter", "exit"] * 3
     assert torch.allclose(parameter, snapshot + 0.5 * delta)
     diagnostics = trainer.gu_last_diagnostics
     assert diagnostics["applied_scale"] == 0.5
@@ -1765,9 +1873,9 @@ def test_finite_step_without_feasible_scale_commits_zero_step_history(tmp_path):
     delta = gradient.detach() * (0.2 / gradient.norm())
     pending = (-delta.to(torch.float32),)
     install_constraints(trainer, (pending,))
-    trainer._gu_retain_inputs = {
-        key: value.detach() for key, value in retain.items()
-    }
+    trainer._gu_retain_inputs = (
+        {key: value.detach() for key, value in retain.items()},
+    )
     snapshot = parameter.detach().clone()
     trainer.optimizer.state[parameter]["exp_avg_sq"] = torch.ones_like(parameter)
     trainer._gu_optimizer_step_pre_hook(trainer.optimizer, (), {})
@@ -1811,6 +1919,7 @@ def test_first_order_step_adds_no_retain_forward_and_writes_one_record(
         ),
     )
     assert len(calls) == 2
+    assert not hasattr(trainer, "_gu_retain_inputs")
 
     trainer.optimizer.step()
 
@@ -1850,3 +1959,76 @@ def test_diagnostics_write_failure_restores_snapshot_without_commit(tmp_path):
         "_gu_retain_inputs",
     ):
         assert not hasattr(trainer, attribute)
+
+
+def test_diagnostics_fsync_failure_truncates_record_before_rollback(
+    tmp_path,
+    monkeypatch,
+):
+    trainer = make_trainer(TinyCausalLM(), tmp_path, gu=gu_config())
+    trainer.create_optimizer()
+    parameter = trainer._gu_selected[0][1]
+    constraint = coordinate_constraint(trainer, [(0, 0, 1.0)])
+    install_constraints(trainer, (constraint,))
+    history = trainer._gu_constraint_history
+    snapshot = parameter.detach().clone()
+    parameter.grad = torch.ones_like(parameter)
+    existing = b'{"prior": true}\n'
+    trainer._gu_diagnostics_path.write_bytes(existing)
+
+    def fail_fsync(_descriptor):
+        raise OSError("configured fsync failure")
+
+    monkeypatch.setattr(os, "fsync", fail_fsync)
+    with pytest.raises(OSError, match="configured fsync failure"):
+        trainer.optimizer.step()
+
+    assert trainer._gu_diagnostics_path.read_bytes() == existing
+    assert torch.equal(parameter, snapshot)
+    assert trainer._gu_constraint_history is history
+    assert trainer.gu_projection_calls == 0
+    assert trainer.gu_last_diagnostics is None
+
+
+def test_diagnostics_partial_write_leaves_no_partial_record(tmp_path, monkeypatch):
+    trainer = make_trainer(TinyCausalLM(), tmp_path, gu=gu_config())
+    trainer.create_optimizer()
+    parameter = trainer._gu_selected[0][1]
+    constraint = coordinate_constraint(trainer, [(0, 0, 1.0)])
+    install_constraints(trainer, (constraint,))
+    history = trainer._gu_constraint_history
+    snapshot = parameter.detach().clone()
+    parameter.grad = torch.ones_like(parameter)
+    existing = b'{"prior": true}\n'
+    trainer._gu_diagnostics_path.write_bytes(existing)
+    path_type = type(trainer._gu_diagnostics_path)
+    real_open = path_type.open
+
+    def partial_open(path, *args, **kwargs):
+        handle = real_open(path, *args, **kwargs)
+        if not args or args[0] != "ab":
+            return handle
+        output = MagicMock(wraps=handle)
+        output.__enter__.return_value = output
+        output.__exit__.side_effect = lambda *_: handle.close()
+        output.write.side_effect = lambda payload: handle.write(
+            payload[: max(1, len(payload) // 2)]
+        )
+        return output
+
+    monkeypatch.setattr(path_type, "open", partial_open)
+    with pytest.raises(OSError, match="incomplete"):
+        trainer.optimizer.step()
+
+    assert trainer._gu_diagnostics_path.read_bytes() == existing
+    assert torch.equal(parameter, snapshot)
+    assert trainer._gu_constraint_history is history
+    assert trainer.gu_projection_calls == 0
+    assert trainer.gu_last_diagnostics is None
+
+
+def test_finite_scale_write_keeps_delta_scaling_in_fp32():
+    source = inspect.getsource(UnlearnTrainer._gu_optimizer_step_post_hook)
+
+    assert "delta.mul(scale).to(parameter.dtype)" in source
+    assert "delta.double() * scale" not in source
