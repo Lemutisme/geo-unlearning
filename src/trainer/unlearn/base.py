@@ -372,68 +372,58 @@ class UnlearnTrainer(FinetuneTrainer):
         if not self.gu_enabled:
             return super().training_step(model, inputs)
 
-        inputs = self._prepare_inputs(inputs)
-        retain_inputs = inputs.get("retain")
-        if not isinstance(retain_inputs, Mapping):
-            self._gu_constraint_microsteps = []
-            raise ValueError("GU retain inputs must be a mapping")
-        with self.compute_loss_context_manager():
-            retain_nll, _ = compute_batch_nll(model, retain_inputs)
-            retain_loss = retain_nll.mean()
-        selected_parameters = tuple(
-            parameter for _, parameter in self._gu_selected
-        )
-        retain_gradients = torch.autograd.grad(
-            retain_loss,
-            selected_parameters,
-            retain_graph=False,
-            create_graph=False,
-            allow_unused=True,
-        )
-        scale = self.args.gradient_accumulation_steps
-        blocks = []
-        for (name, parameter), gradient in zip(
-            self._gu_selected,
-            retain_gradients,
-        ):
-            if gradient is None:
-                self._gu_constraint_microsteps = []
-                raise ValueError(
-                    f"GU retain gradient is unused for selected parameter {name}"
-                )
-            if gradient.shape != parameter.shape:
-                self._gu_constraint_microsteps = []
-                raise ValueError(
-                    f"GU retain gradient shape mismatch for selected parameter {name}"
-                )
-            block = gradient.detach().to(torch.float32) / scale
-            if not torch.isfinite(block).all():
-                self._gu_constraint_microsteps = []
-                raise ValueError(
-                    f"GU retain gradient must be finite for selected parameter {name}"
-                )
-            blocks.append(block)
-        blocks = tuple(blocks)
-        microsteps = getattr(self, "_gu_constraint_microsteps", [])
-        microsteps.append(blocks)
-        self._gu_constraint_microsteps = microsteps
-
         try:
-            loss = super().training_step(model, inputs)
-        except Exception:
-            self._gu_constraint_microsteps = []
-            raise
-
-        if self.accelerator.sync_gradients:
-            try:
-                current_blocks = tuple(
-                    torch.stack(
-                        [microstep[index] for microstep in microsteps]
-                    ).sum(dim=0)
-                    for index in range(len(selected_parameters))
+            model.train()
+            inputs = self._prepare_inputs(inputs)
+            retain_inputs = inputs.get("retain")
+            if not isinstance(retain_inputs, Mapping):
+                raise ValueError("GU retain inputs must be a mapping")
+            with self.compute_loss_context_manager():
+                retain_nll, _ = compute_batch_nll(model, retain_inputs)
+                retain_loss = retain_nll.mean()
+            selected_parameters = tuple(
+                parameter for _, parameter in self._gu_selected
+            )
+            retain_gradients = torch.autograd.grad(
+                retain_loss,
+                selected_parameters,
+                retain_graph=False,
+                create_graph=False,
+                allow_unused=True,
+            )
+            accumulator = getattr(self, "_gu_constraint_accumulator", None)
+            if accumulator is None:
+                accumulator = tuple(
+                    torch.zeros_like(parameter, dtype=torch.float32)
+                    for parameter in selected_parameters
                 )
+                self._gu_constraint_accumulator = accumulator
+            scale = self.args.gradient_accumulation_steps
+            with torch.no_grad():
+                for (name, _), gradient, accumulator_block in zip(
+                    self._gu_selected,
+                    retain_gradients,
+                    accumulator,
+                ):
+                    if gradient is None:
+                        raise ValueError(
+                            "GU retain gradient is unused for selected parameter "
+                            f"{name}"
+                        )
+                    gradient_block = gradient.detach().to(torch.float32)
+                    if not torch.isfinite(gradient_block).all():
+                        raise ValueError(
+                            "GU retain gradient must be finite for selected "
+                            f"parameter {name}"
+                        )
+                    accumulator_block.add_(gradient_block, alpha=1.0 / scale)
+            del retain_gradients, gradient, gradient_block
+
+            loss = super().training_step(model, inputs)
+
+            if self.accelerator.sync_gradients:
                 squared_norm = sum(
-                    block.double().square().sum() for block in current_blocks
+                    block.double().square().sum() for block in accumulator
                 )
                 if not torch.isfinite(squared_norm):
                     raise ValueError("GU retain constraint norm must be finite")
@@ -442,18 +432,23 @@ class UnlearnTrainer(FinetuneTrainer):
                 norm = squared_norm.sqrt()
                 current = tuple(
                     (block / norm).to(torch.float32)
-                    for block in current_blocks
+                    for block in accumulator
                 )
                 history = getattr(self, "_gu_constraint_history", ())
                 self._gu_constraints_used = (current, *history)
-                retain_history_rank = self.gu_config["retain_history_rank"]
-                self._gu_constraint_history = (current, *history)[
-                    :retain_history_rank
-                ]
-            finally:
-                self._gu_constraint_microsteps = []
+                self._gu_pending_history_covector = current
+                del self._gu_constraint_accumulator
 
-        return loss
+            return loss
+        except Exception:
+            for attribute in (
+                "_gu_constraint_accumulator",
+                "_gu_constraints_used",
+                "_gu_pending_history_covector",
+            ):
+                if hasattr(self, attribute):
+                    delattr(self, attribute)
+            raise
 
     # Adapted from Huggingface DPO Trainer: https://github.com/huggingface/accelerate/blob/739b135f8367becb67ffaada12fe76e3aa60fefd/src/accelerate/accelerator.py#L1473
     def _prepare_deepspeed(self, model):
