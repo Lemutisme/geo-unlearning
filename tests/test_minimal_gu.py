@@ -1,4 +1,6 @@
 import copy
+import json
+import math
 from types import SimpleNamespace
 
 import pytest
@@ -1642,5 +1644,209 @@ def test_disabled_gu_registers_no_hooks_or_transient_state(tmp_path, monkeypatch
         "_gu_proposal_delta",
         "_gu_metric_diagonal",
         "_gu_constraint_history",
+    ):
+        assert not hasattr(trainer, attribute)
+
+
+def test_finite_step_uses_largest_actual_safe_scale_and_exact_record(
+    tmp_path,
+    monkeypatch,
+):
+    torch.manual_seed(1701)
+    model = TinyCausalLM()
+    trainer = make_trainer(
+        model,
+        tmp_path,
+        gu=gu_config(
+            retain_filter="finite_step",
+            retain_budget=1.0,
+            backtracking_scales=[1.0, 0.5, 0.25],
+        ),
+    )
+    trainer.create_optimizer()
+    parameter = trainer._gu_selected[0][1]
+    retain = {
+        "input_ids": torch.tensor([[1, 4, 2, 8], [7, 2, 6, 1]]),
+        "labels": torch.tensor([[-100, -100, 2, 8], [-100, 2, 6, 1]]),
+    }
+    retain_loss, _ = compute_batch_nll(model, retain)
+    gradient = torch.autograd.grad(retain_loss.mean(), parameter)[0]
+    delta = gradient.detach() * (0.2 / gradient.norm())
+    constraint = (-delta.to(torch.float32),)
+    install_constraints(trainer, (constraint,))
+    trainer._gu_retain_inputs = {
+        key: value.detach() for key, value in retain.items()
+    }
+    snapshot = parameter.detach().clone()
+    trainer.optimizer.state[parameter]["exp_avg_sq"] = torch.ones_like(parameter)
+    trainer._gu_optimizer_step_pre_hook(trainer.optimizer, (), {})
+
+    model.eval()
+    measured = []
+    with torch.no_grad():
+        for scale in (0.0, 1.0, 0.5, 0.25):
+            parameter.copy_(snapshot + scale * delta)
+            loss, _ = compute_batch_nll(model, retain)
+            measured.append(loss.mean().item())
+        parameter.copy_(snapshot + delta)
+    budget = (measured[1] + measured[2]) / 2 - measured[0]
+    trainer.gu_config["retain_budget"] = budget
+    assert measured[1] - measured[0] > budget
+    assert measured[2] - measured[0] <= budget
+    assert measured[3] - measured[0] <= budget
+
+    forward_modes = []
+    original_forward = model.forward
+
+    def record_forward_mode(*args, **kwargs):
+        forward_modes.append(model.training)
+        return original_forward(*args, **kwargs)
+
+    monkeypatch.setattr(model, "forward", record_forward_mode)
+    model.train()
+    trainer._gu_optimizer_step_post_hook(trainer.optimizer, (), {})
+
+    assert model.training
+    assert forward_modes == [False, False, False]
+    assert torch.allclose(parameter, snapshot + 0.5 * delta)
+    diagnostics = trainer.gu_last_diagnostics
+    assert diagnostics["applied_scale"] == 0.5
+    assert diagnostics["retain_loss_after"] - diagnostics["retain_loss_before"] <= budget
+    actual_violation = (constraint[0].double() * (
+        parameter.detach().float() - snapshot.float()
+    ).double()).sum().item()
+    assert diagnostics["max_violation_after"] == pytest.approx(actual_violation)
+    assert diagnostics["max_violation_after"] <= diagnostics["projection_tolerance"]
+    assert diagnostics["kkt_residual"] <= diagnostics["projection_tolerance"]
+    expected_fields = {
+        "step", "objective", "selected_parameter_count", "proposal_norm",
+        "corrected_norm", "correction_ratio", "constraint_count",
+        "active_constraints", "max_violation_before", "max_violation_after",
+        "kkt_residual", "projection_tolerance", "applied_scale",
+        "retain_loss_before", "retain_loss_after", "zero_step",
+        "zero_step_reason", "optimizer_state_semantics", "projection_seconds",
+        "filter_seconds",
+    }
+    records = [
+        json.loads(line)
+        for line in trainer._gu_diagnostics_path.read_text().splitlines()
+    ]
+    assert records == [diagnostics]
+    assert set(diagnostics) == expected_fields
+    assert diagnostics["optimizer_state_semantics"] == "proposal_state_committed"
+    assert all(
+        not isinstance(value, float) or math.isfinite(value)
+        for value in diagnostics.values()
+    )
+    assert trainer.gu_projection_calls == 1
+    assert not hasattr(trainer, "_gu_retain_inputs")
+
+
+def test_finite_step_without_feasible_scale_commits_zero_step_history(tmp_path):
+    torch.manual_seed(1702)
+    model = TinyCausalLM()
+    trainer = make_trainer(
+        model,
+        tmp_path,
+        gu=gu_config(
+            retain_filter="finite_step",
+            retain_budget=0.0,
+            backtracking_scales=[1.0, 0.5, 0.25],
+        ),
+    )
+    trainer.create_optimizer()
+    parameter = trainer._gu_selected[0][1]
+    retain = {
+        "input_ids": torch.tensor([[1, 3, 5, 7]]),
+        "labels": torch.tensor([[-100, 3, 5, 7]]),
+    }
+    retain_loss, _ = compute_batch_nll(model, retain)
+    gradient = torch.autograd.grad(retain_loss.mean(), parameter)[0]
+    delta = gradient.detach() * (0.2 / gradient.norm())
+    pending = (-delta.to(torch.float32),)
+    install_constraints(trainer, (pending,))
+    trainer._gu_retain_inputs = {
+        key: value.detach() for key, value in retain.items()
+    }
+    snapshot = parameter.detach().clone()
+    trainer.optimizer.state[parameter]["exp_avg_sq"] = torch.ones_like(parameter)
+    trainer._gu_optimizer_step_pre_hook(trainer.optimizer, (), {})
+    with torch.no_grad():
+        parameter.copy_(snapshot + delta)
+
+    trainer._gu_optimizer_step_post_hook(trainer.optimizer, (), {})
+
+    assert torch.equal(parameter, snapshot)
+    assert trainer.gu_last_diagnostics["applied_scale"] == 0.0
+    assert trainer.gu_last_diagnostics["zero_step"] is True
+    assert trainer.gu_last_diagnostics["zero_step_reason"] == "retain_budget_exceeded"
+    assert trainer.gu_last_diagnostics["retain_loss_after"] == pytest.approx(
+        trainer.gu_last_diagnostics["retain_loss_before"]
+    )
+    assert trainer._gu_constraint_history[0] is pending
+    assert trainer.optimizer.state[parameter]["exp_avg_sq"].eq(1).all()
+    assert trainer.gu_projection_calls == 1
+
+
+def test_first_order_step_adds_no_retain_forward_and_writes_one_record(
+    tmp_path,
+    monkeypatch,
+):
+    model = TinyCausalLM()
+    trainer = make_trainer(model, tmp_path, gu=gu_config())
+    trainer.create_optimizer()
+    calls = []
+    original_forward = model.forward
+
+    def record_forward(*args, **kwargs):
+        calls.append(None)
+        return original_forward(*args, **kwargs)
+
+    monkeypatch.setattr(model, "forward", record_forward)
+    trainer.training_step(
+        model,
+        gu_batch(
+            torch.tensor([[1, 2, 3, 4]]),
+            torch.tensor([[4, 3, 2, 1]]),
+        ),
+    )
+    assert len(calls) == 2
+
+    trainer.optimizer.step()
+
+    assert len(calls) == 2
+    records = trainer._gu_diagnostics_path.read_text().splitlines()
+    assert len(records) == 1
+    assert json.loads(records[0]) == trainer.gu_last_diagnostics
+    assert trainer.gu_last_diagnostics["retain_loss_before"] is None
+    assert trainer.gu_last_diagnostics["retain_loss_after"] is None
+    assert trainer.gu_last_diagnostics["applied_scale"] == 1.0
+
+
+def test_diagnostics_write_failure_restores_snapshot_without_commit(tmp_path):
+    trainer = make_trainer(TinyCausalLM(), tmp_path, gu=gu_config())
+    trainer.create_optimizer()
+    parameter = trainer._gu_selected[0][1]
+    constraint = coordinate_constraint(trainer, [(0, 0, 1.0)])
+    install_constraints(trainer, (constraint,))
+    history = trainer._gu_constraint_history
+    snapshot = parameter.detach().clone()
+    parameter.grad = torch.ones_like(parameter)
+    trainer._gu_diagnostics_path.unlink()
+    trainer._gu_diagnostics_path.mkdir()
+
+    with pytest.raises(OSError):
+        trainer.optimizer.step()
+
+    assert torch.equal(parameter, snapshot)
+    assert trainer.optimizer.state[parameter]["step"].item() == 1
+    assert trainer._gu_constraint_history is history
+    assert trainer.gu_projection_calls == 0
+    assert trainer.gu_last_diagnostics is None
+    for attribute in (
+        "_gu_constraints_used",
+        "_gu_pending_history_covector",
+        "_gu_parameter_snapshot",
+        "_gu_retain_inputs",
     ):
         assert not hasattr(trainer, attribute)
