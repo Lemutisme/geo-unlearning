@@ -1,0 +1,89 @@
+# @package _global_
+
+defaults:
+  - override /model: Llama-2-7b-hf
+  - override /trainer: GradAscent
+  - override /data: unlearn
+  - override /data/datasets@data.forget: MUSE_forget
+  - override /data/datasets@data.retain: MUSE_retain
+  - override /eval: muse
+  - _self_
+
+data_split: News
+forget_split: forget
+retain_split: retain1
+dataset_revision: 506bd5b150b92814d45e4404a82f120ab2d748bf
+reference_model_artifact: muse-bench/MUSE-News_retrain
+reference_model_revision: 324ef49ee0a038078aba7d8de831edf57235c9b3
+reference_model_snapshot: /root/.cache/huggingface/hub/models--muse-bench--MUSE-News_retrain/snapshots/324ef49ee0a038078aba7d8de831edf57235c9b3
+retain_logs_path: /workspace/re/GU/geo-unlearning/saves/eval/muse_Llama-2-7b-hf_News_retrain/MUSE_EVAL.json
+
+model:
+  model_args:
+    pretrained_model_name_or_path: muse-bench/MUSE-News_target
+    revision: a2f39769e9a0b98ec1cdd12f65e9962502208935
+  tokenizer_args:
+    pretrained_model_name_or_path: NousResearch/Llama-2-7b-hf
+    revision: 8efe6c9b93655b934e27bd9981e3ec13e55aee9d
+
+data:
+  anchor: forget
+  forget:
+    MUSE_forget:
+      args:
+        hf_args:
+          path: muse-bench/MUSE-${data_split}
+          name: raw
+          split: ${forget_split}
+          revision: ${dataset_revision}
+  retain:
+    MUSE_retain:
+      args:
+        hf_args:
+          path: muse-bench/MUSE-${data_split}
+          name: raw
+          split: ${retain_split}
+          revision: ${dataset_revision}
+
+eval:
+  muse:
+    data_split: ${data_split}
+    retain_logs_path: ${retain_logs_path}
+    overwrite: true
+    metrics:
+      mia_reference:
+        reference_model_path: ${reference_model_snapshot}
+      forget_gibberish:
+        classifier_model_args:
+          revision: 76672dd7d3575f68ab980705bcec975cc62de71c
+        classifier_tokenization_args:
+          revision: 76672dd7d3575f68ab980705bcec975cc62de71c
+
+trainer:
+  args:
+    per_device_train_batch_size: 4
+    gradient_accumulation_steps: 8
+    learning_rate: 1.0e-5
+    num_train_epochs: 10
+    lr_scheduler_type: constant
+
+protocol:
+  benchmark: muse
+  source_provenance:
+    model:
+      artifact: ${model.model_args.pretrained_model_name_or_path}
+      revision: ${model.model_args.revision}
+    tokenizer:
+      artifact: ${model.tokenizer_args.pretrained_model_name_or_path}
+      revision: ${model.tokenizer_args.revision}
+    dataset:
+      artifact: muse-bench/MUSE-${data_split}
+      revision: ${dataset_revision}
+    reference_model:
+      artifact: ${reference_model_artifact}
+      revision: ${reference_model_revision}
+    gibberish_classifier:
+      artifact: madhurjindal/autonlp-Gibberish-Detector-492513457
+      revision: 76672dd7d3575f68ab980705bcec975cc62de71c
+
+task_name: gu_matrix_muse

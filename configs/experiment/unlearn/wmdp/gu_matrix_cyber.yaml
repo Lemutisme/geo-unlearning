@@ -1,0 +1,87 @@
+# @package _global_
+
+defaults:
+  - override /model: zephyr-7b-beta
+  - override /trainer: GradAscent
+  - override /data: unlearn
+  - override /data/datasets@data.forget: WMDP_forget
+  - override /data/datasets@data.retain: WMDP_retain
+  - override /eval: lm_eval
+  - _self_
+
+data_split: cyber
+
+model:
+  model_args:
+    pretrained_model_name_or_path: HuggingFaceH4/zephyr-7b-beta
+    revision: 892b3d7a7b1cf10c7a701c60881cd93df615734c
+  tokenizer_args:
+    pretrained_model_name_or_path: HuggingFaceH4/zephyr-7b-beta
+    revision: 892b3d7a7b1cf10c7a701c60881cd93df615734c
+
+data:
+  anchor: forget
+  forget:
+    WMDP_forget:
+      args:
+        hf_args:
+          path: text
+          data_files: /workspace/re/GU/geo-unlearning/data/wmdp/wmdp-corpora/cyber-forget-corpus.jsonl
+          split: train
+  retain:
+    WMDP_retain:
+      args:
+        hf_args:
+          path: text
+          data_files: /workspace/re/GU/geo-unlearning/data/wmdp/wmdp-corpora/cyber-retain-corpus.jsonl
+          split: train
+
+eval:
+  lm_eval:
+    overwrite: true
+    tasks:
+      - wmdp_cyber
+      - mmlu
+
+collator:
+  DataCollatorForSupervisedDataset:
+    args:
+      padding_side: left
+
+trainer:
+  args:
+    per_device_train_batch_size: 1
+    gradient_accumulation_steps: 16
+    learning_rate: 1.0e-5
+    max_steps: 80
+
+protocol:
+  benchmark: wmdp_cyber
+  source_provenance:
+    model:
+      artifact: ${model.model_args.pretrained_model_name_or_path}
+      revision: ${model.model_args.revision}
+    tokenizer:
+      artifact: ${model.tokenizer_args.pretrained_model_name_or_path}
+      revision: ${model.tokenizer_args.revision}
+    forget_corpus:
+      path: /workspace/re/GU/geo-unlearning/data/wmdp/wmdp-corpora/cyber-forget-corpus.jsonl
+      size_bytes: 21580792
+      sha256: b5d339ed7f42a9e0dfc00708e516b288363a87512ec9cbdad8703f0ea8f5ea9a
+      upstream: cais/wmdp-corpora@daf89fa9b618b63a624228061a9cebacca88009c
+    retain_corpus:
+      path: /workspace/re/GU/geo-unlearning/data/wmdp/wmdp-corpora/cyber-retain-corpus.jsonl
+      size_bytes: 62240540
+      sha256: e3164a1402c381cb50b104fd06a91b5068ec650ee9b4bd2f119716ecded2add8
+      upstream: cais/wmdp-corpora@daf89fa9b618b63a624228061a9cebacca88009c
+  evaluation_datasets:
+    wmdp_cyber:
+      artifact: cais/wmdp
+      revision: 7125571f22f032c56415e7980f48d877dd830ff8
+      cache_builder_sha: 7125571f22f032c56415e7980f48d877dd830ff8
+    mmlu:
+      artifact: hails/mmlu_no_train
+      revision: b2e1ec9aa795adafe68e8e983248dbd4b52a1c60
+      cache_builder_sha: b2e1ec9aa795adafe68e8e983248dbd4b52a1c60
+
+task_name: gu_matrix_wmdp_cyber

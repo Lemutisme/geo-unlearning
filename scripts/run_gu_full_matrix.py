@@ -1,11 +1,16 @@
 """Registry for the GU full-matrix experiment jobs."""
 
+import argparse
+import json
+import sys
 from copy import deepcopy
+from pathlib import Path
 
 
 SCHEMA_VERSION = 1
 PROTOCOL = "gu_full_matrix_20260724"
 STAGE = "stage1"
+SHARED_ROOT = Path("/workspace/re/GU/geo-unlearning")
 
 METHODS = (
     "GradAscent",
@@ -61,7 +66,7 @@ BENCHMARKS = {
         "split": "forget01",
         "retain_split": "retain99",
         "holdout_split": "holdout01",
-        "experiment_config": "unlearn/tofu/default",
+        "experiment_config": "unlearn/tofu/gu_matrix_8b",
         "model": TOFU_MODEL,
         "evaluator_kind": "tofu",
         "selected_parameter_regex": TOFU_PARAMETER_REGEX,
@@ -71,7 +76,7 @@ BENCHMARKS = {
         "split": "forget05",
         "retain_split": "retain95",
         "holdout_split": "holdout05",
-        "experiment_config": "unlearn/tofu/default",
+        "experiment_config": "unlearn/tofu/gu_matrix_8b",
         "model": TOFU_MODEL,
         "evaluator_kind": "tofu",
         "selected_parameter_regex": TOFU_PARAMETER_REGEX,
@@ -81,7 +86,7 @@ BENCHMARKS = {
         "split": "forget10",
         "retain_split": "retain90",
         "holdout_split": "holdout10",
-        "experiment_config": "unlearn/tofu/default",
+        "experiment_config": "unlearn/tofu/gu_matrix_8b",
         "model": TOFU_MODEL,
         "evaluator_kind": "tofu",
         "selected_parameter_regex": TOFU_PARAMETER_REGEX,
@@ -90,7 +95,7 @@ BENCHMARKS = {
     "muse_news": {
         "split": "News",
         "retain_split": "retain1",
-        "experiment_config": "unlearn/muse/default",
+        "experiment_config": "unlearn/muse/gu_matrix",
         "model": {
             "config": "Llama-2-7b-hf",
             "pretrained_model_name_or_path": "muse-bench/MUSE-News_target",
@@ -117,7 +122,7 @@ BENCHMARKS = {
     "muse_books": {
         "split": "Books",
         "retain_split": "retain1",
-        "experiment_config": "unlearn/muse/default",
+        "experiment_config": "unlearn/muse/gu_matrix",
         "model": {
             "config": "Llama-2-7b-hf",
             "pretrained_model_name_or_path": "muse-bench/MUSE-Books_target",
@@ -143,7 +148,7 @@ BENCHMARKS = {
     },
     "wmdp_cyber": {
         "split": "cyber",
-        "experiment_config": "unlearn/wmdp/default",
+        "experiment_config": "unlearn/wmdp/gu_matrix_cyber",
         "model": {
             "config": "zephyr-7b-beta",
             "pretrained_model_name_or_path": "HuggingFaceH4/zephyr-7b-beta",
@@ -208,6 +213,116 @@ BENCHMARKS = {
     },
 }
 
+COMMON_RUNTIME_ARGUMENTS = (
+    "trainer.args.seed={seed}",
+    "+trainer.args.data_seed={seed}",
+    "save_model_after_train=false",
+    "trainer.args.save_strategy=no",
+    "trainer.args.save_only_model=false",
+    "trainer.args.do_eval=true",
+    "trainer.args.eval_on_start=false",
+    "trainer.args.eval_strategy=no",
+    "trainer.args.report_to=none",
+)
+COMMON_GU_ARGUMENTS = (
+    "+trainer.method_args.gu.enabled=true",
+    '+trainer.method_args.gu.parameter_regex=["{parameter_regex}"]',
+    "+trainer.method_args.gu.retain_history_rank=8",
+    "+trainer.method_args.gu.projection_eps=1e-6",
+    "+trainer.method_args.gu.retain_filter=first_order",
+    "+trainer.method_args.gu.retain_budget=1e-4",
+    "+trainer.method_args.gu.backtracking_scales=[1.0,0.5,0.25,0.125]",
+    "+trainer.method_args.gu.diagnostics_path=gu_diagnostics.jsonl",
+)
+RMU_OVERRIDES = {
+    "tofu": (
+        "trainer.method_args.gamma=1.0",
+        "trainer.method_args.alpha=100.0",
+        "trainer.method_args.retain_loss_type=EMBED_DIFF",
+        "trainer.method_args.steering_coeff=6.5",
+        'trainer.method_args.module_regex="model[.]layers[.]31"',
+        'trainer.method_args.trainable_params_regex=["model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight"]',
+        "trainer.args.optim=adamw_torch",
+        "+trainer.args.adam_beta1=0.9",
+        "+trainer.args.adam_beta2=0.999",
+        "+trainer.args.adam_epsilon=1e-6",
+        "trainer.args.learning_rate=2e-4",
+        "trainer.args.weight_decay=0.0",
+        "+trainer.args.max_grad_norm=0.0",
+        "trainer.args.per_device_train_batch_size=1",
+        "trainer.args.per_device_eval_batch_size=1",
+        "trainer.args.gradient_accumulation_steps=4",
+        "+trainer.args.max_steps=-1",
+        "trainer.args.num_train_epochs=10.0",
+        "+trainer.args.lr_scheduler_type=constant",
+        "+trainer.args.warmup_steps=0",
+        "trainer.args.warmup_epochs=0.0",
+        "trainer.args.bf16=true",
+        "trainer.args.bf16_full_eval=true",
+        "+trainer.args.fp16=false",
+        "trainer.args.gradient_checkpointing=true",
+        "+trainer.args.gradient_checkpointing_kwargs.use_reentrant=false",
+        "trainer.args.logging_steps=1",
+    ),
+    "muse": (
+        "trainer.method_args.gamma=1.0",
+        "trainer.method_args.alpha=10.0",
+        "trainer.method_args.retain_loss_type=EMBED_DIFF",
+        "trainer.method_args.steering_coeff=6.5",
+        'trainer.method_args.module_regex="model[.]layers[.]7"',
+        'trainer.method_args.trainable_params_regex=["model[.]layers[.](5|6|7)[.]mlp[.]down_proj[.]weight"]',
+        "trainer.args.optim=adamw_torch",
+        "+trainer.args.adam_beta1=0.9",
+        "+trainer.args.adam_beta2=0.999",
+        "+trainer.args.adam_epsilon=1e-6",
+        "trainer.args.learning_rate=1e-3",
+        "trainer.args.weight_decay=0.0",
+        "+trainer.args.max_grad_norm=0.0",
+        "trainer.args.per_device_train_batch_size=4",
+        "trainer.args.per_device_eval_batch_size=1",
+        "trainer.args.gradient_accumulation_steps=1",
+        "+trainer.args.max_steps=-1",
+        "trainer.args.num_train_epochs=10.0",
+        "trainer.args.lr_scheduler_type=constant",
+        "+trainer.args.warmup_steps=0",
+        "+trainer.args.warmup_epochs=0.0",
+        "trainer.args.bf16=true",
+        "trainer.args.bf16_full_eval=true",
+        "+trainer.args.fp16=false",
+        "trainer.args.gradient_checkpointing=true",
+        "+trainer.args.gradient_checkpointing_kwargs.use_reentrant=false",
+        "trainer.args.logging_steps=1",
+    ),
+    "wmdp": (
+        "trainer.method_args.gamma=1.0",
+        "trainer.method_args.alpha=1200.0",
+        "trainer.method_args.retain_loss_type=EMBED_DIFF",
+        "trainer.method_args.steering_coeff=6.5",
+        'trainer.method_args.module_regex="model[.]layers[.]7"',
+        'trainer.method_args.trainable_params_regex=["model[.]layers[.](5|6|7)[.]mlp[.]down_proj[.]weight"]',
+        "trainer.args.optim=adamw_torch",
+        "+trainer.args.adam_beta1=0.9",
+        "+trainer.args.adam_beta2=0.999",
+        "+trainer.args.adam_epsilon=1e-6",
+        "trainer.args.learning_rate=5e-5",
+        "trainer.args.weight_decay=0.0",
+        "+trainer.args.max_grad_norm=0.0",
+        "trainer.args.per_device_train_batch_size=4",
+        "trainer.args.per_device_eval_batch_size=1",
+        "trainer.args.gradient_accumulation_steps=1",
+        "trainer.args.max_steps=150",
+        "+trainer.args.lr_scheduler_type=constant",
+        "+trainer.args.warmup_steps=0",
+        "+trainer.args.warmup_epochs=0.0",
+        "trainer.args.bf16=true",
+        "trainer.args.bf16_full_eval=true",
+        "+trainer.args.fp16=false",
+        "trainer.args.gradient_checkpointing=false",
+        "+trainer.args.gradient_checkpointing_kwargs.use_reentrant=false",
+        "trainer.args.logging_steps=1",
+    ),
+}
+
 
 def _make_job(method, benchmark, seed, stage):
     job_id = f"{method}__{benchmark}__seed{seed}"
@@ -268,3 +383,117 @@ def build_manifest(seed=0):
         "jobs": jobs,
         "not_applicable": not_applicable,
     }
+
+
+def _benchmark_family(job):
+    return job["benchmark"].split("_", 1)[0]
+
+
+def _benchmark_arguments(job):
+    provenance = job["provenance"]
+    family = _benchmark_family(job)
+    if family == "tofu":
+        retain_logs = (
+            SHARED_ROOT
+            / "saves/eval"
+            / f'tofu_Llama-3.1-8B-Instruct_{job["retain_split"]}'
+            / "TOFU_EVAL.json"
+        )
+        return (
+            f'forget_split={job["split"]}',
+            f'retain_split={job["retain_split"]}',
+            f'holdout_split={job["holdout_split"]}',
+            f"retain_logs_path={retain_logs}",
+            f"tofu_dataset_revision={provenance['dataset']['revision']}",
+        )
+    if family == "muse":
+        split = job["split"]
+        reference = provenance["reference_model"]
+        reference_snapshot = (
+            Path("/root/.cache/huggingface/hub")
+            / f"models--muse-bench--MUSE-{split}_retrain"
+            / "snapshots"
+            / reference["revision"]
+        )
+        retain_logs = (
+            SHARED_ROOT
+            / "saves/eval"
+            / f"muse_Llama-2-7b-hf_{split}_retrain"
+            / "MUSE_EVAL.json"
+        )
+        return (
+            f"data_split={split}",
+            f"dataset_revision={provenance['dataset']['revision']}",
+            f"reference_model_artifact={reference['artifact']}",
+            f"reference_model_revision={reference['revision']}",
+            f"reference_model_snapshot={reference_snapshot}",
+            f"retain_logs_path={retain_logs}",
+        )
+    return ("data_split=cyber",)
+
+
+def build_command(job, output_dir):
+    """Build one checkpoint-free train-plus-live-evaluation command."""
+    provenance = job["provenance"]
+    command = [
+        sys.executable,
+        "src/train.py",
+        "--config-name=unlearn.yaml",
+        f'experiment={job["experiment_config"]}',
+        f'trainer={job["trainer_config"]}',
+        f'task_name={job["job_id"]}',
+        f"paths.output_dir={output_dir}",
+        (
+            "model.model_args.pretrained_model_name_or_path="
+            f'{provenance["model"]["artifact"]}'
+        ),
+        f'model.model_args.revision={provenance["model"]["revision"]}',
+        (
+            "model.tokenizer_args.pretrained_model_name_or_path="
+            f'{provenance["tokenizer"]["artifact"]}'
+        ),
+        f'model.tokenizer_args.revision={provenance["tokenizer"]["revision"]}',
+        *_benchmark_arguments(job),
+        *(
+            argument.format(seed=job["seed"])
+            for argument in COMMON_RUNTIME_ARGUMENTS
+        ),
+        *(
+            argument.format(parameter_regex=job["selected_parameter_regex"])
+            for argument in COMMON_GU_ARGUMENTS
+        ),
+    ]
+    if job["method"] == "RMU":
+        command.extend(RMU_OVERRIDES[_benchmark_family(job)])
+    return command
+
+
+def _manifest_dry_run(seed):
+    manifest = build_manifest(seed=seed)
+    jobs = []
+    for job in manifest["jobs"]:
+        rendered = deepcopy(job)
+        rendered["command"] = build_command(job, job["output_dir"])
+        jobs.append(rendered)
+    manifest["jobs"] = jobs
+    return manifest
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    manifest_parser = subparsers.add_parser("manifest")
+    manifest_parser.add_argument("--seed", type=int, default=0)
+    manifest_parser.add_argument("--seed0", action="store_const", const=0, dest="seed")
+    manifest_parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args(argv)
+
+    if args.command == "manifest":
+        payload = _manifest_dry_run(args.seed) if args.dry_run else build_manifest(args.seed)
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    raise AssertionError(f"unsupported command: {args.command}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

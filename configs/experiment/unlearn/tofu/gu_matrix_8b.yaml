@@ -1,0 +1,83 @@
+# @package _global_
+
+defaults:
+  - override /model: Llama-3.1-8B-Instruct
+  - override /trainer: GradAscent
+  - override /data: unlearn
+  - override /data/datasets@data.forget: TOFU_QA_forget
+  - override /data/datasets@data.retain: TOFU_QA_retain
+  - override /eval: tofu
+  - _self_
+
+forget_split: forget10
+retain_split: retain90
+holdout_split: holdout10
+retain_logs_path: /workspace/re/GU/geo-unlearning/saves/eval/tofu_Llama-3.1-8B-Instruct_retain90/TOFU_EVAL.json
+tofu_dataset_revision: 324592d84ae4f482ac7249b9285c2ecdb53e3a68
+question_key: question
+
+model:
+  model_args:
+    pretrained_model_name_or_path: open-unlearning/tofu_Llama-3.1-8B-Instruct_full
+    revision: 1a5c5b1a557f8c99bdadecd5168ebd03f640b00e
+  tokenizer_args:
+    pretrained_model_name_or_path: open-unlearning/tofu_Llama-3.1-8B-Instruct_full
+    revision: 1a5c5b1a557f8c99bdadecd5168ebd03f640b00e
+
+data:
+  anchor: forget
+  forget:
+    TOFU_QA_forget:
+      args:
+        hf_args:
+          name: ${forget_split}
+          split: train
+          path: locuslab/TOFU
+          revision: ${tofu_dataset_revision}
+  retain:
+    TOFU_QA_retain:
+      args:
+        hf_args:
+          name: ${retain_split}
+          split: train
+          path: locuslab/TOFU
+          revision: ${tofu_dataset_revision}
+
+eval:
+  tofu:
+    forget_split: ${forget_split}
+    holdout_split: ${holdout_split}
+    retain_logs_path: ${retain_logs_path}
+    overwrite: true
+    question_key: ${question_key}
+    metrics:
+      forget_Q_A_gibberish:
+        classifier_model_args:
+          revision: 76672dd7d3575f68ab980705bcec975cc62de71c
+        classifier_tokenization_args:
+          revision: 76672dd7d3575f68ab980705bcec975cc62de71c
+
+trainer:
+  args:
+    warmup_epochs: 1.0
+    learning_rate: 1.0e-5
+    weight_decay: 0.01
+    num_train_epochs: 10
+
+protocol:
+  benchmark: tofu
+  source_provenance:
+    model:
+      artifact: ${model.model_args.pretrained_model_name_or_path}
+      revision: ${model.model_args.revision}
+    tokenizer:
+      artifact: ${model.tokenizer_args.pretrained_model_name_or_path}
+      revision: ${model.tokenizer_args.revision}
+    dataset:
+      artifact: locuslab/TOFU
+      revision: ${tofu_dataset_revision}
+    gibberish_classifier:
+      artifact: madhurjindal/autonlp-Gibberish-Detector-492513457
+      revision: 76672dd7d3575f68ab980705bcec975cc62de71c
+
+task_name: gu_matrix_tofu
