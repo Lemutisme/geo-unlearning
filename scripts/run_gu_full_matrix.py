@@ -192,6 +192,18 @@ BENCHMARKS = {
                 "subset": "wikitext-2-raw-v1",
                 "revision": "b08601e04326c79dfdd32d625aee71d232d685c3",
             },
+            "evaluation_datasets": {
+                "wmdp_cyber": {
+                    "artifact": "cais/wmdp",
+                    "revision": "7125571f22f032c56415e7980f48d877dd830ff8",
+                    "cache_builder_sha": ("7125571f22f032c56415e7980f48d877dd830ff8"),
+                },
+                "mmlu": {
+                    "artifact": "hails/mmlu_no_train",
+                    "revision": "b2e1ec9aa795adafe68e8e983248dbd4b52a1c60",
+                    "cache_builder_sha": ("b2e1ec9aa795adafe68e8e983248dbd4b52a1c60"),
+                },
+            },
         },
     },
 }

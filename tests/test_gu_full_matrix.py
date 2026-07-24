@@ -368,6 +368,18 @@ def test_every_job_keeps_its_shipped_trainer_and_pinned_provenance_explicit():
                 "subset": "wikitext-2-raw-v1",
                 "revision": "b08601e04326c79dfdd32d625aee71d232d685c3",
             },
+            "evaluation_datasets": {
+                "wmdp_cyber": {
+                    "artifact": "cais/wmdp",
+                    "revision": "7125571f22f032c56415e7980f48d877dd830ff8",
+                    "cache_builder_sha": ("7125571f22f032c56415e7980f48d877dd830ff8"),
+                },
+                "mmlu": {
+                    "artifact": "hails/mmlu_no_train",
+                    "revision": "b2e1ec9aa795adafe68e8e983248dbd4b52a1c60",
+                    "cache_builder_sha": ("b2e1ec9aa795adafe68e8e983248dbd4b52a1c60"),
+                },
+            },
         },
     }
 
@@ -425,3 +437,43 @@ def test_wmdp_corpus_paths_are_runtime_reachable_and_content_addressed():
             if path not in observed_hashes:
                 observed_hashes[path] = hashlib.sha256(path.read_bytes()).hexdigest()
             assert observed_hashes[path] == source["sha256"]
+
+
+def test_wmdp_evaluation_dataset_provenance_matches_cached_builders():
+    wmdp_job = next(
+        job
+        for job in load_registry().build_manifest()["jobs"]
+        if job["benchmark"] == "wmdp_cyber"
+    )
+    datasets = wmdp_job["provenance"]["evaluation_datasets"]
+
+    assert datasets == {
+        "wmdp_cyber": {
+            "artifact": "cais/wmdp",
+            "revision": "7125571f22f032c56415e7980f48d877dd830ff8",
+            "cache_builder_sha": "7125571f22f032c56415e7980f48d877dd830ff8",
+        },
+        "mmlu": {
+            "artifact": "hails/mmlu_no_train",
+            "revision": "b2e1ec9aa795adafe68e8e983248dbd4b52a1c60",
+            "cache_builder_sha": "b2e1ec9aa795adafe68e8e983248dbd4b52a1c60",
+        },
+    }
+
+    cache_root = Path("/root/.cache/huggingface/datasets")
+    wmdp_builder = (
+        cache_root
+        / "cais___wmdp"
+        / "wmdp-cyber"
+        / "0.0.0"
+        / datasets["wmdp_cyber"]["cache_builder_sha"]
+    )
+    assert wmdp_builder.is_dir()
+
+    mmlu_builders = sorted(
+        (cache_root / "hails___mmlu_no_train").glob(
+            f"*/0.0.0/{datasets['mmlu']['cache_builder_sha']}"
+        )
+    )
+    assert mmlu_builders
+    assert all(path.is_dir() for path in mmlu_builders)
