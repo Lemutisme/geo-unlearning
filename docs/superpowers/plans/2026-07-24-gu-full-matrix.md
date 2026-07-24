@@ -20,7 +20,7 @@
 - Create `configs/experiment/unlearn/wmdp/gu_matrix_cyber.yaml`: pinned WMDP-Cyber live-eval defaults.
 - Create `saves/exp/GU_FULL_MATRIX_20260724/manifest.json` only after preflight passes.
 
-### Task 1: Exact Compatibility Registry and 63-Job Manifest
+### Task 1: Exact Compatibility Registry and 60-Job Manifest
 
 **Files:**
 - Create: `scripts/run_gu_full_matrix.py`
@@ -28,8 +28,8 @@
 
 - [ ] **Step 1: Write the failing registry tests**
 
-Define tests for exact methods, settings, DPO N/A records, seed identities, and
-63 compatible jobs:
+Define tests for exact methods, settings, DPO N/A records, seed identity, and
+60 compatible jobs:
 
 ```python
 def test_seed_zero_manifest_has_exact_compatible_matrix():
@@ -37,15 +37,18 @@ def test_seed_zero_manifest_has_exact_compatible_matrix():
     compatible = [job for job in manifest["jobs"] if job["status"] == "pending"]
     na_rows = manifest["not_applicable"]
 
-    assert len(compatible) == 63
-    assert len({job["job_id"] for job in compatible}) == 63
-    assert {job["method"] for job in compatible} == set(matrix.METHODS)
+    assert len(compatible) == 60
+    assert len({job["job_id"] for job in compatible}) == 60
+    assert {job["method"] for job in compatible} == set(matrix.METHODS) - {"DPO"}
     assert {(row["method"], row["benchmark"]) for row in na_rows} == {
+        ("DPO", "tofu_forget01"),
+        ("DPO", "tofu_forget05"),
+        ("DPO", "tofu_forget10"),
         ("DPO", "muse_news"),
         ("DPO", "muse_books"),
         ("DPO", "wmdp_cyber"),
     }
-    assert all(row["reason"] == "missing_shipped_preference_pairs" for row in na_rows)
+    assert all(row["reason"] == "missing_shipped_idk_artifact" for row in na_rows)
 ```
 
 Require job IDs to encode method, benchmark, split, and seed without path
@@ -85,8 +88,10 @@ GENERAL_METHODS = (
 
 Store benchmark-specific model, experiment, split, evaluator, selected regex,
 and provenance values in one `BENCHMARK_CONFIG` mapping. Add RMU to every
-benchmark and DPO only to TOFU. `build_manifest(seed)` returns sorted JSON-safe
-records and N/A rows.
+benchmark and record DPO as N/A on all six because the shipped
+`./data/idk.jsonl` is absent. `build_manifest(seed=0)` returns sorted JSON-safe
+records and N/A rows and rejects every nonzero or non-integer seed. Task 4 owns
+all seed-1/2 expansion from valid seed-0 parents.
 
 - [ ] **Step 4: Verify GREEN**
 
@@ -134,8 +139,9 @@ def test_commands_train_and_evaluate_live_without_persistence(tmp_path):
         assert "trainer.method_args.gu.retain_filter=first_order" in rendered
 ```
 
-Assert the exact benchmark regex, model, split, seed, objective trainer, and DPO
-TOFU experiment. Assert WMDP commands and resolved configs contain no Bio token.
+Assert the exact benchmark regex, model, split, seed, and objective trainer.
+Assert no DPO command exists, and WMDP commands and resolved configs contain no
+Bio token.
 
 - [ ] **Step 2: Verify RED**
 
@@ -159,7 +165,7 @@ selected objective trainer's native hyperparameters intact. Commands add only:
 - `report_to=none` and deterministic sampler settings already required by the
   shipped benchmark.
 
-Use `+` only for keys absent after Hydra composition. Compose all 63 commands in
+Use `+` only for keys absent after Hydra composition. Compose all 60 commands in
 tests with Hydra and require no unresolved values.
 
 RMU uses `trainer=RMU` and the completed branch's benchmark-specific module,
@@ -173,7 +179,7 @@ pytest tests/test_gu_full_matrix.py -k 'command or hydra or no_save' -q
 python scripts/run_gu_full_matrix.py manifest --seed 0 --dry-run
 ```
 
-Expected: all 63 commands resolve; dry-run creates no output.
+Expected: all 60 commands resolve; dry-run creates no output.
 
 - [ ] **Step 5: Commit**
 
@@ -335,7 +341,7 @@ def test_analyzer_renders_all_benchmark_tables(tmp_path):
     assert markdown.count("| Method | ES Re. ↑ | ES Un. ↓ | Priv. ↑ | MU ↑") == 3
     assert markdown.count("| Method | VerbMem ↓ | KnowMem ↓") == 2
     assert "| Method | WMDP-Cyber ↓ | MMLU ↑" in markdown
-    assert "missing_shipped_preference_pairs" in markdown
+    assert "missing_shipped_idk_artifact" in markdown
     assert "Bio" not in report["wmdp"]["provenance_scope"]
 ```
 
@@ -395,7 +401,7 @@ python scripts/run_gu_full_matrix.py manifest --seed 0 --output-root saves/exp/G
 python scripts/run_gu_full_matrix.py preflight --manifest saves/exp/GU_FULL_MATRIX_20260724/manifest.json
 ```
 
-Require 63 jobs, 3 DPO N/A rows, all Hydra commands resolved, cache/provenance
+Require 60 jobs, 6 DPO N/A rows, all Hydra commands resolved, cache/provenance
 checks green, and no output job directory yet.
 
 - [ ] **Step 3: Run representative smokes on dev0**
@@ -404,8 +410,9 @@ checks green, and no output job directory yet.
 CUDA_VISIBLE_DEVICES=0 python scripts/run_gu_full_matrix.py smoke --manifest saves/exp/GU_FULL_MATRIX_20260724/manifest.json
 ```
 
-Run one smoke per method plus DPO/RMU benchmark-specific smokes. Preserve every
-failure and block only its compatibility class.
+Run one smoke per compatible method plus RMU benchmark-specific smokes. DPO has
+no runnable smoke. Preserve every failure and block only its compatibility
+class.
 
 - [ ] **Step 4: Launch persistent queue**
 
@@ -432,7 +439,7 @@ Expected: exactly one matrix process on dev0 and one job in `running` state.
 
 - [ ] **Step 6: Monitor to Stage-1 completion and expand seeds**
 
-Do not fabricate a completed table before all 63 seed-0 jobs are terminal. After
+Do not fabricate a completed table before all 60 seed-0 jobs are terminal. After
 Stage 1:
 
 ```bash
@@ -448,4 +455,3 @@ python scripts/analyze_gu_full_matrix.py --root saves/exp/GU_FULL_MATRIX_2026072
 
 Compare every rendered scalar to its raw endpoint and resource record before
 reporting results.
-

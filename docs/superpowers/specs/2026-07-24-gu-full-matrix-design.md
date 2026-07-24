@@ -105,14 +105,15 @@ The following nine methods run on all six task settings:
 
 RMU runs on all six settings using its existing benchmark-specific recipes.
 
-DPO runs only on the three TOFU settings because only TOFU provides the shipped
-preference-pair semantics. DPO on MUSE and WMDP is recorded as N/A with the
-reason `missing_shipped_preference_pairs`.
+DPO is N/A on all six settings. Its shipped TOFU dataset adapter requires
+`./data/idk.jsonl`, but that artifact is absent from the repository, all current
+worktrees, and upstream HEAD. No substitute artifact or hash is invented. Every
+DPO cell records the reason `missing_shipped_idk_artifact` and the missing path.
 
-The seed-0 stage therefore contains 63 training jobs:
+The seed-0 stage therefore contains 60 training jobs:
 
 ```text
-9 general methods * 6 settings + RMU * 6 settings + DPO * 3 settings = 63
+9 general methods * 6 settings + RMU * 6 settings = 60
 ```
 
 No adapter is invented merely to fill an N/A cell.
@@ -122,6 +123,7 @@ No adapter is invented merely to fill an N/A cell.
 ### Stage 1
 
 Run every compatible method with seed 0.
+`build_manifest` creates only this seed-0 registry and rejects every other seed.
 
 ### Stage 2
 
@@ -136,7 +138,8 @@ Run seeds 1 and 2 for every Stage-1 method satisfying all validity conditions:
 
 Validity does not depend on whether the endpoint result is competitive. Every
 valid method is replicated, not only the seed-0 winner. Failed seeds are never
-replaced.
+replaced. Task 4 creates these jobs only by expanding valid seed-0 parents; it
+does not call the Stage-1 manifest builder with seeds 1 or 2.
 
 ## Job Lifecycle
 
@@ -210,10 +213,10 @@ Before creating full job outputs:
 5. verify no-save flags and the artifact allowlist;
 6. verify dev0 is free.
 
-Run one representative smoke for every method. DPO and RMU receive additional
-benchmark-specific smokes because their data and model paths differ. A failed
-smoke blocks only the corresponding method/benchmark compatibility class and is
-reported before Stage 1.
+Run one representative smoke for every compatible method. RMU receives
+additional benchmark-specific smokes because its data and model paths differ.
+DPO has no runnable smoke. A failed smoke blocks only the corresponding
+method/benchmark compatibility class and is reported before Stage 1.
 
 ## Failure Semantics
 
@@ -295,7 +298,7 @@ These are scheduling estimates, not result claims.
 
 ## Acceptance Criteria
 
-- All 63 Stage-1 compatible jobs reach a terminal recorded state.
+- All 60 Stage-1 compatible jobs reach a terminal recorded state.
 - Every valid Stage-1 job receives exactly seeds 1 and 2.
 - No two jobs overlap on dev0.
 - No forbidden model/checkpoint/state artifact exists.
