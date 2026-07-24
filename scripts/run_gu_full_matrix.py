@@ -5,6 +5,7 @@ from copy import deepcopy
 
 SCHEMA_VERSION = 1
 PROTOCOL = "gu_full_matrix_20260724"
+SEED_STAGES = {0: "stage1", 1: "stage2", 2: "stage2"}
 
 METHODS = (
     "GradAscent",
@@ -41,6 +42,24 @@ TOFU_MODEL = {
         "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
     ),
 }
+TOFU_PROVENANCE = {
+    "model": {
+        "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+        "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+    },
+    "tokenizer": {
+        "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+        "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+    },
+    "dataset": {
+        "artifact": "locuslab/TOFU",
+        "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68",
+    },
+}
+MUSE_TOKENIZER_PROVENANCE = {
+    "artifact": "NousResearch/Llama-2-7b-hf",
+    "revision": "8efe6c9b93655b934e27bd9981e3ec13e55aee9d",
+}
 
 BENCHMARKS = {
     "tofu_forget01": {
@@ -51,6 +70,7 @@ BENCHMARKS = {
         "model": TOFU_MODEL,
         "evaluator_kind": "tofu",
         "selected_parameter_regex": TOFU_PARAMETER_REGEX,
+        "provenance": TOFU_PROVENANCE,
     },
     "tofu_forget05": {
         "split": "forget05",
@@ -60,6 +80,7 @@ BENCHMARKS = {
         "model": TOFU_MODEL,
         "evaluator_kind": "tofu",
         "selected_parameter_regex": TOFU_PARAMETER_REGEX,
+        "provenance": TOFU_PROVENANCE,
     },
     "tofu_forget10": {
         "split": "forget10",
@@ -69,6 +90,7 @@ BENCHMARKS = {
         "model": TOFU_MODEL,
         "evaluator_kind": "tofu",
         "selected_parameter_regex": TOFU_PARAMETER_REGEX,
+        "provenance": TOFU_PROVENANCE,
     },
     "muse_news": {
         "split": "News",
@@ -80,6 +102,13 @@ BENCHMARKS = {
         },
         "evaluator_kind": "muse",
         "selected_parameter_regex": SEVEN_B_PARAMETER_REGEX,
+        "provenance": {
+            "model": {
+                "artifact": "muse-bench/MUSE-News_target",
+                "revision": "a2f39769e9a0b98ec1cdd12f65e9962502208935",
+            },
+            "tokenizer": MUSE_TOKENIZER_PROVENANCE,
+        },
     },
     "muse_books": {
         "split": "Books",
@@ -91,6 +120,13 @@ BENCHMARKS = {
         },
         "evaluator_kind": "muse",
         "selected_parameter_regex": SEVEN_B_PARAMETER_REGEX,
+        "provenance": {
+            "model": {
+                "artifact": "muse-bench/MUSE-Books_target",
+                "revision": "c8dd3fb23a726762ec66d277933c7cff6767f3c2",
+            },
+            "tokenizer": MUSE_TOKENIZER_PROVENANCE,
+        },
     },
     "wmdp_cyber": {
         "split": "cyber",
@@ -101,28 +137,45 @@ BENCHMARKS = {
         },
         "evaluator_kind": "lm_eval",
         "selected_parameter_regex": SEVEN_B_PARAMETER_REGEX,
+        "provenance": {
+            "model": {
+                "artifact": "HuggingFaceH4/zephyr-7b-beta",
+                "revision": "892b3d7a7b1cf10c7a701c60881cd93df615734c",
+            },
+            "tokenizer": {
+                "artifact": "HuggingFaceH4/zephyr-7b-beta",
+                "revision": "892b3d7a7b1cf10c7a701c60881cd93df615734c",
+            },
+            "forget_corpus": {
+                "sha256": (
+                    "b5d339ed7f42a9e0dfc00708e516b288"
+                    "363a87512ec9cbdad8703f0ea8f5ea9a"
+                ),
+                "upstream": (
+                    "cais/wmdp-corpora@daf89fa9b618b63a624228061a9cebacca88009c"
+                ),
+            },
+            "utility_corpus": {
+                "artifact": "wikitext",
+                "subset": "wikitext-2-raw-v1",
+                "revision": "b08601e04326c79dfdd32d625aee71d232d685c3",
+            },
+        },
     },
 }
 
-UNPINNED_PROVENANCE = {
-    "model_revision": None,
-    "tokenizer_revision": None,
-    "dataset_revision": None,
-    "local_corpus_sha256": None,
-}
 
-
-def _make_job(method, benchmark, seed):
+def _make_job(method, benchmark, seed, stage):
     job_id = f"{method}__{benchmark}__seed{seed}"
     job = {
-        "id": job_id,
+        "job_id": job_id,
         "method": method,
         "benchmark": benchmark,
         "seed": seed,
+        "stage": stage,
         "status": "pending",
         "trainer_config": method,
         **deepcopy(BENCHMARKS[benchmark]),
-        "provenance": dict(UNPINNED_PROVENANCE),
         "output_dir": f"jobs/{job_id}",
     }
     if method == "DPO":
@@ -132,6 +185,12 @@ def _make_job(method, benchmark, seed):
 
 def build_manifest(seed=0):
     """Return the deterministic manifest for one GU matrix seed."""
+    if type(seed) is not int:
+        raise TypeError("seed must be an int")
+    if seed not in SEED_STAGES:
+        raise ValueError("seed must be one of 0, 1, or 2")
+    stage = SEED_STAGES[seed]
+
     compatible_pairs = [
         *(
             (method, benchmark)
@@ -146,8 +205,11 @@ def build_manifest(seed=0):
         ),
     ]
     jobs = sorted(
-        (_make_job(method, benchmark, seed) for method, benchmark in compatible_pairs),
-        key=lambda job: job["id"],
+        (
+            _make_job(method, benchmark, seed, stage)
+            for method, benchmark in compatible_pairs
+        ),
+        key=lambda job: job["job_id"],
     )
     not_applicable = sorted(
         (
@@ -165,7 +227,7 @@ def build_manifest(seed=0):
     return {
         "schema_version": SCHEMA_VERSION,
         "protocol": PROTOCOL,
-        "stage": f"seed{seed}",
+        "stage": stage,
         "seed": seed,
         "jobs": jobs,
         "not_applicable": not_applicable,
