@@ -215,8 +215,8 @@ Before creating full job outputs:
 
 Run one representative smoke for every compatible method. RMU receives
 additional benchmark-specific smokes because its data and model paths differ.
-DPO has no runnable smoke. A failed smoke blocks only the corresponding
-method/benchmark compatibility class and is reported before Stage 1.
+A failed smoke blocks only the corresponding method/benchmark compatibility
+class and is reported before Stage 1.
 
 ## Failure Semantics
 

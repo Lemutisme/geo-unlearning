@@ -140,8 +140,7 @@ def test_commands_train_and_evaluate_live_without_persistence(tmp_path):
 ```
 
 Assert the exact benchmark regex, model, split, seed, and objective trainer.
-Assert no DPO command exists, and WMDP commands and resolved configs contain no
-Bio token.
+Assert WMDP commands and resolved configs contain no Bio token.
 
 - [ ] **Step 2: Verify RED**
 
@@ -410,9 +409,8 @@ checks green, and no output job directory yet.
 CUDA_VISIBLE_DEVICES=0 python scripts/run_gu_full_matrix.py smoke --manifest saves/exp/GU_FULL_MATRIX_20260724/manifest.json
 ```
 
-Run one smoke per compatible method plus RMU benchmark-specific smokes. DPO has
-no runnable smoke. Preserve every failure and block only its compatibility
-class.
+Run one smoke per compatible method plus RMU benchmark-specific smokes. Preserve
+every failure and block only its compatibility class.
 
 - [ ] **Step 4: Launch persistent queue**
 

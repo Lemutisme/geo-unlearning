@@ -279,6 +279,10 @@ def test_every_job_keeps_its_shipped_trainer_and_pinned_provenance_explicit():
             "artifact": "locuslab/TOFU",
             "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68",
         },
+        "gibberish_classifier": {
+            "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+            "revision": "76672dd7d3575f68ab980705bcec975cc62de71c",
+        },
     }
     expected_provenance = {
         "tofu_forget01": tofu_provenance,

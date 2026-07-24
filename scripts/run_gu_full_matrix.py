@@ -32,6 +32,10 @@ TOFU_MODEL = {
         "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
     ),
 }
+GIBBERISH_CLASSIFIER_PROVENANCE = {
+    "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+    "revision": "76672dd7d3575f68ab980705bcec975cc62de71c",
+}
 TOFU_PROVENANCE = {
     "model": {
         "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
@@ -45,14 +49,11 @@ TOFU_PROVENANCE = {
         "artifact": "locuslab/TOFU",
         "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68",
     },
+    "gibberish_classifier": GIBBERISH_CLASSIFIER_PROVENANCE,
 }
 MUSE_TOKENIZER_PROVENANCE = {
     "artifact": "NousResearch/Llama-2-7b-hf",
     "revision": "8efe6c9b93655b934e27bd9981e3ec13e55aee9d",
-}
-MUSE_GIBBERISH_PROVENANCE = {
-    "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
-    "revision": "76672dd7d3575f68ab980705bcec975cc62de71c",
 }
 
 BENCHMARKS = {
@@ -110,7 +111,7 @@ BENCHMARKS = {
                 "artifact": "muse-bench/MUSE-News_retrain",
                 "revision": "324ef49ee0a038078aba7d8de831edf57235c9b3",
             },
-            "gibberish_classifier": MUSE_GIBBERISH_PROVENANCE,
+            "gibberish_classifier": GIBBERISH_CLASSIFIER_PROVENANCE,
         },
     },
     "muse_books": {
@@ -137,7 +138,7 @@ BENCHMARKS = {
                 "artifact": "muse-bench/MUSE-Books_retrain",
                 "revision": "1d67430e4e8bdf2a65823740e909792519175ac2",
             },
-            "gibberish_classifier": MUSE_GIBBERISH_PROVENANCE,
+            "gibberish_classifier": GIBBERISH_CLASSIFIER_PROVENANCE,
         },
     },
     "wmdp_cyber": {
