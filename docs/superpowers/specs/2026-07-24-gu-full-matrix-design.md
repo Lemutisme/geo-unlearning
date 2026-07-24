@@ -1,0 +1,306 @@
+# GU Full GPU Matrix Design
+
+**Branch:** `feat/GU`
+**Execution device:** dev0 only
+**Environment:** `conda activate unlearning`
+
+## Goal
+
+Run a checkpoint-free, method-complete evaluation of the common realized-delta
+GU implementation across TOFU-8B, MUSE, and WMDP-Cyber, then produce traceable
+benchmark tables with endpoint, runtime, and peak-memory metrics.
+
+Only GU-enabled methods are trained. An untouched model is an evaluation
+reference, not another unlearning arm.
+
+## Claims Tested
+
+1. The common GU path is objective-agnostic across every shipped unlearning
+   trainer with a semantically valid benchmark recipe.
+2. GU produces useful forgetting/utility trade-offs under method-native shipped
+   hyperparameters without checkpoint persistence.
+
+The matrix is exploratory for seed 0 and confirmatory for every valid,
+non-degenerate method after seeds 1 and 2 complete.
+
+## Methods
+
+The matrix contains eleven GU-enabled methods:
+
+1. GradAscent
+2. GradDiff
+3. NPO
+4. DPO
+5. SimNPO
+6. RMU
+7. UNDIAL
+8. CEU
+9. WGA
+10. SatImp
+11. PDU
+
+Every method retains its shipped objective, data semantics, learning rate,
+training duration, optimizer, precision, and performance configuration. There
+is no cross-method LR/step normalization and no endpoint-based hyperparameter
+selection.
+
+RMU reuses the completed RMU branch's benchmark recipes and provenance, but it
+uses the common `feat/GU` implementation. The experiment must not mix results
+from two different GU implementations.
+
+## Fixed GU Protocol
+
+The GU configuration is held constant across methods within each benchmark:
+
+- `retain_history_rank: 8`;
+- `projection_eps: 1.0e-6`;
+- `retain_filter: first_order`;
+- answer-masked retain NLL as the protected functional;
+- parameters outside the selected regex are frozen;
+- one JSONL diagnostic record per optimizer update.
+
+The selected scopes use the existing benchmark protocols:
+
+- TOFU Llama-3.1-8B: `model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight`;
+- MUSE Llama-2-7B: `model[.]layers[.](5|6|7)[.]mlp[.]down_proj[.]weight`;
+- WMDP Zephyr-7B: `model[.]layers[.](5|6|7)[.]mlp[.]down_proj[.]weight`.
+
+These scopes are benchmark constants, not per-method hyperparameters. RMU uses
+the same selected scope as the other methods on a given benchmark.
+
+## Benchmarks
+
+### TOFU
+
+- Model: Llama-3.1-8B-Instruct.
+- Splits: forget01, forget05, forget10.
+- Corresponding retain and holdout splits: retain99/holdout01,
+  retain95/holdout05, retain90/holdout10.
+
+### MUSE
+
+- Model: shipped Llama-2-7B target model.
+- Splits: News and Books.
+
+### WMDP
+
+- Model: pinned Zephyr-7B checkpoint.
+- Split: Cyber only.
+- Bio is outside this protocol and must not enter commands, files, metrics, or
+  claims.
+
+## Compatibility Matrix
+
+The following nine methods run on all six task settings:
+
+- GradAscent
+- GradDiff
+- NPO
+- SimNPO
+- UNDIAL
+- CEU
+- WGA
+- SatImp
+- PDU
+
+RMU runs on all six settings using its existing benchmark-specific recipes.
+
+DPO runs only on the three TOFU settings because only TOFU provides the shipped
+preference-pair semantics. DPO on MUSE and WMDP is recorded as N/A with the
+reason `missing_shipped_preference_pairs`.
+
+The seed-0 stage therefore contains 63 training jobs:
+
+```text
+9 general methods * 6 settings + RMU * 6 settings + DPO * 3 settings = 63
+```
+
+No adapter is invented merely to fill an N/A cell.
+
+## Seed Policy
+
+### Stage 1
+
+Run every compatible method with seed 0.
+
+### Stage 2
+
+Run seeds 1 and 2 for every Stage-1 method satisfying all validity conditions:
+
+- finite optimizer state, gradients, proposal, correction, and endpoint values;
+- one GU projection per optimizer update;
+- at least one selected parameter changes over the run;
+- no erroneous zero-step, wrong-sign, or rejection event;
+- complete endpoint and resource schemas;
+- no forbidden persistence artifact.
+
+Validity does not depend on whether the endpoint result is competitive. Every
+valid method is replicated, not only the seed-0 winner. Failed seeds are never
+replaced.
+
+## Job Lifecycle
+
+Each job loads a fresh model and completes training and evaluation in one
+process:
+
+```text
+load pinned model and tokenizer
+  -> train GU on dev0
+  -> evaluate the live in-memory model
+  -> write endpoints, diagnostics, and resources
+  -> audit artifacts
+  -> release model and GPU memory
+```
+
+The job must not save a model, checkpoint, optimizer, scheduler, RNG, callback,
+or Trainer state. Evaluation cannot depend on reloading a trained model from
+disk.
+
+## Persistent Local Queue
+
+The run root is:
+
+```text
+saves/exp/GU_FULL_MATRIX_20260724/
+```
+
+It contains:
+
+```text
+manifest.json
+queue_state.json
+queue.log
+jobs/<job_id>/
+GU_FULL_RAW.json
+GU_FULL_TABLES.md
+GU_FULL_REPORT.md
+```
+
+The queue is local and binds every training subprocess to
+`CUDA_VISIBLE_DEVICES=0`. It runs one job at a time and checks that dev0 uses
+less than 500 MiB before launching another job.
+
+Job states are:
+
+```text
+pending -> running -> completed
+                   -> invalid_scientific
+                   -> failed_infrastructure
+```
+
+Every transition is written atomically to `queue_state.json`. A restarted queue
+reconciles a `running` job against its process and evidence files before
+continuing.
+
+Scientific failures include nonfinite state, OOM, GU rejection, wrong-sign
+progress, invalid zero-step behavior, incomplete endpoints, and contract
+violations. They are preserved and are not retried.
+
+An infrastructure failure may be retried once with the identical command. No
+retry changes a seed, hyperparameter, data order, model revision, or method.
+
+## Preflight and Smoke Gates
+
+Before creating full job outputs:
+
+1. resolve every Hydra command;
+2. verify method and dataset contracts;
+3. verify model, tokenizer, dataset revisions, and local corpus hashes;
+4. verify every referenced model blob when the cache is content-addressed;
+5. verify no-save flags and the artifact allowlist;
+6. verify dev0 is free.
+
+Run one representative smoke for every method. DPO and RMU receive additional
+benchmark-specific smokes because their data and model paths differ. A failed
+smoke blocks only the corresponding method/benchmark compatibility class and is
+reported before Stage 1.
+
+## Failure Semantics
+
+- A job failure never silently launches a modified replacement.
+- OOM is a scientific/configuration failure for the shipped recipe, not an
+  invitation to shrink the method.
+- Cache corruption or host I/O failure is infrastructure evidence and is kept
+  separate from method validity.
+- A failed benchmark reference gate blocks that benchmark's jobs.
+- The queue continues past an individual invalid method so the complete matrix
+  remains observable.
+
+## Endpoint Tables
+
+### TOFU
+
+Produce one table for each forget split:
+
+| Method | ES Re. ↑ | ES Un. ↓ | Priv. ↑ | MU ↑ | wall-clock | peak mem |
+|---|---:|---:|---:|---:|---:|---:|
+
+### MUSE
+
+Produce one table for News and one for Books:
+
+| Method | VerbMem ↓ | KnowMem ↓ | Extraction ↓ | Privacy/MIA | Retain utility ↑ | wall-clock | peak mem |
+|---|---:|---:|---:|---:|---:|---:|---:|
+
+### WMDP
+
+Produce the Cyber-only table:
+
+| Method | WMDP-Cyber ↓ | MMLU ↑ | wall-clock | peak mem |
+|---|---:|---:|---:|---:|
+
+Three-seed results are reported as mean ± sample standard deviation. Invalid or
+missing seeds are listed explicitly and never replaced. DPO N/A cells retain
+their compatibility reason.
+
+## Raw-to-Table Integrity
+
+Every displayed scalar must resolve to:
+
+- an endpoint JSON field;
+- a method/split/seed manifest identity;
+- a finite/resource/diagnostic sidecar;
+- the exact model and data provenance;
+- the originating job directory.
+
+The analyzer rejects duplicate seeds, mismatched methods, wrong benchmark
+schemas, incomplete valid sets, nonfinite values, forbidden WMDP-Bio fields,
+and summary/raw discrepancies.
+
+## Resource Metrics
+
+Each job records:
+
+- training seconds;
+- evaluation seconds;
+- end-to-end wall-clock seconds;
+- peak allocated CUDA memory;
+- peak reserved CUDA memory;
+- optimizer update count;
+- GU projection count;
+- zero-step count;
+- applied-scale distribution;
+- correction ratio and maximum final retain violation.
+
+The table's `wall-clock` is end-to-end job time. `peak mem` is peak allocated
+CUDA memory unless the table explicitly labels another source.
+
+## Estimated Cost
+
+- Stage 1: approximately 18–30 dev0 GPU-hours.
+- Stage 2: up to approximately 36–60 additional dev0 GPU-hours.
+- Expected total: 2–4 days of uninterrupted single-GPU execution.
+
+These are scheduling estimates, not result claims.
+
+## Acceptance Criteria
+
+- All 63 Stage-1 compatible jobs reach a terminal recorded state.
+- Every valid Stage-1 job receives exactly seeds 1 and 2.
+- No two jobs overlap on dev0.
+- No forbidden model/checkpoint/state artifact exists.
+- Every completed job has exact endpoint, diagnostics, resource, and provenance
+  evidence.
+- The analyzer can regenerate every table from raw files deterministically.
+- Report prose distinguishes complete results, invalid scientific runs,
+  infrastructure failures, and N/A combinations.
