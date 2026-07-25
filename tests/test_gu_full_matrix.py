@@ -3,6 +3,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from collections.abc import Mapping
@@ -714,6 +715,30 @@ def test_tofu_rmu_intentionally_translates_branch_scope_to_common_gu_scope(tmp_p
     ]
 
 
+def test_tofu_and_muse_rmu_apply_branch_model_runtime_overrides_only(tmp_path):
+    jobs = [
+        job
+        for job in load_registry().build_manifest(seed=0)["jobs"]
+        if job["method"] == "RMU" and job["benchmark"] != "wmdp_cyber"
+    ]
+
+    assert len(jobs) == 5
+    for job in jobs:
+        command = load_registry().build_command(job, tmp_path / job["job_id"])
+        config = compose_command(command)
+        expected_backend = (
+            "flash_attention_2"
+            if job["benchmark"].startswith("tofu_")
+            else "sdpa"
+        )
+        assert (
+            f"model.model_args.attn_implementation={expected_backend}" in command
+        )
+        assert config.model.model_args.attn_implementation == expected_backend
+        assert config.model.model_args.use_cache is False
+        assert config.model.model_args.output_attentions is False
+
+
 def test_wmdp_rmu_uses_expressible_branch_recipe_and_declares_sampling_deviation(
     tmp_path,
 ):
@@ -915,12 +940,123 @@ def test_build_environment_enforces_wmdp_verified_offline_dataset_cache(monkeypa
     assert environment["HF_DATASETS_OFFLINE"] == "1"
     assert environment["HF_HUB_OFFLINE"] == "1"
     assert environment["HF_DATASETS_CACHE"] == "/dev/shm/ungu-hf-datasets-wmdp"
+    assert environment["HF_HUB_CACHE"] == "/dev/shm/ungu-hf-hub-wmdp"
     assert environment["HF_HOME"] == "/registered/model-cache"
     assert environment["MATRIX_CALLER_VALUE"] == "preserved"
     assert registry.build_environment(tofu_job) == dict(os.environ)
 
 
-def test_source_requirements_validate_all_registered_sources(monkeypatch):
+def fixture_content_manifest(path):
+    entries = []
+    for candidate in sorted(path.rglob("*")):
+        if not candidate.is_file():
+            continue
+        contents = candidate.read_bytes()
+        entries.append(
+            {
+                "path": candidate.relative_to(path).as_posix(),
+                "size": len(contents),
+                "sha256": hashlib.sha256(contents).hexdigest(),
+            }
+        )
+    payload = json.dumps(entries, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def test_dataset_cache_manifest_detects_copied_arrow_and_metadata_mutation(tmp_path):
+    registry = load_registry()
+    source = Path(
+        "/dev/shm/ungu-hf-datasets-wmdp/cais___wmdp/wmdp-cyber/0.0.0/"
+        "7125571f22f032c56415e7980f48d877dd830ff8"
+    )
+    copied = tmp_path / "wmdp-cache"
+    shutil.copytree(source, copied)
+    requirement = {
+        "kind": "dataset_cache",
+        "source_name": "wmdp_cyber_eval_cache",
+        "path": str(copied),
+        "content_manifest_sha256": fixture_content_manifest(copied),
+    }
+    memo = {}
+
+    assert registry.validate_content_requirement(requirement, memo) == requirement[
+        "content_manifest_sha256"
+    ]
+    arrow_or_metadata = next(
+        path
+        for path in copied.rglob("*")
+        if path.is_file() and path.suffix in {".arrow", ".json"}
+    )
+    arrow_or_metadata.write_bytes(arrow_or_metadata.read_bytes() + b"tamper")
+    with pytest.raises(ValueError, match="wmdp_cyber_eval_cache"):
+        registry.validate_content_requirement(requirement, {})
+
+
+def test_hub_snapshot_validation_checks_blob_hash_and_symlink_containment(tmp_path):
+    registry = load_registry()
+    repository = tmp_path / "models--example--tiny"
+    blobs = repository / "blobs"
+    snapshot = repository / "snapshots" / ("a" * 40)
+    blobs.mkdir(parents=True)
+    snapshot.mkdir(parents=True)
+    blob_contents = b'{"model_type":"tiny"}'
+    blob_name = hashlib.sha256(blob_contents).hexdigest()
+    blob = blobs / blob_name
+    blob.write_bytes(blob_contents)
+    (snapshot / "config.json").symlink_to(Path("../../blobs") / blob_name)
+    requirement = {
+        "kind": "hub_snapshot",
+        "source_name": "example/tiny",
+        "path": str(snapshot),
+        "revision": "a" * 40,
+        "content_manifest_sha256": fixture_content_manifest(snapshot),
+    }
+
+    assert registry.validate_content_requirement(requirement, {}) == requirement[
+        "content_manifest_sha256"
+    ]
+    blob.write_bytes(blob_contents + b"tamper")
+    with pytest.raises(ValueError, match="example/tiny"):
+        registry.validate_content_requirement(requirement, {})
+
+    outside = tmp_path / "outside"
+    outside.write_bytes(blob_contents)
+    blob.write_bytes(blob_contents)
+    (snapshot / "config.json").unlink()
+    (snapshot / "config.json").symlink_to(outside)
+    with pytest.raises(ValueError, match="example/tiny"):
+        registry.validate_content_requirement(requirement, {})
+
+
+def test_content_fingerprint_memo_is_keyed_by_requirement_json(tmp_path, monkeypatch):
+    registry = load_registry()
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    (cache / "dataset_info.json").write_text("{}")
+    requirement = {
+        "kind": "dataset_cache",
+        "source_name": "shared_cache",
+        "path": str(cache),
+        "content_manifest_sha256": fixture_content_manifest(cache),
+    }
+    observed_calls = 0
+    original = registry.canonical_directory_fingerprint
+
+    def counting_fingerprint(path):
+        nonlocal observed_calls
+        observed_calls += 1
+        return original(path)
+
+    monkeypatch.setattr(registry, "canonical_directory_fingerprint", counting_fingerprint)
+    memo = {}
+    for _ in range(60):
+        registry.validate_content_requirement(requirement, memo)
+
+    assert observed_calls == 1
+    assert len(memo) == 1
+
+
+def test_source_requirements_register_content_manifests_and_missing_snapshot(monkeypatch):
     registry = load_registry()
     jobs = registry.build_manifest(seed=0)["jobs"]
     representatives = {}
@@ -932,7 +1068,17 @@ def test_source_requirements_validate_all_registered_sources(monkeypatch):
         requirements = registry.source_requirements(job)
         assert requirements["model"] == job["provenance"]["model"]
         assert requirements["tokenizer"] == job["provenance"]["tokenizer"]
-        assert registry.validate_sources(job) == requirements
+        content = requirements["content_requirements"]
+        assert content
+        for requirement in content:
+            assert requirement["kind"] in {"dataset_cache", "hub_snapshot"}
+            assert requirement["source_name"]
+            assert Path(requirement["path"]).is_absolute()
+            expected = requirement["content_manifest_sha256"]
+            if Path(requirement["path"]).is_dir():
+                assert re.fullmatch(r"[0-9a-f]{64}", expected)
+            else:
+                assert expected is None
         if job["benchmark"].startswith(("tofu_", "muse_")):
             retain_log = requirements["retain_log"]
             assert Path(retain_log["path"]).is_file()
@@ -959,6 +1105,10 @@ def test_source_requirements_validate_all_registered_sources(monkeypatch):
                     ),
                 }
 
+    books_job = next(job for job in jobs if job["benchmark"] == "muse_books")
+    with pytest.raises(ValueError, match="muse-bench/MUSE-Books_target"):
+        registry.validate_sources(books_job)
+
     tampered = json.loads(json.dumps(jobs[0]))
     tampered["provenance"]["model"]["revision"] = "0" * 40
     with pytest.raises(ValueError, match="model revision"):
@@ -977,12 +1127,30 @@ def test_source_requirements_validate_all_registered_sources(monkeypatch):
 def test_manifest_dry_run_stops_on_source_mismatch(monkeypatch):
     registry = load_registry()
 
-    def reject_sources(job):
+    def reject_sources(job, fingerprint_memo=None):
+        del fingerprint_memo
         raise ValueError(f'source mismatch: {job["job_id"]}')
 
     monkeypatch.setattr(registry, "validate_sources", reject_sources, raising=False)
-    with pytest.raises(ValueError, match="source mismatch"):
-        registry._manifest_dry_run(seed=0)
+    payload = registry._manifest_dry_run(seed=0)
+    assert "source mismatch" in payload["source_validation_error"]
+    assert len(payload["jobs"]) == 1
+    assert payload["jobs"][0]["fingerprints"] == {}
+
+
+def test_manifest_dry_run_emits_validation_fingerprints(monkeypatch):
+    registry = load_registry()
+
+    monkeypatch.setattr(
+        registry,
+        "validate_sources",
+        lambda job, fingerprint_memo=None: {"shared": "a" * 64},
+    )
+    payload = registry._manifest_dry_run(seed=0)
+
+    assert "source_validation_error" not in payload
+    assert len(payload["jobs"]) == 60
+    assert all(job["fingerprints"] == {"shared": "a" * 64} for job in payload["jobs"])
 
 
 def test_design_discloses_branch_only_rmu_sampling_deviation():
@@ -1020,9 +1188,10 @@ def test_manifest_seed_zero_dry_run_prints_commands_without_creating_outputs(tmp
         check=False,
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode != 0
     payload = json.loads(result.stdout)
-    assert len(payload["jobs"]) == 60
+    assert "muse-bench/MUSE-Books_target" in payload["source_validation_error"]
+    assert len(payload["jobs"]) == 1
     for job in payload["jobs"]:
         assert job["argv"][:3] == [
             sys.executable,
@@ -1030,10 +1199,12 @@ def test_manifest_seed_zero_dry_run_prints_commands_without_creating_outputs(tmp
             "--config-name=unlearn.yaml",
         ]
         assert job["source_requirements"]["model"] == job["provenance"]["model"]
+        assert job["fingerprints"] == {}
         if job["benchmark"] == "wmdp_cyber":
             assert job["environment"] == {
                 "HF_DATASETS_CACHE": "/dev/shm/ungu-hf-datasets-wmdp",
                 "HF_DATASETS_OFFLINE": "1",
+                "HF_HUB_CACHE": "/dev/shm/ungu-hf-hub-wmdp",
                 "HF_HUB_OFFLINE": "1",
             }
         else:

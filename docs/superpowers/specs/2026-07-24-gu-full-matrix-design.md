@@ -212,10 +212,19 @@ Before creating full job outputs:
 
 1. resolve every Hydra command;
 2. verify method and dataset contracts;
-3. verify model, tokenizer, dataset revisions, and local corpus hashes;
-4. verify every referenced model blob when the cache is content-addressed;
-5. verify no-save flags and the artifact allowlist;
-6. verify dev0 is free.
+3. verify local corpus and retain-log hashes;
+4. verify canonical content manifests for every required Arrow/metadata cache;
+5. verify every Hub snapshot revision, symlink containment, and
+   content-addressed blob hash;
+6. memoize fingerprints by canonical source requirement so each unique source
+   is hashed once per dry-run;
+7. fail without downloading when any pinned cache is absent;
+8. verify no-save flags and the artifact allowlist;
+9. verify dev0 is free.
+
+At the time of this spec amendment, the pinned MUSE Books target snapshot is
+absent locally. A real dry-run therefore stops with the exact source name
+`muse-bench/MUSE-Books_target`; it must not substitute or download a checkpoint.
 
 Run one representative smoke for every compatible method. RMU receives
 additional benchmark-specific smokes because its data and model paths differ.
