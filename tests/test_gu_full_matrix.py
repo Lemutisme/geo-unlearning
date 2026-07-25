@@ -4150,6 +4150,10 @@ def test_analyzer_schema_constants_match_composed_gu_matrix_metrics(
     )
 
     assert configured == expected
+    assert all(
+        metric.get("handler") is not None
+        for metric in config.eval[evaluator_kind].metrics.values()
+    )
 
 
 @pytest.mark.parametrize(
