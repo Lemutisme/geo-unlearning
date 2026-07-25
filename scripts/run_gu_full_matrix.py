@@ -524,6 +524,7 @@ GPU_ADMISSION_COMMAND = [
     "--query-gpu=index,memory.used",
     "--format=csv,noheader,nounits",
 ]
+CONTROLLER_LOCK_PATH = Path("/tmp/geo_unlearning_gu_matrix_dev0.lock")
 TERMINAL_STATUSES = {
     "completed",
     "invalid_scientific",
@@ -1780,9 +1781,21 @@ def validate_job_result(result, job, output_dir, *, expected_status=None):
     ratios = result["correction_ratio"]
     scales = result["applied_scale_distribution"]
     endpoint_prefix = ENDPOINT_PREFIXES[job["evaluator_kind"]]
-    summary_path = PurePosixPath(result["endpoint_summary_path"] or "")
-    raw_path = PurePosixPath(result["endpoint_raw_path"] or "")
+    if not all(isinstance(result[field], str) and result[field] for field in path_fields):
+        raise ValueError("completed evidence paths must be nonempty strings")
+    summary_path = PurePosixPath(result["endpoint_summary_path"])
+    raw_path = PurePosixPath(result["endpoint_raw_path"])
     checkpoint_pattern = re.compile(r"checkpoint-[0-9]+")
+    output = Path(output_dir).resolve()
+    summary_files = sorted(output.rglob(f"{endpoint_prefix}_SUMMARY.json"))
+    raw_files = sorted(output.rglob(f"{endpoint_prefix}_EVAL.json"))
+    if len(summary_files) != 1 or len(raw_files) != 1:
+        raise ValueError(
+            "completed endpoint pair count mismatch: "
+            f"summary={len(summary_files)}, raw={len(raw_files)}"
+        )
+    observed_summary = PurePosixPath(summary_files[0].relative_to(output).as_posix())
+    observed_raw = PurePosixPath(raw_files[0].relative_to(output).as_posix())
     endpoint_pair_valid = (
         not summary_path.is_absolute()
         and not raw_path.is_absolute()
@@ -1795,22 +1808,45 @@ def validate_job_result(result, job, output_dir, *, expected_status=None):
         and summary_path.parts[1] == "evals"
         and summary_path.name == f"{endpoint_prefix}_SUMMARY.json"
         and raw_path.name == f"{endpoint_prefix}_EVAL.json"
-        and (Path(output_dir) / Path(*summary_path.parts)).is_file()
-        and (Path(output_dir) / Path(*raw_path.parts)).is_file()
+        and summary_path == observed_summary
+        and raw_path == observed_raw
     )
+    if not endpoint_pair_valid:
+        raise ValueError("completed endpoint paths do not identify one exact checkpoint pair")
+    for label, path in (("summary", summary_files[0]), ("raw", raw_files[0])):
+        try:
+            payload = json.loads(
+                path.read_text(),
+                parse_constant=lambda value: (_ for _ in ()).throw(
+                    ValueError(f"nonfinite JSON constant: {value}")
+                ),
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+            raise ValueError(f"completed endpoint {label} JSON is invalid: {error}") from error
+        if not isinstance(payload, dict) or not payload or not _finite_tree(payload):
+            raise ValueError(f"completed endpoint {label} must be a finite nonempty object")
+        pending = list(payload.values())
+        contains_number = False
+        while pending:
+            value = pending.pop()
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)):
+                contains_number = True
+                break
+            if isinstance(value, dict):
+                pending.extend(value.values())
+            elif isinstance(value, list):
+                pending.extend(value)
+        if not contains_number:
+            raise ValueError(f"completed endpoint {label} contains no numeric result")
     completed_valid = (
         result["failure_kind"] is None
         and type(result["returncode"]) is int
         and result["returncode"] == 0
-        and all(isinstance(result[field], str) and result[field] for field in path_fields)
         and result["command_path"] == "command.json"
         and result["run_log_path"] == "run.log"
         and result["diagnostics_path"] == "gu_diagnostics.jsonl"
-        and result["endpoint_summary_path"].endswith(
-            f"/{endpoint_prefix}_SUMMARY.json"
-        )
-        and result["endpoint_raw_path"].endswith(f"/{endpoint_prefix}_EVAL.json")
-        and endpoint_pair_valid
         and isinstance(result["wall_clock_seconds"], (int, float))
         and not isinstance(result["wall_clock_seconds"], bool)
         and result["wall_clock_seconds"] >= 0
@@ -1908,6 +1944,18 @@ def validate_queue_state(state):
         if parent.get("status") != "completed":
             raise ValueError("queue state derived job parent is not completed")
         validate_job_identity(job, parent_job=parent)
+    derived_seeds = {
+        parent_id: {job["seed"] for job in derived if job["parent_seed_zero"] == parent_id}
+        for parent_id in parents
+    }
+    for parent_id, seeds in derived_seeds.items():
+        if parents[parent_id].get("status") == "completed" and seeds not in (
+            set(),
+            {1, 2},
+        ):
+            raise ValueError(
+                f"completed parent replication must contain both seeds: {parent_id}"
+            )
 
     running_count = 0
     root = Path(output_root)
@@ -2013,17 +2061,14 @@ def live_matrix_children(state, output_root):
 
 
 @contextmanager
-def controller_lock(output_root):
+def controller_lock():
     """Hold the one local matrix controller lock until its launch work ends."""
-    root = Path(output_root).resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    lock_path = root / ".gu_matrix_controller.lock"
-    with lock_path.open("a+") as lock_file:
+    with CONTROLLER_LOCK_PATH.open("a+") as lock_file:
         try:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise RuntimeError(
-                f"another GU matrix controller is active: {lock_path}"
+                f"another GU matrix controller is active: {CONTROLLER_LOCK_PATH}"
             ) from error
         try:
             yield
@@ -2088,7 +2133,7 @@ def smoke_manifest(manifest_path):
     manifest_path = Path(manifest_path)
     manifest = validate_manifest(_read_json(manifest_path))
     output_root = Path(manifest.get("output_root", manifest_path.parent)).resolve()
-    with controller_lock(output_root):
+    with controller_lock():
         preflight_manifest(manifest_path)
         selected = []
         seen_methods = set()
@@ -2114,7 +2159,7 @@ def run_queue(manifest_path, state_path):
     manifest_path, state_path = Path(manifest_path), Path(state_path)
     manifest = validate_manifest(_read_json(manifest_path))
     output_root = Path(manifest.get("output_root", manifest_path.parent)).resolve()
-    with controller_lock(output_root):
+    with controller_lock():
         if not state_path.exists():
             state = create_queue_state(manifest, state_path)
         else:
@@ -2410,7 +2455,7 @@ def main(argv=None):
                 manifest.get("output_root", args.manifest.parent)
             ).resolve()
             admission_state = {"jobs": deepcopy(manifest["jobs"])}
-            with controller_lock(output_root):
+            with controller_lock():
                 admit_launch(admission_state, output_root)
                 result = run_job(job, output_root / job["output_dir"])
             print(json.dumps(result, indent=2, sort_keys=True))

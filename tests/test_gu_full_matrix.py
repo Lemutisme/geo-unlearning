@@ -3060,19 +3060,119 @@ def test_completed_evidence_requires_safe_existing_endpoint_pair_and_tolerance(
         )
 
 
+@pytest.mark.parametrize(
+    "tamper",
+    ["extra_pair", "corrupt", "empty", "nonnumeric", "nonfinite"],
+)
+def test_completed_evidence_revalidates_exact_endpoint_file_contents(
+    tmp_path,
+    tamper,
+):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["output_dir"]
+    result = queue_result(registry, job, tmp_path)
+    prefix = job_endpoint_prefix(job)
+    summary = output_dir / result["endpoint_summary_path"]
+    raw = output_dir / result["endpoint_raw_path"]
+    if tamper == "extra_pair":
+        extra = output_dir / "checkpoint-2" / "evals"
+        extra.mkdir(parents=True)
+        (extra / f"{prefix}_SUMMARY.json").write_text('{"metric": 0.5}')
+        (extra / f"{prefix}_EVAL.json").write_text('{"metric": 0.5}')
+    elif tamper == "corrupt":
+        summary.write_text("not-json")
+    elif tamper == "empty":
+        raw.write_text("{}")
+    elif tamper == "nonnumeric":
+        raw.write_text('{"metric": "not measured"}')
+    else:
+        raw.write_text('{"metric": NaN}')
+
+    with pytest.raises(ValueError, match="endpoint|completed|numeric|JSON"):
+        registry.validate_job_result(
+            result,
+            job,
+            output_dir,
+            expected_status="completed",
+        )
+
+
+@pytest.mark.parametrize("seed", [1, 2])
+def test_queue_state_rejects_singleton_replication_seed(tmp_path, seed):
+    registry = load_registry()
+    state_path = tmp_path / "queue_state.json"
+    state = registry.create_queue_state(queue_manifest(registry, tmp_path), state_path)
+    leave_only_pending(state, 0, registry, tmp_path)
+    parent = state["jobs"][0]
+    finish_queue_job(registry, parent, tmp_path, "completed")
+    derived = json.loads(json.dumps(parent))
+    derived.update(
+        job_id=parent["job_id"].replace("seed0", f"seed{seed}"),
+        seed=seed,
+        stage="stage2",
+        status="pending",
+        output_dir=parent["output_dir"].replace("seed0", f"seed{seed}"),
+        parent_seed_zero=parent["job_id"],
+        attempt_count=0,
+        attempt_history=[],
+        pid=None,
+    )
+    state["jobs"].append(derived)
+    state_path.write_text(json.dumps(state))
+
+    with pytest.raises(ValueError, match="replication|both|pair"):
+        registry.queue_status(state_path)
+
+
+def test_seed_expansion_writes_both_replicates_in_one_atomic_replace(
+    tmp_path,
+    monkeypatch,
+):
+    registry = load_registry()
+    state_path = tmp_path / "queue_state.json"
+    state = registry.create_queue_state(queue_manifest(registry, tmp_path), state_path)
+    leave_only_pending(state, 0, registry, tmp_path)
+    parent = state["jobs"][0]
+    result = finish_queue_job(registry, parent, tmp_path, "completed")
+    result_path = tmp_path / parent["output_dir"] / "JOB_RESULT.json"
+    result_path.write_text(json.dumps(result))
+    state_path.write_text(json.dumps(state))
+    original_replace = registry.os.replace
+    replacements = []
+
+    def recording_replace(source, destination):
+        replacements.append(Path(destination))
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(registry.os, "replace", recording_replace)
+
+    expanded = registry.expand_seeds(state_path)
+    expanded_again = registry.expand_seeds(state_path)
+
+    children = [
+        job for job in expanded["jobs"] if job.get("parent_seed_zero") == parent["job_id"]
+    ]
+    assert {job["seed"] for job in children} == {1, 2}
+    assert replacements == [state_path]
+    assert expanded_again == expanded
+
+
 @pytest.mark.parametrize("controller", ["queue", "smoke", "run-job"])
-def test_controller_lock_prevents_two_launchers_passing_admission(
+def test_global_dev0_lock_blocks_controllers_from_a_different_output_root(
     tmp_path,
     monkeypatch,
     controller,
 ):
     registry = load_registry()
-    manifest_path = tmp_path / "manifest.json"
-    state_path = tmp_path / "queue_state.json"
-    manifest = queue_manifest(registry, tmp_path)
+    output_root = tmp_path / "second-output-root"
+    output_root.mkdir()
+    manifest_path = output_root / "manifest.json"
+    state_path = output_root / "queue_state.json"
+    manifest = queue_manifest(registry, output_root)
     manifest_path.write_text(json.dumps(manifest))
     state = registry.create_queue_state(manifest, state_path)
-    leave_only_pending(state, 1, registry, tmp_path)
+    leave_only_pending(state, 1, registry, output_root)
     state_path.write_text(json.dumps(state))
     admitted = []
     launched = []
@@ -3085,10 +3185,10 @@ def test_controller_lock_prevents_two_launchers_passing_admission(
 
     def stub_run_job(job, output_dir, **kwargs):
         launched.append(job["job_id"])
-        return queue_result(registry, job, tmp_path)
+        return queue_result(registry, job, output_root)
 
     monkeypatch.setattr(registry, "run_job", stub_run_job)
-    lock_path = tmp_path / ".gu_matrix_controller.lock"
+    lock_path = Path("/tmp/geo_unlearning_gu_matrix_dev0.lock")
     with lock_path.open("a+") as held:
         fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         if controller == "queue":
