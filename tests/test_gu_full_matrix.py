@@ -555,7 +555,7 @@ def test_all_60_seed_zero_commands_are_exact_and_checkpoint_free(tmp_path):
         command = registry.build_command(job, output_dir)
         assert command[:3] == [
             sys.executable,
-            "src/train.py",
+            str(ROOT / "src/train.py"),
             "--config-name=unlearn.yaml",
         ]
         assert command.count("save_model_after_train=false") == 1
@@ -1307,7 +1307,7 @@ def test_manifest_seed_zero_dry_run_prints_commands_without_creating_outputs(tmp
     for job in payload["jobs"]:
         assert job["argv"][:3] == [
             sys.executable,
-            "src/train.py",
+            str(ROOT / "src/train.py"),
             "--config-name=unlearn.yaml",
         ]
         assert job["source_requirements"]["model"] == job["provenance"]["model"]
@@ -1527,6 +1527,37 @@ def test_completed_job_requires_exact_gu_endpoint_and_resource_evidence(
     assert json.loads((output_dir / "JOB_RESULT.json").read_text()) == result
 
 
+def test_run_job_executes_the_current_worktree_with_one_absolute_output(
+    tmp_path,
+    monkeypatch,
+):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    monkeypatch.chdir(tmp_path)
+    relative_output = Path("relative-jobs") / job["job_id"]
+    resolved_output = (tmp_path / relative_output).resolve()
+    captured = install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        resolved_output,
+    )
+
+    result = registry.run_job(job, relative_output)
+
+    assert result["status"] == "completed"
+    assert registry.CODE_ROOT == ROOT
+    assert registry.CODE_ROOT != registry.SHARED_ROOT
+    assert captured["kwargs"]["cwd"] == ROOT
+    assert captured["kwargs"]["cwd"] != registry.SHARED_ROOT
+    assert captured["argv"][1] == str(ROOT / "src/train.py")
+    assert f"paths.output_dir={resolved_output}" in captured["argv"]
+    assert captured["argv"] == registry.build_command(job, resolved_output)
+    assert json.loads((resolved_output / "command.json").read_text())["argv"] == (
+        captured["argv"]
+    )
+
+
 def test_run_job_rejects_nonfinite_diagnostic(tmp_path, monkeypatch):
     registry = load_registry()
     job = first_matrix_job(registry)
@@ -1626,9 +1657,56 @@ def test_run_job_rejects_unchanged_selected_parameters(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
+    "rejected_record",
+    [
+        {"zero_step": True, "zero_step_reason": "zero_delta"},
+        {"zero_step": False, "zero_step_reason": "retain_budget_exceeded"},
+    ],
+)
+def test_run_job_rejects_any_mixed_zero_or_rejection_record(
+    tmp_path,
+    monkeypatch,
+    rejected_record,
+):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    records = [
+        job_diagnostic(job, 1),
+        job_diagnostic(
+            job,
+            2,
+            proposal_norm=0.0,
+            corrected_norm=0.0,
+            correction_ratio=0.0,
+            applied_scale=0.0,
+            **rejected_record,
+        ),
+    ]
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        diagnostics=records,
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "invalid_scientific"
+    assert result["selected_parameter_changed"] is True
+    assert "zero" in " ".join(result["issues"]).lower() or "reject" in " ".join(
+        result["issues"]
+    ).lower()
+
+
+@pytest.mark.parametrize(
     "forbidden_path",
     [
         "model.safetensors",
+        "adapter_model.bin",
+        "callback_state.json",
+        "nested/deeper/unexpected.pt",
         "checkpoint-2/optimizer.pt",
         "checkpoint-3/notes.txt",
         "trainer_state.json",
@@ -1654,6 +1732,24 @@ def test_run_job_rejects_forbidden_state_and_checkpoint_payloads(
 
     assert result["status"] == "invalid_scientific"
     assert forbidden_path in result["forbidden_artifacts"]
+
+
+def test_run_job_allows_checkpoint_config_evidence(tmp_path, monkeypatch):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        forbidden_path="checkpoint-9/config.json",
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "completed"
+    assert result["forbidden_artifacts"] == []
 
 
 def test_run_job_classifies_oom_as_scientific_without_retry(tmp_path, monkeypatch):

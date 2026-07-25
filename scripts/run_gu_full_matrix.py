@@ -19,6 +19,7 @@ from pathlib import Path
 SCHEMA_VERSION = 1
 PROTOCOL = "gu_full_matrix_20260724"
 STAGE = "stage1"
+CODE_ROOT = Path(__file__).resolve().parents[1]
 SHARED_ROOT = Path("/workspace/re/GU/geo-unlearning")
 RUNTIME_ROOTS = {
     "tofu": Path("/dev/shm/gu-matrix-tofu"),
@@ -645,14 +646,15 @@ def _benchmark_arguments(job):
 def build_command(job, output_dir):
     """Build one checkpoint-free train-plus-live-evaluation command."""
     provenance = job["provenance"]
+    resolved_output = Path(output_dir).resolve()
     command = [
         sys.executable,
-        "src/train.py",
+        str(CODE_ROOT / "src/train.py"),
         "--config-name=unlearn.yaml",
         f'experiment={job["experiment_config"]}',
         f'trainer={job["trainer_config"]}',
         f'task_name={job["job_id"]}',
-        f"paths.output_dir={output_dir}",
+        f"paths.output_dir={resolved_output}",
         (
             "model.model_args.pretrained_model_name_or_path="
             f'{provenance["model"]["artifact"]}'
@@ -1314,24 +1316,28 @@ def _forbidden_artifacts(output_dir):
     output = Path(output_dir)
     forbidden = set()
     checkpoint_pattern = re.compile(r"checkpoint-[0-9]+")
-    state_prefixes = (
+    forbidden_suffixes = {".safetensors", ".bin", ".pt", ".pth", ".ckpt"}
+    state_patterns = (
+        "pytorch_model",
+        "adapter_model",
         "optimizer",
         "scheduler",
         "scaler",
-        "rng",
+        "rng_state",
         "trainer_state",
         "training_args",
+        "callback_state",
+        "model_state",
     )
-    allowed_checkpoint_suffixes = {".json", ".jsonl", ".log"}
+    allowed_evidence_suffixes = {".json", ".jsonl", ".log"}
+    allowed_config_suffixes = {".json", ".yaml", ".yml"}
     for path in output.rglob("*"):
         if not path.is_file():
             continue
         relative = path.relative_to(output)
         name = path.name.lower()
-        if (
-            name.endswith(".safetensors")
-            or name.startswith("pytorch_model")
-            or name.startswith(state_prefixes)
+        if path.suffix.lower() in forbidden_suffixes or name.startswith(
+            state_patterns
         ):
             forbidden.add(relative.as_posix())
         parts = relative.parts
@@ -1346,9 +1352,19 @@ def _forbidden_artifacts(output_dir):
         if checkpoint_index is None:
             continue
         tail = parts[checkpoint_index + 1 :]
-        is_eval = len(tail) >= 2 and tail[0] == "evals"
-        is_log = "log" in name and path.suffix.lower() in allowed_checkpoint_suffixes
-        if not ((is_eval or is_log) and path.suffix.lower() in allowed_checkpoint_suffixes):
+        is_eval = (
+            len(tail) >= 2
+            and tail[0] == "evals"
+            and path.suffix.lower() in allowed_evidence_suffixes
+        )
+        is_log = (
+            "log" in name and path.suffix.lower() in allowed_evidence_suffixes
+        )
+        is_config = (
+            any("config" in part.lower() for part in tail)
+            and path.suffix.lower() in allowed_config_suffixes
+        )
+        if not (is_eval or is_log or is_config):
             forbidden.add(relative.as_posix())
     return sorted(forbidden)
 
@@ -1442,7 +1458,7 @@ def _failure_from_log(returncode, log_text, launch_error):
 
 def run_job(job, output_dir):
     """Run one unchanged matrix command and persist its complete evidence audit."""
-    output = Path(output_dir)
+    output = Path(output_dir).resolve()
     if output.exists():
         if output.is_dir() and not output.is_symlink():
             shutil.rmtree(output)
@@ -1467,7 +1483,7 @@ def run_job(job, output_dir):
         try:
             process = subprocess.Popen(
                 expected_command_record["argv"],
-                cwd=SHARED_ROOT,
+                cwd=CODE_ROOT,
                 env=build_environment(job),
                 stdout=run_log,
                 stderr=subprocess.STDOUT,
@@ -1528,6 +1544,16 @@ def run_job(job, output_dir):
             f"{projection_count} != {optimizer_update_count}"
         )
     zero_step_count = sum(record["zero_step"] for record in diagnostics)
+    rejected_steps = [
+        record["step"]
+        for record in diagnostics
+        if record["zero_step"] or record["zero_step_reason"] not in (None, "")
+    ]
+    if rejected_steps:
+        issues.append(
+            "GU zero-step or rejection diagnostics are present at steps: "
+            + ",".join(str(step) for step in rejected_steps)
+        )
     selected_parameter_changed = any(
         not record["zero_step"]
         and record["corrected_norm"] > 0
