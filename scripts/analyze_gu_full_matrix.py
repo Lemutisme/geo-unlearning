@@ -10,6 +10,8 @@ import statistics
 import sys
 from pathlib import Path
 
+from lm_eval.api.metrics import pooled_sample_stderr
+
 try:
     from scripts import run_gu_full_matrix as registry
 except ModuleNotFoundError:
@@ -31,6 +33,63 @@ MUSE_FIELDS = (
 )
 WMDP_FIELDS = ("wmdp_cyber/acc", "mmlu/acc")
 METRIC_FIELDS = {"tofu": TOFU_FIELDS, "muse": MUSE_FIELDS, "lm_eval": WMDP_FIELDS}
+TOFU_SUMMARY_FIELDS = frozenset(
+    {
+        "exact_memorization",
+        "extraction_strength",
+        "forget_Q_A_Prob",
+        "forget_Q_A_ROUGE",
+        "mia_gradnorm",
+        "mia_loss",
+        "mia_min_k",
+        "mia_min_k_plus_plus",
+        "mia_zlib",
+        "model_utility",
+        "privleak",
+        "retain_extraction_strength",
+    }
+)
+TOFU_RAW_FIELDS = frozenset(
+    {
+        *TOFU_SUMMARY_FIELDS,
+        "ra_Q_A_PERT_Prob",
+        "ra_Q_A_Prob",
+        "ra_Q_A_Prob_normalised",
+        "ra_Q_A_ROUGE",
+        "ra_Truth_Ratio",
+        "retain_Q_A_PARA_Prob",
+        "retain_Q_A_PERT_Prob",
+        "retain_Q_A_Prob",
+        "retain_Q_A_ROUGE",
+        "retain_Truth_Ratio",
+        "wf_Q_A_PERT_Prob",
+        "wf_Q_A_Prob",
+        "wf_Q_A_Prob_normalised",
+        "wf_Q_A_ROUGE",
+        "wf_Truth_Ratio",
+    }
+)
+MUSE_ENDPOINT_FIELDS = frozenset(
+    {
+        "exact_memorization",
+        "extraction_strength",
+        "forget_knowmem_ROUGE",
+        "forget_verbmem_ROUGE",
+        "mia_gradnorm",
+        "mia_loss",
+        "mia_min_k",
+        "mia_min_k_plus_plus",
+        "mia_reference",
+        "mia_zlib",
+        "privleak",
+        "retain_extraction_strength",
+        "retain_knowmem_ROUGE",
+    }
+)
+ENDPOINT_FIELDS = {
+    "tofu": (TOFU_SUMMARY_FIELDS, TOFU_RAW_FIELDS),
+    "muse": (MUSE_ENDPOINT_FIELDS, MUSE_ENDPOINT_FIELDS),
+}
 
 TOFU_HEADER = (
     "| Method | ES Re. ↑ | ES Un. ↓ | Priv. ↑ | MU ↑ | wall-clock | peak mem |"
@@ -152,32 +211,38 @@ def analyze_matrix(matrix_root):
         fields = METRIC_FIELDS[job["evaluator_kind"]]
         metrics = {}
 
-        if job["evaluator_kind"] in {"tofu", "muse"}:
-            for field in fields:
-                summary_value = summary.get(field)
-                raw_metric = raw.get(field)
-                raw_value = (
-                    raw_metric.get("agg_value")
-                    if isinstance(raw_metric, dict)
-                    else None
-                )
-                for label, value in (
-                    ("summary", summary_value),
-                    ("raw aggregate", raw_value),
+        if job["evaluator_kind"] in ENDPOINT_FIELDS:
+            summary_fields, raw_fields = ENDPOINT_FIELDS[job["evaluator_kind"]]
+            if set(summary) != summary_fields or set(raw) != raw_fields:
+                raise ValueError(f"wrong endpoint schema for {job['job_id']}")
+            raw_aggregates = {}
+            for field in raw_fields:
+                entry = raw[field]
+                value = entry.get("agg_value") if isinstance(entry, dict) else None
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
                 ):
-                    if (
-                        isinstance(value, bool)
-                        or not isinstance(value, (int, float))
-                        or not math.isfinite(value)
-                    ):
-                        raise ValueError(
-                            f"malformed {label} metric {field} for {job['job_id']}"
-                        )
-                if summary_value != raw_value:
+                    raise ValueError(
+                        f"malformed raw aggregate metric {field} for {job['job_id']}"
+                    )
+                raw_aggregates[field] = value
+            for field in summary_fields:
+                summary_value = summary[field]
+                if (
+                    isinstance(summary_value, bool)
+                    or not isinstance(summary_value, (int, float))
+                    or not math.isfinite(summary_value)
+                ):
+                    raise ValueError(
+                        f"malformed summary metric {field} for {job['job_id']}"
+                    )
+                if summary_value != raw_aggregates[field]:
                     raise ValueError(
                         f"summary/raw disagreement for {job['job_id']}/{field}"
                     )
-                metrics[field] = summary_value
+            metrics = {field: summary[field] for field in fields}
         else:
             expected_summary = {
                 "mmlu/acc",
@@ -203,54 +268,53 @@ def analyze_matrix(matrix_root):
                 or not raw["mmlu"]
                 or any(not name.startswith("mmlu_") for name in raw["mmlu"])
                 or any(
-                    not isinstance(samples, list) or not samples
+                    not isinstance(samples, list) or len(samples) < 2
                     for samples in raw["mmlu"].values()
                 )
                 or not isinstance(raw["wmdp_cyber"], dict)
                 or set(raw["wmdp_cyber"]) != {"wmdp_cyber"}
                 or any(
-                    not isinstance(samples, list) or not samples
+                    not isinstance(samples, list) or len(samples) < 2
                     for samples in raw["wmdp_cyber"].values()
                 )
             ):
                 raise ValueError(f"wrong LMEval task schema for {job['job_id']}")
-            for field, task in (
-                ("wmdp_cyber/acc", "wmdp_cyber"),
-                ("mmlu/acc", "mmlu"),
-            ):
-                samples = [
-                    sample
-                    for task_samples in raw[task].values()
-                    for sample in task_samples
-                ]
-                if not samples or any(
-                    not isinstance(sample, dict) for sample in samples
-                ):
-                    raise ValueError(
-                        f"malformed LMEval samples for {job['job_id']}/{task}"
+            for task in ("wmdp_cyber", "mmlu"):
+                values = []
+                sizes = []
+                stderrs = []
+                for samples in raw[task].values():
+                    if any(not isinstance(sample, dict) for sample in samples):
+                        raise ValueError(
+                            f"malformed LMEval samples for {job['job_id']}/{task}"
+                        )
+                    task_values = [sample.get("acc") for sample in samples]
+                    if any(
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not math.isfinite(value)
+                        for value in task_values
+                    ):
+                        raise ValueError(
+                            f"malformed LMEval acc for {job['job_id']}/{task}"
+                        )
+                    values.extend(task_values)
+                    sizes.append(len(task_values))
+                    stderrs.append(
+                        statistics.stdev(task_values) / math.sqrt(len(task_values))
                     )
-                values = [sample.get("acc") for sample in samples]
-                if any(
-                    isinstance(value, bool)
-                    or not isinstance(value, (int, float))
-                    or not math.isfinite(value)
-                    for value in values
-                ):
-                    raise ValueError(f"malformed LMEval acc for {job['job_id']}/{task}")
-                summary_value = summary[field]
-                if (
-                    isinstance(summary_value, bool)
-                    or not isinstance(summary_value, (int, float))
-                    or not math.isfinite(summary_value)
-                ):
-                    raise ValueError(
-                        f"malformed LMEval summary for {job['job_id']}/{field}"
-                    )
-                if summary_value != statistics.fmean(values):
-                    raise ValueError(
-                        f"summary/raw disagreement for {job['job_id']}/{field}"
-                    )
-                metrics[field] = summary_value
+                recomputed = {
+                    f"{task}/acc": statistics.fmean(values),
+                    f"{task}/acc_stderr": float(pooled_sample_stderr(stderrs, sizes)),
+                }
+                for field, value in recomputed.items():
+                    if not math.isclose(
+                        summary[field], value, rel_tol=1.0e-12, abs_tol=1.0e-12
+                    ):
+                        raise ValueError(
+                            f"summary/raw disagreement for {job['job_id']}/{field}"
+                        )
+                metrics[f"{task}/acc"] = summary[f"{task}/acc"]
 
         pair = (job["benchmark"], job["method"])
         records = completed_by_pair.setdefault(pair, {})
@@ -278,30 +342,6 @@ def analyze_matrix(matrix_root):
         for method in registry.STAGE_ONE_METHODS:
             pair = (benchmark, method)
             records = completed_by_pair.get(pair, {})
-            if 0 not in records:
-                continue
-            missing = sorted({0, 1, 2} - records.keys())
-            observed_incomplete = {
-                row["seed"]
-                for row in incomplete
-                if (row["benchmark"], row["method"]) == pair
-            }
-            observed_invalid = {
-                row["seed"]
-                for row in invalid
-                if (row["benchmark"], row["method"]) == pair
-            }
-            for seed in missing:
-                if seed not in observed_incomplete and seed not in observed_invalid:
-                    incomplete.append(
-                        {
-                            "benchmark": benchmark,
-                            "method": method,
-                            "seed": seed,
-                            "status": "missing",
-                            "reason": "missing_required_replication",
-                        }
-                    )
             if set(records) != {0, 1, 2}:
                 require_complete_failures.append(
                     {
@@ -310,6 +350,23 @@ def analyze_matrix(matrix_root):
                         "seeds": sorted(records),
                     }
                 )
+                if 0 in records:
+                    observed = {
+                        row["seed"]
+                        for row in incomplete + invalid
+                        if (row["benchmark"], row["method"]) == pair
+                    }
+                    for seed in sorted({1, 2} - records.keys()):
+                        if seed not in observed:
+                            incomplete.append(
+                                {
+                                    "benchmark": benchmark,
+                                    "method": method,
+                                    "seed": seed,
+                                    "status": "missing",
+                                    "reason": "missing_required_replication",
+                                }
+                            )
                 continue
             per_seed = [records[seed] for seed in (0, 1, 2)]
             aggregate = {}

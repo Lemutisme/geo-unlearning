@@ -3631,6 +3631,35 @@ def test_cli_paths_return_nonzero_for_missing_inputs(argv):
 
 
 ANALYZER = ROOT / "scripts/analyze_gu_full_matrix.py"
+TOFU_RAW_FIELDS = {
+    "exact_memorization",
+    "extraction_strength",
+    "forget_Q_A_Prob",
+    "forget_Q_A_ROUGE",
+    "mia_gradnorm",
+    "mia_loss",
+    "mia_min_k",
+    "mia_min_k_plus_plus",
+    "mia_zlib",
+    "model_utility",
+    "privleak",
+    "ra_Q_A_PERT_Prob",
+    "ra_Q_A_Prob",
+    "ra_Q_A_Prob_normalised",
+    "ra_Q_A_ROUGE",
+    "ra_Truth_Ratio",
+    "retain_Q_A_PARA_Prob",
+    "retain_Q_A_PERT_Prob",
+    "retain_Q_A_Prob",
+    "retain_Q_A_ROUGE",
+    "retain_Truth_Ratio",
+    "retain_extraction_strength",
+    "wf_Q_A_PERT_Prob",
+    "wf_Q_A_Prob",
+    "wf_Q_A_Prob_normalised",
+    "wf_Q_A_ROUGE",
+    "wf_Truth_Ratio",
+}
 
 
 def load_full_matrix_analyzer():
@@ -3669,6 +3698,8 @@ def exact_evaluator_payload(job, seed):
             )
             for name, value in summary.items()
         }
+        for index, name in enumerate(sorted(TOFU_RAW_FIELDS - summary.keys())):
+            raw[name] = {"agg_value": 0.1 + index + offset}
         return summary, raw
     if job["evaluator_kind"] == "muse":
         summary = {
@@ -3702,9 +3733,9 @@ def exact_evaluator_payload(job, seed):
     mmlu = 2.0 + offset
     summary = {
         "mmlu/acc": mmlu,
-        "mmlu/acc_stderr": 0.01,
+        "mmlu/acc_stderr": 0.5,
         "wmdp_cyber/acc": wmdp,
-        "wmdp_cyber/acc_stderr": 0.02,
+        "wmdp_cyber/acc_stderr": 0.5,
     }
     raw = {
         "mmlu": {
@@ -3933,6 +3964,37 @@ def test_analyzer_lists_invalid_and_incomplete_without_averaging(tmp_path):
     assert analyzer.main(["--root", str(root)]) == 0
 
 
+def test_require_complete_fails_all_pending_compatible_pairs(tmp_path):
+    analyzer = load_full_matrix_analyzer()
+    registry = load_registry()
+    root = tmp_path / "matrix"
+    root.mkdir()
+    manifest = queue_manifest(registry, root)
+    (root / "manifest.json").write_text(json.dumps(manifest))
+    registry.create_queue_state(manifest, root / "queue_state.json")
+
+    report = analyzer.analyze_matrix(root)
+
+    assert len(report["require_complete_failures"]) == 60
+    assert all(row["seeds"] == [] for row in report["require_complete_failures"])
+    assert {row["method"] for row in report["require_complete_failures"]} == set(
+        registry.STAGE_ONE_METHODS
+    )
+    assert analyzer.main(["--root", str(root), "--require-complete"]) != 0
+
+
+def test_require_complete_fails_invalid_seed_zero_pairs(tmp_path):
+    analyzer = load_full_matrix_analyzer()
+    root = write_synthetic_analysis_matrix(tmp_path)
+
+    report = analyzer.analyze_matrix(root)
+
+    assert len(report["complete"]) == 6
+    assert len(report["require_complete_failures"]) == 54
+    assert all(row["seeds"] == [] for row in report["require_complete_failures"])
+    assert analyzer.main(["--root", str(root), "--require-complete"]) != 0
+
+
 @pytest.mark.parametrize("sidecar", ["JOB_RESULT.json", "command.json"])
 def test_analyzer_rejects_missing_or_corrupt_completed_sidecars(tmp_path, sidecar):
     analyzer = load_full_matrix_analyzer()
@@ -4003,6 +4065,106 @@ def test_analyzer_rejects_nonnumeric_lmeval_summary_fields(tmp_path):
     summary_path.write_text(json.dumps(summary))
 
     with pytest.raises(ValueError, match="LMEval summary schema"):
+        analyzer.analyze_matrix(root)
+
+
+@pytest.mark.parametrize("benchmark", ["tofu_forget01", "muse_news"])
+def test_analyzer_reconciles_audit_only_exact_memorization(tmp_path, benchmark):
+    analyzer = load_full_matrix_analyzer()
+    root = write_synthetic_analysis_matrix(tmp_path, complete_benchmarks=(benchmark,))
+    prefix = "TOFU" if benchmark.startswith("tofu_") else "MUSE"
+    summary_path = next((root / "jobs").rglob(f"{prefix}_SUMMARY.json"))
+    summary = json.loads(summary_path.read_text())
+    summary["exact_memorization"] += 0.25
+    summary_path.write_text(json.dumps(summary))
+
+    with pytest.raises(ValueError, match="summary/raw disagreement"):
+        analyzer.analyze_matrix(root)
+
+
+@pytest.mark.parametrize(
+    ("benchmark", "endpoint", "tamper"),
+    [
+        ("tofu_forget01", "SUMMARY", "extra"),
+        ("tofu_forget01", "EVAL", "missing"),
+        ("muse_news", "SUMMARY", "missing"),
+        ("muse_news", "EVAL", "extra"),
+    ],
+)
+def test_analyzer_rejects_extra_or_missing_fixed_endpoint_fields(
+    tmp_path, benchmark, endpoint, tamper
+):
+    analyzer = load_full_matrix_analyzer()
+    root = write_synthetic_analysis_matrix(tmp_path, complete_benchmarks=(benchmark,))
+    prefix = "TOFU" if benchmark.startswith("tofu_") else "MUSE"
+    endpoint_path = next((root / "jobs").rglob(f"{prefix}_{endpoint}.json"))
+    payload = json.loads(endpoint_path.read_text())
+    if tamper == "extra":
+        payload["unexpected_metric"] = {"agg_value": 1.0}
+    elif benchmark.startswith("tofu_"):
+        payload.pop("ra_Q_A_Prob")
+    else:
+        payload.pop("mia_loss")
+    endpoint_path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="endpoint schema"):
+        analyzer.analyze_matrix(root)
+
+
+def test_analyzer_recomputes_lmeval_acc_stderr(tmp_path):
+    analyzer = load_full_matrix_analyzer()
+    root = write_synthetic_analysis_matrix(
+        tmp_path, complete_benchmarks=("wmdp_cyber",)
+    )
+    summary_path = next((root / "jobs").rglob("LMEval_SUMMARY.json"))
+    summary = json.loads(summary_path.read_text())
+    summary["mmlu/acc_stderr"] += 0.125
+    summary_path.write_text(json.dumps(summary))
+
+    with pytest.raises(ValueError, match="summary/raw disagreement"):
+        analyzer.analyze_matrix(root)
+
+
+def test_analyzer_accepts_exact_lmeval_pooled_stderr(tmp_path):
+    analyzer = load_full_matrix_analyzer()
+    root = write_synthetic_analysis_matrix(
+        tmp_path, complete_benchmarks=("wmdp_cyber",)
+    )
+    summary_path = next((root / "jobs").rglob("LMEval_SUMMARY.json"))
+    raw_path = summary_path.with_name("LMEval_EVAL.json")
+    summary = json.loads(summary_path.read_text())
+    raw = json.loads(raw_path.read_text())
+    mmlu = summary["mmlu/acc"]
+    raw["mmlu"]["mmlu_anatomy"] = [
+        {"doc_id": 0, "acc": mmlu - 1.0},
+        {"doc_id": 1, "acc": mmlu + 1.0},
+    ]
+    summary["mmlu/acc_stderr"] = math.sqrt(0.3125)
+    summary_path.write_text(json.dumps(summary))
+    raw_path.write_text(json.dumps(raw))
+
+    report = analyzer.analyze_matrix(root)
+
+    assert report["complete"]
+
+
+def test_analyzer_requires_two_acc_samples_per_lmeval_subtask(tmp_path):
+    analyzer = load_full_matrix_analyzer()
+    root = write_synthetic_analysis_matrix(
+        tmp_path, complete_benchmarks=("wmdp_cyber",)
+    )
+    summary_path = next((root / "jobs").rglob("LMEval_SUMMARY.json"))
+    raw_path = summary_path.with_name("LMEval_EVAL.json")
+    summary = json.loads(summary_path.read_text())
+    raw = json.loads(raw_path.read_text())
+    sample = raw["mmlu"]["mmlu_abstract_algebra"][0]
+    raw["mmlu"]["mmlu_abstract_algebra"] = [sample]
+    summary["mmlu/acc"] = sample["acc"]
+    summary["mmlu/acc_stderr"] = 0.0
+    summary_path.write_text(json.dumps(summary))
+    raw_path.write_text(json.dumps(raw))
+
+    with pytest.raises(ValueError, match="LMEval task schema"):
         analyzer.analyze_matrix(root)
 
 
