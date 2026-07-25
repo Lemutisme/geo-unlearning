@@ -1880,10 +1880,10 @@ def validate_job_result(result, job, output_dir, *, expected_status=None):
             for value in ratios.values()
         )
         and ratios["min"] <= ratios["mean"] <= ratios["max"]
-        and isinstance(result["max_violation_after"], (int, float))
-        and not isinstance(result["max_violation_after"], bool)
-        and math.isfinite(result["max_violation_after"])
-        and 0 <= result["max_violation_after"] <= GU_PROJECTION_TOLERANCE
+            and isinstance(result["max_violation_after"], (int, float))
+            and not isinstance(result["max_violation_after"], bool)
+            and math.isfinite(result["max_violation_after"])
+            and result["max_violation_after"] <= GU_PROJECTION_TOLERANCE
         and result["selected_parameter_changed"] is True
         and result["forbidden_artifacts"] == []
         and result["issues"] == []
@@ -2176,20 +2176,52 @@ def run_queue(manifest_path, state_path):
 
         if running:
             job = running[0]
-            while True:
-                children = live_matrix_children(state, output_root)
-                exact_child_live = any(
-                    child["pid"] == job.get("pid")
-                    and child["job_id"] == job["job_id"]
-                    and child.get("exact", True)
-                    for child in children
-                )
-                if not exact_child_live:
-                    break
-                time.sleep(1.0)
-            output_dir = output_root / job["output_dir"]
             history = job["attempt_history"]
-            if history[-1]["status"] == "running":
+            current_attempt = history[-1]
+
+            # An unconfirmed launch cannot own a pre-existing JOB_RESULT.
+            if current_attempt["status"] == "running" and job["pid"] is None:
+                children = live_matrix_children(state, output_root)
+                exact_children = [
+                    child
+                    for child in children
+                    if child["job_id"] == job["job_id"] and child.get("exact", True)
+                ]
+                if len(exact_children) > 1:
+                    raise RuntimeError(
+                        f"multiple exact children match unconfirmed job: {job['job_id']}"
+                    )
+                if exact_children:
+                    recovered_pid = exact_children[0]["pid"]
+                    job["pid"] = current_attempt["pid"] = recovered_pid
+                    _atomic_write_json(state_path, state)
+                else:
+                    history.pop()
+                    job["attempt_count"] -= 1
+                    job["pid"] = None
+                    job["status"] = (
+                        "pending" if job["attempt_count"] == 0 else "running"
+                    )
+                    _atomic_write_json(state_path, state)
+
+            # Only a persisted positive PID makes this attempt evidence-ready.
+            if (
+                job["status"] == "running"
+                and job["attempt_history"]
+                and job["attempt_history"][-1]["status"] == "running"
+            ):
+                while True:
+                    children = live_matrix_children(state, output_root)
+                    exact_child_live = any(
+                        child["pid"] == job["pid"]
+                        and child["job_id"] == job["job_id"]
+                        and child.get("exact", True)
+                        for child in children
+                    )
+                    if not exact_child_live:
+                        break
+                    time.sleep(1.0)
+                output_dir = output_root / job["output_dir"]
                 result_path = output_dir / "JOB_RESULT.json"
                 result = None
                 try:
@@ -2220,7 +2252,9 @@ def run_queue(manifest_path, state_path):
                         "environment_overrides": command["environment_overrides"],
                         "provenance": deepcopy(job["provenance"]),
                     }
-                history[-1].update(status=result["status"], evidence=result)
+                job["attempt_history"][-1].update(
+                    status=result["status"], evidence=result
+                )
                 job["pid"] = None
                 if (
                     result["status"] != "failed_infrastructure"

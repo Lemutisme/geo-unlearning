@@ -3060,6 +3060,30 @@ def test_completed_evidence_requires_safe_existing_endpoint_pair_and_tolerance(
         )
 
 
+def test_completed_evidence_accepts_negative_directional_violation(tmp_path):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["output_dir"]
+    result = queue_result(registry, job, tmp_path)
+    result["max_violation_after"] = -999.0
+
+    assert registry.validate_job_result(
+        result,
+        job,
+        output_dir,
+        expected_status="completed",
+    ) == result
+
+    result["max_violation_after"] = registry.GU_PROJECTION_TOLERANCE * 2
+    with pytest.raises(ValueError, match="completed|projection"):
+        registry.validate_job_result(
+            result,
+            job,
+            output_dir,
+            expected_status="completed",
+        )
+
+
 @pytest.mark.parametrize(
     "tamper",
     ["extra_pair", "corrupt", "empty", "nonnumeric", "nonfinite"],
@@ -3291,6 +3315,133 @@ def test_resume_adopts_first_infrastructure_result_then_runs_exact_retry(
     assert len(calls) == 1
     assert persisted["attempt_history"][0]["argv"] == calls[0]
     assert persisted["attempt_history"][1]["argv"] == calls[0]
+
+
+def test_unconfirmed_retry_does_not_adopt_stale_prior_result(
+    tmp_path,
+    monkeypatch,
+):
+    registry = load_registry()
+    manifest_path = tmp_path / "manifest.json"
+    state_path = tmp_path / "queue_state.json"
+    manifest = queue_manifest(registry, tmp_path)
+    manifest_path.write_text(json.dumps(manifest))
+    state = registry.create_queue_state(manifest, state_path)
+    leave_only_pending(state, 0, registry, tmp_path)
+    job = state["jobs"][0]
+    infrastructure = queue_result(
+        registry,
+        job,
+        tmp_path,
+        "failed_infrastructure",
+        "host_io",
+    )
+    stale = queue_result(registry, job, tmp_path)
+    command = registry.build_command(job, tmp_path / job["output_dir"])
+    job.update(
+        status="running",
+        attempt_count=2,
+        attempt_history=[
+            {
+                "attempt": 1,
+                "status": "failed_infrastructure",
+                "pid": 4001,
+                "argv": command,
+                "command_identity": infrastructure["command_identity"],
+                "evidence": infrastructure,
+            },
+            {
+                "attempt": 2,
+                "status": "running",
+                "pid": None,
+                "argv": command,
+                "command_identity": infrastructure["command_identity"],
+            },
+        ],
+        pid=None,
+    )
+    result_path = tmp_path / job["output_dir"] / "JOB_RESULT.json"
+    result_path.write_text(json.dumps(stale))
+    state_path.write_text(json.dumps(state))
+    monkeypatch.setattr(registry, "live_matrix_children", lambda *args: [])
+    monkeypatch.setattr(registry, "admit_launch", lambda *args: 0)
+    calls = []
+
+    def stub_run_job(retry_job, output_dir, **kwargs):
+        calls.append(retry_job["attempt_count"])
+        return queue_result(registry, retry_job, tmp_path)
+
+    monkeypatch.setattr(registry, "run_job", stub_run_job)
+
+    registry.run_queue(manifest_path, state_path)
+
+    persisted = json.loads(state_path.read_text())["jobs"][0]
+    assert calls == [2]
+    assert persisted["status"] == "completed"
+    assert persisted["attempt_count"] == 2
+    assert [attempt["status"] for attempt in persisted["attempt_history"]] == [
+        "failed_infrastructure",
+        "completed",
+    ]
+
+
+def test_unconfirmed_launch_attaches_exact_live_child_before_reconciliation(
+    tmp_path,
+    monkeypatch,
+):
+    registry = load_registry()
+    manifest_path = tmp_path / "manifest.json"
+    state_path = tmp_path / "queue_state.json"
+    manifest = queue_manifest(registry, tmp_path)
+    manifest_path.write_text(json.dumps(manifest))
+    state = registry.create_queue_state(manifest, state_path)
+    leave_only_pending(state, 2, registry, tmp_path)
+    running, next_job = state["jobs"][:2]
+    mark_queue_job_running(registry, running, tmp_path, pid=4242)
+    running["pid"] = running["attempt_history"][-1]["pid"] = None
+    result_path = tmp_path / running["output_dir"] / "JOB_RESULT.json"
+    result_path.write_text(json.dumps(queue_result(registry, running, tmp_path)))
+    state_path.write_text(json.dumps(state))
+    child = {"job_id": running["job_id"], "pid": 7777, "exact": True}
+    observations = iter([[child], [child], []])
+    monkeypatch.setattr(
+        registry,
+        "live_matrix_children",
+        lambda *args: next(observations, []),
+    )
+    sleeps = []
+    monkeypatch.setattr(registry.time, "sleep", sleeps.append)
+    monkeypatch.setattr(registry, "admit_launch", lambda *args: 0)
+    snapshots = []
+    original_atomic_write = registry._atomic_write_json
+
+    def recording_atomic_write(path, payload):
+        snapshots.append(json.loads(json.dumps(payload)))
+        return original_atomic_write(path, payload)
+
+    monkeypatch.setattr(registry, "_atomic_write_json", recording_atomic_write)
+    launched = []
+
+    def stub_run_job(job, output_dir, **kwargs):
+        launched.append(job["job_id"])
+        return queue_result(registry, job, tmp_path)
+
+    monkeypatch.setattr(registry, "run_job", stub_run_job)
+
+    registry.run_queue(manifest_path, state_path)
+
+    assert any(
+        snapshot["jobs"][0]["pid"] == 7777
+        and snapshot["jobs"][0]["attempt_history"][-1]["pid"] == 7777
+        for snapshot in snapshots
+    )
+    persisted = json.loads(state_path.read_text())
+    assert [job["status"] for job in persisted["jobs"][:2]] == [
+        "completed",
+        "completed",
+    ]
+    assert launched == [next_job["job_id"]]
+    assert sleeps == [1.0]
 
 
 def test_manifest_cli_writes_only_after_validation_and_run_job_rejects_unknown(
