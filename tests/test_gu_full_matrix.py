@@ -1397,6 +1397,8 @@ def install_job_subprocess_stub(
     diagnostics=None,
     endpoint_count=1,
     forbidden_path=None,
+    extra_files=None,
+    nvml_results=None,
     tamper_command=False,
 ):
     if log_text is None:
@@ -1410,6 +1412,8 @@ def install_job_subprocess_stub(
         )
     if diagnostics is None:
         diagnostics = [job_diagnostic(job, 1), job_diagnostic(job, 2)]
+    if extra_files is None:
+        extra_files = {}
     captured = {"nvidia_commands": []}
 
     class StubPopen:
@@ -1439,6 +1443,10 @@ def install_job_subprocess_stub(
                 path = output_dir / forbidden_path
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b"forbidden")
+            for relative_path, contents in extra_files.items():
+                path = output_dir / relative_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(contents)
             if tamper_command:
                 payload = json.loads((output_dir / "command.json").read_text())
                 payload["argv"].append("trainer.args.learning_rate=999")
@@ -1448,11 +1456,21 @@ def install_job_subprocess_stub(
             self._polls += 1
             return None if self._polls == 1 else returncode
 
-    nvml_samples = iter(("4242, 128 MiB\n", "4242, 384 MiB\n"))
+    if nvml_results is None:
+        nvml_results = [
+            (0, "4242, 128 MiB\n", ""),
+            (0, "4242, 384 MiB\n", ""),
+        ]
+    nvml_samples = iter(nvml_results)
 
     def stub_run(argv, **kwargs):
         captured["nvidia_commands"].append((argv, kwargs))
-        return SimpleNamespace(returncode=0, stdout=next(nvml_samples, ""), stderr="")
+        returncode, stdout, stderr = next(nvml_samples, (0, "", ""))
+        return SimpleNamespace(
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
 
     clock_ticks = iter((10.0, 10.25, 11.0, 11.5, 12.0))
     monkeypatch.setattr(
@@ -1507,6 +1525,8 @@ def test_completed_job_requires_exact_gu_endpoint_and_resource_evidence(
     assert result["correction_ratio"] == {"min": 0.5, "max": 0.5, "mean": 0.5}
     assert result["max_violation_after"] == pytest.approx(5.0e-8)
     assert result["peak_nvml_mib"] == 384
+    assert result["peak_gpu_memory_mib"] == 384
+    assert result["gpu_memory_sample_count"] == 2
     assert result["wall_clock_seconds"] >= 0.0
     assert result["forbidden_artifacts"] == []
     assert result["endpoint_summary_path"].endswith("MUSE_SUMMARY.json")
@@ -1525,6 +1545,97 @@ def test_completed_job_requires_exact_gu_endpoint_and_resource_evidence(
     assert command_record["environment_overrides"] == registry.environment_overrides(job)
     assert command_record["provenance"] == job["provenance"]
     assert json.loads((output_dir / "JOB_RESULT.json").read_text()) == result
+
+
+@pytest.mark.parametrize(
+    ("field", "tampered_value"),
+    [
+        ("method", "NPO"),
+        ("benchmark", "wmdp_cyber"),
+        ("split", "forget99"),
+        ("retain_split", "retain00"),
+        ("holdout_split", "holdout99"),
+        ("seed", 1),
+        ("stage", "stage2"),
+        ("trainer_config", "NPO"),
+        ("experiment_config", "unlearn/tampered"),
+        ("model", {}),
+        ("evaluator_kind", "muse"),
+        ("selected_parameter_regex", "tampered"),
+        ("provenance", {}),
+        ("output_dir", "jobs/tampered"),
+    ],
+)
+def test_run_job_rejects_tampered_registry_identity_before_output_or_launch(
+    tmp_path,
+    monkeypatch,
+    field,
+    tampered_value,
+):
+    registry = load_registry()
+    job = first_matrix_job(registry, evaluator_kind="tofu")
+    tampered = json.loads(json.dumps(job))
+    tampered[field] = tampered_value
+    output_dir = tmp_path / job["job_id"]
+    launched = []
+
+    def forbidden_popen(*args, **kwargs):
+        launched.append((args, kwargs))
+        raise AssertionError("tampered jobs must not launch")
+
+    monkeypatch.setattr(
+        registry,
+        "subprocess",
+        SimpleNamespace(Popen=forbidden_popen, STDOUT=subprocess.STDOUT),
+    )
+
+    with pytest.raises(ValueError, match="registered Stage-1 job"):
+        registry.run_job(tampered, output_dir)
+
+    assert launched == []
+    assert not output_dir.exists()
+
+
+def test_run_job_rejects_unknown_job_without_erasing_existing_output(
+    tmp_path,
+    monkeypatch,
+):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    unknown = json.loads(json.dumps(job))
+    unknown["job_id"] = "unknown__muse_books__seed0"
+    output_dir = tmp_path / job["job_id"]
+    output_dir.mkdir()
+    sentinel = output_dir / "preserve.txt"
+    sentinel.write_text("preserve")
+    monkeypatch.setattr(
+        registry.subprocess,
+        "Popen",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("unknown jobs must not launch")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="registered Stage-1 job"):
+        registry.run_job(unknown, output_dir)
+
+    assert sentinel.read_text() == "preserve"
+
+
+def test_stage_two_identity_hook_is_explicitly_closed_until_task_four():
+    registry = load_registry()
+    parent = first_matrix_job(registry)
+    derived = json.loads(json.dumps(parent))
+    derived.update(
+        {
+            "job_id": derived["job_id"].replace("seed0", "seed1"),
+            "seed": 1,
+            "stage": "stage2",
+        }
+    )
+
+    with pytest.raises(ValueError, match="Stage-2 identity validation is unavailable"):
+        registry.validate_job_identity(derived, parent_job=parent)
 
 
 def test_run_job_executes_the_current_worktree_with_one_absolute_output(
@@ -1703,16 +1814,16 @@ def test_run_job_rejects_any_mixed_zero_or_rejection_record(
 @pytest.mark.parametrize(
     "forbidden_path",
     [
-        "model.safetensors",
-        "adapter_model.bin",
-        "callback_state.json",
-        "nested/deeper/unexpected.pt",
-        "checkpoint-2/optimizer.pt",
+        "weights.npz",
+        "model.pkl",
+        "arbitrary_state/trace.log",
+        "unknown.json",
+        ".hydra/extra.yaml",
+        "checkpoint-2/evals/EXTRA.json",
         "checkpoint-3/notes.txt",
-        "trainer_state.json",
     ],
 )
-def test_run_job_rejects_forbidden_state_and_checkpoint_payloads(
+def test_run_job_rejects_every_file_outside_the_evidence_allowlist(
     tmp_path,
     monkeypatch,
     forbidden_path,
@@ -1734,7 +1845,10 @@ def test_run_job_rejects_forbidden_state_and_checkpoint_payloads(
     assert forbidden_path in result["forbidden_artifacts"]
 
 
-def test_run_job_allows_checkpoint_config_evidence(tmp_path, monkeypatch):
+def test_run_job_rejects_checkpoint_config_outside_the_live_eval_pair(
+    tmp_path,
+    monkeypatch,
+):
     registry = load_registry()
     job = first_matrix_job(registry)
     output_dir = tmp_path / job["job_id"]
@@ -1744,6 +1858,29 @@ def test_run_job_allows_checkpoint_config_evidence(tmp_path, monkeypatch):
         job,
         output_dir,
         forbidden_path="checkpoint-9/config.json",
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "invalid_scientific"
+    assert result["forbidden_artifacts"] == ["checkpoint-9/config.json"]
+
+
+def test_run_job_accepts_only_the_exact_valid_evidence_tree(tmp_path, monkeypatch):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        extra_files={
+            ".hydra/config.yaml": b"config\n",
+            ".hydra/hydra.yaml": b"hydra\n",
+            ".hydra/overrides.yaml": b"overrides\n",
+            "logs/trainer.log": b"trainer log\n",
+        },
     )
 
     result = registry.run_job(job, output_dir)
@@ -1772,6 +1909,63 @@ def test_run_job_classifies_oom_as_scientific_without_retry(tmp_path, monkeypatc
     assert result["status"] == "invalid_scientific"
     assert result["failure_kind"] == "oom"
     assert captured["argv"] == registry.build_command(job, output_dir)
+
+
+def test_scientific_failure_precedes_gpu_monitor_failure(tmp_path, monkeypatch):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        returncode=1,
+        log_text="torch.cuda.OutOfMemoryError: CUDA out of memory\n",
+        diagnostics=False,
+        endpoint_count=0,
+        nvml_results=[
+            (1, "", "NVML unavailable"),
+            (1, "", "NVML unavailable"),
+        ],
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "invalid_scientific"
+    assert result["failure_kind"] == "oom"
+    assert "nvml" in " ".join(result["issues"]).lower()
+
+
+@pytest.mark.parametrize(
+    "nvml_results",
+    [
+        [(0, "", ""), (0, "", "")],
+        [(0, "9999, 800 MiB\n", ""), (0, "9999, 900 MiB\n", "")],
+    ],
+)
+def test_completed_evidence_requires_observing_child_gpu_memory(
+    tmp_path,
+    monkeypatch,
+    nvml_results,
+):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        nvml_results=nvml_results,
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "failed_infrastructure"
+    assert result["failure_kind"] == "resource_monitor"
+    assert result["peak_gpu_memory_mib"] == 0
+    assert result["gpu_memory_sample_count"] == 0
 
 
 @pytest.mark.parametrize(

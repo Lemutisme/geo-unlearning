@@ -512,6 +512,22 @@ NVML_QUERY_COMMAND = [
     "--query-compute-apps=pid,used_memory",
     "--format=csv,noheader",
 ]
+IMMUTABLE_JOB_FIELDS = (
+    "method",
+    "benchmark",
+    "split",
+    "retain_split",
+    "holdout_split",
+    "seed",
+    "stage",
+    "trainer_config",
+    "experiment_config",
+    "model",
+    "evaluator_kind",
+    "selected_parameter_regex",
+    "provenance",
+    "output_dir",
+)
 RMU_MODEL_OVERRIDES = {
     "tofu": (
         "model.model_args.attn_implementation=flash_attention_2",
@@ -1312,60 +1328,66 @@ def _optimizer_updates_from_log(path):
     return update_count, final_global_step
 
 
-def _forbidden_artifacts(output_dir):
+def _forbidden_artifacts(job, output_dir):
     output = Path(output_dir)
     forbidden = set()
     checkpoint_pattern = re.compile(r"checkpoint-[0-9]+")
-    forbidden_suffixes = {".safetensors", ".bin", ".pt", ".pth", ".ckpt"}
-    state_patterns = (
-        "pytorch_model",
-        "adapter_model",
-        "optimizer",
-        "scheduler",
-        "scaler",
-        "rng_state",
-        "trainer_state",
-        "training_args",
-        "callback_state",
-        "model_state",
-    )
-    allowed_evidence_suffixes = {".json", ".jsonl", ".log"}
-    allowed_config_suffixes = {".json", ".yaml", ".yml"}
+    prefix = ENDPOINT_PREFIXES[job["evaluator_kind"]]
+    root_files = {
+        "command.json",
+        "run.log",
+        "gu_diagnostics.jsonl",
+        "JOB_RESULT.json",
+    }
+    hydra_files = {
+        ".hydra/config.yaml",
+        ".hydra/hydra.yaml",
+        ".hydra/overrides.yaml",
+    }
+    endpoint_files = {f"{prefix}_EVAL.json", f"{prefix}_SUMMARY.json"}
     for path in output.rglob("*"):
         if not path.is_file():
             continue
         relative = path.relative_to(output)
-        name = path.name.lower()
-        if path.suffix.lower() in forbidden_suffixes or name.startswith(
-            state_patterns
-        ):
-            forbidden.add(relative.as_posix())
         parts = relative.parts
-        checkpoint_index = next(
-            (
-                index
-                for index, part in enumerate(parts)
-                if checkpoint_pattern.fullmatch(part) is not None
-            ),
-            None,
+        relative_name = relative.as_posix()
+        is_root_file = len(parts) == 1 and parts[0] in root_files
+        is_hydra_file = relative_name in hydra_files
+        is_root_trainer_log = len(parts) == 1 and path.suffix.lower() == ".log"
+        is_logs_trainer_log = (
+            len(parts) == 2
+            and parts[0] == "logs"
+            and path.suffix.lower() == ".log"
         )
-        if checkpoint_index is None:
+        is_endpoint = (
+            len(parts) == 3
+            and checkpoint_pattern.fullmatch(parts[0]) is not None
+            and parts[1] == "evals"
+            and parts[2] in endpoint_files
+        )
+        if not (
+            is_root_file
+            or is_hydra_file
+            or is_root_trainer_log
+            or is_logs_trainer_log
+            or is_endpoint
+        ):
+            forbidden.add(relative_name)
+    for path in output.rglob("*"):
+        if not path.is_dir() or not any(path.iterdir()):
             continue
-        tail = parts[checkpoint_index + 1 :]
-        is_eval = (
-            len(tail) >= 2
-            and tail[0] == "evals"
-            and path.suffix.lower() in allowed_evidence_suffixes
+        relative = path.relative_to(output)
+        parts = relative.parts
+        is_known = relative.as_posix() in {".hydra", "logs"} or (
+            len(parts) == 1
+            and checkpoint_pattern.fullmatch(parts[0]) is not None
+        ) or (
+            len(parts) == 2
+            and checkpoint_pattern.fullmatch(parts[0]) is not None
+            and parts[1] == "evals"
         )
-        is_log = (
-            "log" in name and path.suffix.lower() in allowed_evidence_suffixes
-        )
-        is_config = (
-            any("config" in part.lower() for part in tail)
-            and path.suffix.lower() in allowed_config_suffixes
-        )
-        if not (is_eval or is_log or is_config):
-            forbidden.add(relative.as_posix())
+        if not is_known:
+            forbidden.add(relative.as_posix() + "/")
     return sorted(forbidden)
 
 
@@ -1378,11 +1400,12 @@ def _sample_process_memory_mib(pid):
             check=False,
         )
     except OSError as error:
-        return 0, f"NVML sampling launch failed: {error}"
+        return 0, False, f"NVML sampling launch failed: {error}"
     if sample.returncode != 0:
         detail = (sample.stderr or "").strip()
-        return 0, f"NVML sampling failed with exit {sample.returncode}: {detail}"
+        return 0, False, f"NVML sampling failed with exit {sample.returncode}: {detail}"
     peak = 0
+    observed_child = False
     for line in sample.stdout.splitlines():
         fields = [field.strip() for field in line.split(",", 1)]
         if len(fields) != 2:
@@ -1393,32 +1416,35 @@ def _sample_process_memory_mib(pid):
         except ValueError:
             continue
         if observed_pid == pid:
+            observed_child = True
             peak = max(peak, used_memory)
-    return peak, None
+    return peak, observed_child, None
 
 
-def _registered_identity_issues(job):
-    issues = []
-    benchmark = job.get("benchmark")
-    method = job.get("method")
-    if benchmark not in BENCHMARKS or method not in STAGE_ONE_METHODS:
-        return ["job identity is not registered in the Stage-1 matrix"]
-    expected_id = f"{method}__{benchmark}__seed{job.get('seed')}"
-    if job.get("job_id") != expected_id:
-        issues.append("job identity does not match method, benchmark, and seed")
-    registered = BENCHMARKS[benchmark]
-    for key in (
-        "experiment_config",
-        "model",
-        "evaluator_kind",
-        "selected_parameter_regex",
-        "provenance",
-    ):
-        if job.get(key) != registered[key]:
-            issues.append(f"job provenance identity mismatch: {key}")
-    if job.get("trainer_config") != method:
-        issues.append("job trainer identity mismatch")
-    return issues
+def validate_job_identity(job, *, parent_job=None):
+    """Return the exact registered job; reserve parent validation for Task 4."""
+    if parent_job is not None:
+        raise ValueError("Stage-2 identity validation is unavailable until Task 4")
+    if not isinstance(job, dict) or not isinstance(job.get("job_id"), str):
+        raise ValueError("job is not an exact registered Stage-1 job: invalid job_id")
+    registered = {
+        candidate["job_id"]: candidate for candidate in build_manifest(seed=0)["jobs"]
+    }
+    expected = registered.get(job["job_id"])
+    if expected is None:
+        raise ValueError("job is not an exact registered Stage-1 job: unknown job_id")
+    missing = object()
+    mismatches = [
+        field
+        for field in IMMUTABLE_JOB_FIELDS
+        if job.get(field, missing) != expected.get(field, missing)
+    ]
+    if mismatches:
+        raise ValueError(
+            "job is not an exact registered Stage-1 job: immutable mismatch "
+            + ",".join(mismatches)
+        )
+    return expected
 
 
 def _failure_from_log(returncode, log_text, launch_error):
@@ -1429,6 +1455,14 @@ def _failure_from_log(returncode, log_text, launch_error):
     lowered = log_text.lower()
     if "outofmemory" in lowered or "out of memory" in lowered or "cuda oom" in lowered:
         return "invalid_scientific", "oom"
+    if any(marker in lowered for marker in ("nan", "nonfinite", "non-finite", "infinite")):
+        return "invalid_scientific", "nonfinite"
+    if "wrong sign" in lowered:
+        return "invalid_scientific", "wrong_sign"
+    if any(marker in lowered for marker in ("gu rejection", "retain_budget_exceeded")):
+        return "invalid_scientific", "gu_rejection"
+    if "zero step" in lowered or "zero_step" in lowered:
+        return "invalid_scientific", "zero_step"
     if any(
         marker in lowered
         for marker in (
@@ -1445,19 +1479,12 @@ def _failure_from_log(returncode, log_text, launch_error):
         for marker in ("absent", "missing", "corrupt", "mismatch", "failed", "error")
     ):
         return "failed_infrastructure", "cache"
-    if any(marker in lowered for marker in ("nan", "nonfinite", "non-finite", "infinite")):
-        return "invalid_scientific", "nonfinite"
-    if "wrong sign" in lowered:
-        return "invalid_scientific", "wrong_sign"
-    if any(marker in lowered for marker in ("gu rejection", "retain_budget_exceeded")):
-        return "invalid_scientific", "gu_rejection"
-    if "zero step" in lowered or "zero_step" in lowered:
-        return "invalid_scientific", "zero_step"
     return "invalid_scientific", "subprocess_exit"
 
 
 def run_job(job, output_dir):
     """Run one unchanged matrix command and persist its complete evidence audit."""
+    validate_job_identity(job)
     output = Path(output_dir).resolve()
     if output.exists():
         if output.is_dir() and not output.is_symlink():
@@ -1473,9 +1500,10 @@ def run_job(job, output_dir):
     expected_command_record = _command_record(job, output)
     _atomic_write_json(command_path, expected_command_record)
 
-    issues = _registered_identity_issues(job)
+    issues = []
     infrastructure_issues = []
     peak_nvml_mib = 0
+    gpu_memory_sample_count = 0
     launch_error = None
     returncode = None
     started = time.monotonic()
@@ -1493,14 +1521,21 @@ def run_job(job, output_dir):
             run_log.write(f"subprocess launch failed: {error}\n")
         else:
             while True:
-                used_memory, sampling_error = _sample_process_memory_mib(process.pid)
+                used_memory, observed_child, sampling_error = (
+                    _sample_process_memory_mib(process.pid)
+                )
                 peak_nvml_mib = max(peak_nvml_mib, used_memory)
+                gpu_memory_sample_count += int(observed_child)
                 if sampling_error is not None and sampling_error not in infrastructure_issues:
                     infrastructure_issues.append(sampling_error)
                 returncode = process.poll()
                 if returncode is not None:
                     break
                 time.sleep(0.1)
+            if gpu_memory_sample_count == 0 or peak_nvml_mib <= 0:
+                infrastructure_issues.append(
+                    "GPU monitor never observed positive memory for the child PID"
+                )
     wall_clock_seconds = max(0.0, time.monotonic() - started)
     log_text = run_log_path.read_text(errors="replace")
     exit_status, failure_kind = _failure_from_log(
@@ -1580,7 +1615,7 @@ def run_job(job, output_dir):
         default=None,
     )
 
-    forbidden_artifacts = _forbidden_artifacts(output)
+    forbidden_artifacts = _forbidden_artifacts(job, output)
     if forbidden_artifacts:
         issues.append("forbidden persistence artifacts are present")
 
@@ -1592,14 +1627,18 @@ def run_job(job, output_dir):
     if observed_command_record != expected_command_record:
         issues.append("command identity does not match the launched command and environment")
 
-    if exit_status == "failed_infrastructure" or infrastructure_issues:
+    if exit_status == "invalid_scientific":
+        status = "invalid_scientific"
+    elif exit_status == "failed_infrastructure":
         status = "failed_infrastructure"
-        if failure_kind is None:
-            failure_kind = "resource_monitor"
-    elif exit_status == "invalid_scientific" or issues:
+    elif issues:
         status = "invalid_scientific"
         if failure_kind is None:
             failure_kind = "evidence_validation"
+    elif infrastructure_issues:
+        status = "failed_infrastructure"
+        if failure_kind is None:
+            failure_kind = "resource_monitor"
     else:
         status = "completed"
 
@@ -1624,6 +1663,8 @@ def run_job(job, output_dir):
         "endpoint_raw_path": endpoint_raw_path,
         "wall_clock_seconds": wall_clock_seconds,
         "peak_nvml_mib": peak_nvml_mib,
+        "peak_gpu_memory_mib": peak_nvml_mib,
+        "gpu_memory_sample_count": gpu_memory_sample_count,
         "optimizer_update_count": optimizer_update_count,
         "final_global_step": final_global_step,
         "projection_count": projection_count,
