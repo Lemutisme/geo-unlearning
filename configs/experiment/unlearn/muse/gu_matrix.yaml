@@ -17,11 +17,16 @@ reference_model_artifact: muse-bench/MUSE-News_retrain
 reference_model_revision: 324ef49ee0a038078aba7d8de831edf57235c9b3
 reference_model_snapshot: /root/.cache/huggingface/hub/models--muse-bench--MUSE-News_retrain/snapshots/324ef49ee0a038078aba7d8de831edf57235c9b3
 retain_logs_path: /workspace/re/GU/geo-unlearning/saves/eval/muse_Llama-2-7b-hf_News_retrain/MUSE_EVAL.json
+muse_retain_logs_sha256: 11f8c9338f955a9fc1ce4148daa0fbd2867807c648a43f99dc240442d2135ec2
+muse_gibberish_revision: 76672dd7d3575f68ab980705bcec975cc62de71c
 
 model:
   model_args:
     pretrained_model_name_or_path: muse-bench/MUSE-News_target
     revision: a2f39769e9a0b98ec1cdd12f65e9962502208935
+    attn_implementation: sdpa
+    use_cache: false
+    output_attentions: false
   tokenizer_args:
     pretrained_model_name_or_path: NousResearch/Llama-2-7b-hf
     revision: 8efe6c9b93655b934e27bd9981e3ec13e55aee9d
@@ -51,21 +56,137 @@ eval:
     retain_logs_path: ${retain_logs_path}
     overwrite: true
     metrics:
+      forget_knowmem_ROUGE:
+        datasets:
+          MUSE_forget_knowmem:
+            args:
+              hf_args:
+                revision: ${dataset_revision}
+              few_shot_dataset_hf_args:
+                revision: ${dataset_revision}
+      retain_knowmem_ROUGE:
+        datasets:
+          MUSE_retain_knowmem:
+            args:
+              hf_args:
+                revision: ${dataset_revision}
+              few_shot_dataset_hf_args:
+                revision: ${dataset_revision}
+      forget_verbmem_ROUGE:
+        datasets:
+          MUSE_forget_verbmem:
+            args:
+              hf_args:
+                revision: ${dataset_revision}
+      extraction_strength:
+        datasets:
+          MUSE_forget_verbmem:
+            args:
+              hf_args:
+                revision: ${dataset_revision}
+      exact_memorization:
+        datasets:
+          MUSE_forget_verbmem:
+            args:
+              hf_args:
+                revision: ${dataset_revision}
+      mia_min_k_plus_plus:
+        datasets:
+          MUSE_MIA_holdout:
+            args:
+              hf_args:
+                revision: ${dataset_revision}
+          MUSE_MIA_forget:
+            args:
+              hf_args:
+                revision: ${dataset_revision}
+      mia_min_k:
+        datasets:
+          MUSE_MIA_holdout:
+            args:
+              hf_args:
+                revision: ${dataset_revision}
+          MUSE_MIA_forget:
+            args:
+              hf_args:
+                revision: ${dataset_revision}
+      mia_loss:
+        datasets:
+          MUSE_MIA_holdout:
+            args:
+              hf_args:
+                revision: ${dataset_revision}
+          MUSE_MIA_forget:
+            args:
+              hf_args:
+                revision: ${dataset_revision}
       mia_reference:
         reference_model_path: ${reference_model_snapshot}
+        reference_model_revision: ${reference_model_revision}
+        datasets:
+          MUSE_MIA_holdout:
+            args:
+              hf_args:
+                revision: ${dataset_revision}
+          MUSE_MIA_forget:
+            args:
+              hf_args:
+                revision: ${dataset_revision}
+      mia_zlib:
+        datasets:
+          MUSE_MIA_holdout:
+            args:
+              hf_args:
+                revision: ${dataset_revision}
+          MUSE_MIA_forget:
+            args:
+              hf_args:
+                revision: ${dataset_revision}
+      mia_gradnorm:
+        datasets:
+          MUSE_MIA_holdout:
+            args:
+              hf_args:
+                revision: ${dataset_revision}
+          MUSE_MIA_forget:
+            args:
+              hf_args:
+                revision: ${dataset_revision}
+      privleak:
+        pre_compute:
+          mia_min_k:
+            datasets:
+              MUSE_MIA_holdout:
+                args:
+                  hf_args:
+                    revision: ${dataset_revision}
+              MUSE_MIA_forget:
+                args:
+                  hf_args:
+                    revision: ${dataset_revision}
+        reference_logs:
+          retain_model_logs:
+            sha256: ${muse_retain_logs_sha256}
       forget_gibberish:
+        pre_compute:
+          forget_verbmem_ROUGE:
+            datasets:
+              MUSE_forget_verbmem:
+                args:
+                  hf_args:
+                    revision: ${dataset_revision}
         classifier_model_args:
-          revision: 76672dd7d3575f68ab980705bcec975cc62de71c
+          revision: ${muse_gibberish_revision}
         classifier_tokenization_args:
-          revision: 76672dd7d3575f68ab980705bcec975cc62de71c
-
-trainer:
-  args:
-    per_device_train_batch_size: 4
-    gradient_accumulation_steps: 8
-    learning_rate: 1.0e-5
-    num_train_epochs: 10
-    lr_scheduler_type: constant
+          revision: ${muse_gibberish_revision}
+      retain_extraction_strength:
+        datasets:
+          MUSE_retain_knowmem:
+            args:
+              hf_args:
+                revision: ${dataset_revision}
+              few_shot_dataset_hf_args:
+                revision: ${dataset_revision}
 
 protocol:
   benchmark: muse
@@ -84,6 +205,6 @@ protocol:
       revision: ${reference_model_revision}
     gibberish_classifier:
       artifact: madhurjindal/autonlp-Gibberish-Detector-492513457
-      revision: 76672dd7d3575f68ab980705bcec975cc62de71c
+      revision: ${muse_gibberish_revision}
 
 task_name: gu_matrix_muse

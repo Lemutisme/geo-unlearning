@@ -1,9 +1,11 @@
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
+from collections.abc import Mapping
 from collections import Counter
 from pathlib import Path, PurePosixPath
 
@@ -508,6 +510,13 @@ TOFU_DATASET_REVISION = "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
 MUSE_TOKENIZER_REVISION = "8efe6c9b93655b934e27bd9981e3ec13e55aee9d"
 ZEPHYR_REVISION = "892b3d7a7b1cf10c7a701c60881cd93df615734c"
 GIBBERISH_REVISION = "76672dd7d3575f68ab980705bcec975cc62de71c"
+RETAIN_LOG_HASHES = {
+    "tofu_forget01": "d307bb83ea3e3409fd01cc50908501ea16aba49e9ed6a779f8ceb75ec2e5503f",
+    "tofu_forget05": "d94b259bc878e1a38f97cc0fac6937147d09d5958cd24d7fe0437d4be7d3a29f",
+    "tofu_forget10": "aa4192bc0e60ee97f47aa514e39510e70f3a8cdc8aa6330591a3d7a0f88e95f2",
+    "muse_news": "11f8c9338f955a9fc1ce4148daa0fbd2867807c648a43f99dc240442d2135ec2",
+    "muse_books": "502d38cd7da4fda841e4ee411b488cce3be0d882a1e2c07a0117a83045be8b76",
+}
 
 RMU_ARGUMENTS = {
     "tofu": (
@@ -531,15 +540,15 @@ RMU_ARGUMENTS = {
         "trainer.args.num_train_epochs=10.0",
         "+trainer.args.lr_scheduler_type=constant",
         "+trainer.args.warmup_steps=0",
-        "trainer.args.warmup_epochs=0.0",
+        "+trainer.args.warmup_epochs=0.0",
         "trainer.args.bf16=true",
         "trainer.args.bf16_full_eval=true",
         "+trainer.args.fp16=false",
-        "trainer.args.gradient_checkpointing=true",
+        "trainer.args.gradient_checkpointing=false",
         "+trainer.args.gradient_checkpointing_kwargs.use_reentrant=false",
         "trainer.args.logging_steps=1",
     ),
-    "muse": (
+    "muse_news": (
         "trainer.method_args.gamma=1.0",
         "trainer.method_args.alpha=10.0",
         "trainer.method_args.retain_loss_type=EMBED_DIFF",
@@ -556,15 +565,42 @@ RMU_ARGUMENTS = {
         "trainer.args.per_device_train_batch_size=4",
         "trainer.args.per_device_eval_batch_size=1",
         "trainer.args.gradient_accumulation_steps=1",
-        "+trainer.args.max_steps=-1",
         "trainer.args.num_train_epochs=10.0",
-        "trainer.args.lr_scheduler_type=constant",
+        "+trainer.args.lr_scheduler_type=constant",
         "+trainer.args.warmup_steps=0",
         "+trainer.args.warmup_epochs=0.0",
         "trainer.args.bf16=true",
         "trainer.args.bf16_full_eval=true",
         "+trainer.args.fp16=false",
-        "trainer.args.gradient_checkpointing=true",
+        "trainer.args.gradient_checkpointing=false",
+        "+trainer.args.gradient_checkpointing_kwargs.use_reentrant=false",
+        "trainer.args.logging_steps=1",
+    ),
+    "muse_books": (
+        "trainer.method_args.gamma=1.0",
+        "trainer.method_args.alpha=10.0",
+        "trainer.method_args.retain_loss_type=EMBED_DIFF",
+        "trainer.method_args.steering_coeff=6.5",
+        'trainer.method_args.module_regex="model[.]layers[.]7"',
+        'trainer.method_args.trainable_params_regex=["model[.]layers[.](5|6|7)[.]mlp[.]down_proj[.]weight"]',
+        "trainer.args.optim=adamw_torch",
+        "+trainer.args.adam_beta1=0.9",
+        "+trainer.args.adam_beta2=0.999",
+        "+trainer.args.adam_epsilon=1e-6",
+        "trainer.args.learning_rate=1e-3",
+        "trainer.args.weight_decay=0.0",
+        "+trainer.args.max_grad_norm=0.0",
+        "trainer.args.per_device_train_batch_size=4",
+        "trainer.args.per_device_eval_batch_size=1",
+        "trainer.args.gradient_accumulation_steps=1",
+        "trainer.args.num_train_epochs=1.0",
+        "+trainer.args.lr_scheduler_type=constant",
+        "+trainer.args.warmup_steps=0",
+        "+trainer.args.warmup_epochs=0.0",
+        "trainer.args.bf16=true",
+        "trainer.args.bf16_full_eval=true",
+        "+trainer.args.fp16=false",
+        "trainer.args.gradient_checkpointing=false",
         "+trainer.args.gradient_checkpointing_kwargs.use_reentrant=false",
         "trainer.args.logging_steps=1",
     ),
@@ -585,7 +621,7 @@ RMU_ARGUMENTS = {
         "trainer.args.per_device_train_batch_size=4",
         "trainer.args.per_device_eval_batch_size=1",
         "trainer.args.gradient_accumulation_steps=1",
-        "trainer.args.max_steps=150",
+        "+trainer.args.max_steps=150",
         "+trainer.args.lr_scheduler_type=constant",
         "+trainer.args.warmup_steps=0",
         "+trainer.args.warmup_epochs=0.0",
@@ -619,6 +655,7 @@ def benchmark_command_arguments(job):
             f'holdout_split={job["holdout_split"]}',
             f"retain_logs_path={retain_logs}",
             f"tofu_dataset_revision={TOFU_DATASET_REVISION}",
+            f"retain_logs_sha256={RETAIN_LOG_HASHES[job['benchmark']]}",
         )
     if family == "muse":
         split = job["split"]
@@ -642,6 +679,7 @@ def benchmark_command_arguments(job):
             f"reference_model_revision={reference['revision']}",
             f"reference_model_snapshot={reference_snapshot}",
             f"retain_logs_path={retain_logs}",
+            f"muse_retain_logs_sha256={RETAIN_LOG_HASHES[job['benchmark']]}",
         )
     return ("data_split=cyber",)
 
@@ -674,7 +712,8 @@ def expected_command(job, output_dir):
         ),
     ]
     if job["method"] == "RMU":
-        command.extend(RMU_ARGUMENTS[benchmark_family(job)])
+        recipe = job["benchmark"] if benchmark_family(job) == "muse" else benchmark_family(job)
+        command.extend(RMU_ARGUMENTS[recipe])
     return command
 
 
@@ -746,38 +785,39 @@ def test_all_60_commands_hydra_compose_without_missing_or_unresolved_values(tmp_
         }
 
 
-def test_non_rmu_commands_keep_shipped_method_and_experiment_training_values(tmp_path):
+def test_non_rmu_commands_keep_shipped_trainer_defaults(tmp_path):
+    from omegaconf import OmegaConf
+
     jobs = load_registry().build_manifest(seed=0)["jobs"]
-    expected = {
-        "tofu": {
-            "learning_rate": 1.0e-5,
-            "weight_decay": 0.01,
-            "num_train_epochs": 10,
-            "warmup_epochs": 1.0,
-        },
-        "muse": {
-            "per_device_train_batch_size": 4,
-            "gradient_accumulation_steps": 8,
-            "learning_rate": 1.0e-5,
-            "num_train_epochs": 10,
-            "lr_scheduler_type": "constant",
-        },
-        "wmdp": {
-            "per_device_train_batch_size": 1,
-            "gradient_accumulation_steps": 16,
-            "learning_rate": 1.0e-5,
-            "max_steps": 80,
-        },
-    }
+    config_paths = (
+        ROOT / "configs/experiment/unlearn/tofu/gu_matrix_8b.yaml",
+        ROOT / "configs/experiment/unlearn/muse/gu_matrix.yaml",
+        ROOT / "configs/experiment/unlearn/wmdp/gu_matrix_cyber.yaml",
+    )
+    for path in config_paths:
+        assert "trainer" not in OmegaConf.load(path)
 
     for job in jobs:
         if job["method"] == "RMU":
             continue
         command = load_registry().build_command(job, tmp_path / job["job_id"])
-        assert not any(argument in command for values in RMU_ARGUMENTS.values() for argument in values)
-        config = compose_command(command)
-        for key, value in expected[benchmark_family(job)].items():
-            assert config.trainer.args[key] == value
+        assert not any(
+            argument in command
+            for values in RMU_ARGUMENTS.values()
+            for argument in values
+        )
+        assert not any(
+            argument.startswith(
+                (
+                    "trainer.args.learning_rate=",
+                    "trainer.args.num_train_epochs=",
+                    "trainer.args.optim=",
+                    "trainer.args.bf16=",
+                    "trainer.args.gradient_checkpointing=",
+                )
+            )
+            for argument in command
+        )
 
 
 def test_rmu_commands_translate_branch_recipes_to_current_rmu_keys(tmp_path):
@@ -790,8 +830,9 @@ def test_rmu_commands_translate_branch_recipes_to_current_rmu_keys(tmp_path):
     assert len(jobs) == 6
     for job in jobs:
         family = benchmark_family(job)
+        recipe = job["benchmark"] if family == "muse" else family
         command = load_registry().build_command(job, tmp_path / job["job_id"])
-        for argument in RMU_ARGUMENTS[family]:
+        for argument in RMU_ARGUMENTS[recipe]:
             assert command.count(argument) == 1
         config = compose_command(command)
         expected_module = "model[.]layers[.]31" if family == "tofu" else "model[.]layers[.]7"
@@ -804,6 +845,37 @@ def test_rmu_commands_translate_branch_recipes_to_current_rmu_keys(tmp_path):
         assert list(config.trainer.method_args.trainable_params_regex) == [
             job["selected_parameter_regex"]
         ]
+        assert config.trainer.args.gradient_checkpointing is False
+        if job["benchmark"] == "muse_books":
+            assert config.trainer.args.num_train_epochs == pytest.approx(1.0)
+        elif job["benchmark"] == "muse_news":
+            assert config.trainer.args.num_train_epochs == pytest.approx(10.0)
+
+
+def test_tofu_rmu_intentionally_translates_branch_scope_to_common_gu_scope(tmp_path):
+    job = next(
+        job
+        for job in load_registry().build_manifest(seed=0)["jobs"]
+        if job["method"] == "RMU" and job["benchmark"] == "tofu_forget01"
+    )
+    config = compose_command(
+        load_registry().build_command(job, tmp_path / job["job_id"])
+    )
+
+    translation = config.protocol.rmu_scope_translation
+    assert translation.branch_recipe.module_regex == "model.layers.15"
+    assert translation.branch_recipe.parameter_regex == (
+        "model[.]layers[.](13|14|15)[.]mlp[.]down_proj[.]weight"
+    )
+    assert translation.matrix_protocol.module_regex == "model.layers.31"
+    assert translation.matrix_protocol.parameter_regex == (
+        "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight"
+    )
+    assert translation.reason == "preserve_gradient_path_to_approved_common_gu_scope"
+    assert config.trainer.method_args.module_regex == "model[.]layers[.]31"
+    assert list(config.trainer.method_args.gu.parameter_regex) == [
+        translation.matrix_protocol.parameter_regex
+    ]
 
 
 def test_pinned_benchmark_configs_resolve_evaluators_and_provenance(tmp_path):
@@ -844,6 +916,66 @@ def test_pinned_benchmark_configs_resolve_evaluators_and_provenance(tmp_path):
             assert list(config.eval.lm_eval.tasks) == ["wmdp_cyber", "mmlu"]
 
 
+def iter_mappings(value):
+    if isinstance(value, Mapping):
+        yield value
+        for child in value.values():
+            yield from iter_mappings(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from iter_mappings(child)
+
+
+def assert_metric_hub_references_are_revision_pinned(config):
+    metrics = OmegaConf_to_container(config)["eval"]
+    observed = []
+    for mapping in iter_mappings(metrics):
+        for key in ("path", "pretrained_model_name_or_path"):
+            artifact = mapping.get(key)
+            if isinstance(artifact, str) and artifact.startswith(
+                ("locuslab/", "muse-bench/", "madhurjindal/")
+            ):
+                observed.append(artifact)
+                assert re.fullmatch(r"[0-9a-f]{40}", mapping.get("revision", "")), (
+                    key,
+                    artifact,
+                    mapping,
+                )
+    assert observed
+
+
+def test_tofu_and_muse_pin_every_enabled_metric_hub_reference(tmp_path):
+    jobs = load_registry().build_manifest(seed=0)["jobs"]
+    representatives = {}
+    for job in jobs:
+        if job["benchmark"] != "wmdp_cyber":
+            representatives.setdefault(job["benchmark"], job)
+
+    for benchmark, job in representatives.items():
+        config = compose_command(
+            load_registry().build_command(job, tmp_path / job["job_id"])
+        )
+        assert_metric_hub_references_are_revision_pinned(config)
+        retain_logs = Path(config.retain_logs_path)
+        retain_hash = hashlib.sha256(retain_logs.read_bytes()).hexdigest()
+        evaluator = config.eval.tofu if benchmark.startswith("tofu_") else config.eval.muse
+        assert (
+            evaluator.metrics.privleak.reference_logs.retain_model_logs.sha256
+            == retain_hash
+            == RETAIN_LOG_HASHES[benchmark]
+        )
+        if benchmark.startswith("muse_"):
+            reference = evaluator.metrics.mia_reference
+            assert reference.reference_model_path == config.reference_model_snapshot
+            assert reference.reference_model_revision == config.reference_model_revision
+        gibberish_name = (
+            "forget_Q_A_gibberish" if benchmark.startswith("tofu_") else "forget_gibberish"
+        )
+        gibberish = evaluator.metrics[gibberish_name]
+        assert gibberish.classifier_model_args.revision == GIBBERISH_REVISION
+        assert gibberish.classifier_tokenization_args.revision == GIBBERISH_REVISION
+
+
 def test_wmdp_config_is_cyber_only_with_absolute_verified_corpora_and_eval_cache_metadata(tmp_path):
     job = next(
         job
@@ -867,8 +999,44 @@ def test_wmdp_config_is_cyber_only_with_absolute_verified_corpora_and_eval_cache
         assert config.data[data_name][dataset_name].args.hf_args.data_files == str(path)
         assert path.stat().st_size == metadata.size_bytes
         assert hashlib.sha256(path.read_bytes()).hexdigest() == metadata.sha256
-    assert config.protocol.evaluation_datasets.wmdp_cyber.cache_builder_sha == "7125571f22f032c56415e7980f48d877dd830ff8"
-    assert config.protocol.evaluation_datasets.mmlu.cache_builder_sha == "b2e1ec9aa795adafe68e8e983248dbd4b52a1c60"
+    assert config.protocol.evaluation_pin.pin_mechanism == "verified_offline_cache"
+    assert config.protocol.evaluation_pin.datasets_cache == (
+        "/dev/shm/ungu-hf-datasets-wmdp"
+    )
+    assert config.protocol.evaluation_datasets.wmdp_cyber.cache_builder_sha == (
+        "7125571f22f032c56415e7980f48d877dd830ff8"
+    )
+    assert config.protocol.evaluation_datasets.mmlu.cache_builder_sha == (
+        "b2e1ec9aa795adafe68e8e983248dbd4b52a1c60"
+    )
+    assert all(
+        "revision" not in mapping
+        for mapping in iter_mappings(OmegaConf_to_container(config)["eval"]["lm_eval"])
+    )
+
+
+def test_build_environment_enforces_wmdp_verified_offline_dataset_cache(monkeypatch):
+    monkeypatch.setenv("HF_HOME", "/registered/model-cache")
+    monkeypatch.setenv("MATRIX_CALLER_VALUE", "preserved")
+    registry = load_registry()
+    wmdp_job = next(
+        job
+        for job in registry.build_manifest(seed=0)["jobs"]
+        if job["benchmark"] == "wmdp_cyber"
+    )
+    tofu_job = next(
+        job
+        for job in registry.build_manifest(seed=0)["jobs"]
+        if job["benchmark"] == "tofu_forget01"
+    )
+
+    environment = registry.build_environment(wmdp_job)
+    assert environment["HF_DATASETS_OFFLINE"] == "1"
+    assert environment["HF_HUB_OFFLINE"] == "1"
+    assert environment["HF_DATASETS_CACHE"] == "/dev/shm/ungu-hf-datasets-wmdp"
+    assert environment["HF_HOME"] == "/registered/model-cache"
+    assert environment["MATRIX_CALLER_VALUE"] == "preserved"
+    assert registry.build_environment(tofu_job) == dict(os.environ)
 
 
 def OmegaConf_to_container(config):

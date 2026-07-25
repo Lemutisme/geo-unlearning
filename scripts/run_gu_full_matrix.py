@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import os
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -11,6 +12,7 @@ SCHEMA_VERSION = 1
 PROTOCOL = "gu_full_matrix_20260724"
 STAGE = "stage1"
 SHARED_ROOT = Path("/workspace/re/GU/geo-unlearning")
+WMDP_EVALUATION_CACHE = "/dev/shm/ungu-hf-datasets-wmdp"
 
 METHODS = (
     "GradAscent",
@@ -234,6 +236,13 @@ COMMON_GU_ARGUMENTS = (
     "+trainer.method_args.gu.backtracking_scales=[1.0,0.5,0.25,0.125]",
     "+trainer.method_args.gu.diagnostics_path=gu_diagnostics.jsonl",
 )
+RETAIN_LOG_HASHES = {
+    "tofu_forget01": "d307bb83ea3e3409fd01cc50908501ea16aba49e9ed6a779f8ceb75ec2e5503f",
+    "tofu_forget05": "d94b259bc878e1a38f97cc0fac6937147d09d5958cd24d7fe0437d4be7d3a29f",
+    "tofu_forget10": "aa4192bc0e60ee97f47aa514e39510e70f3a8cdc8aa6330591a3d7a0f88e95f2",
+    "muse_news": "11f8c9338f955a9fc1ce4148daa0fbd2867807c648a43f99dc240442d2135ec2",
+    "muse_books": "502d38cd7da4fda841e4ee411b488cce3be0d882a1e2c07a0117a83045be8b76",
+}
 RMU_OVERRIDES = {
     "tofu": (
         "trainer.method_args.gamma=1.0",
@@ -256,15 +265,15 @@ RMU_OVERRIDES = {
         "trainer.args.num_train_epochs=10.0",
         "+trainer.args.lr_scheduler_type=constant",
         "+trainer.args.warmup_steps=0",
-        "trainer.args.warmup_epochs=0.0",
+        "+trainer.args.warmup_epochs=0.0",
         "trainer.args.bf16=true",
         "trainer.args.bf16_full_eval=true",
         "+trainer.args.fp16=false",
-        "trainer.args.gradient_checkpointing=true",
+        "trainer.args.gradient_checkpointing=false",
         "+trainer.args.gradient_checkpointing_kwargs.use_reentrant=false",
         "trainer.args.logging_steps=1",
     ),
-    "muse": (
+    "muse_news": (
         "trainer.method_args.gamma=1.0",
         "trainer.method_args.alpha=10.0",
         "trainer.method_args.retain_loss_type=EMBED_DIFF",
@@ -281,15 +290,42 @@ RMU_OVERRIDES = {
         "trainer.args.per_device_train_batch_size=4",
         "trainer.args.per_device_eval_batch_size=1",
         "trainer.args.gradient_accumulation_steps=1",
-        "+trainer.args.max_steps=-1",
         "trainer.args.num_train_epochs=10.0",
-        "trainer.args.lr_scheduler_type=constant",
+        "+trainer.args.lr_scheduler_type=constant",
         "+trainer.args.warmup_steps=0",
         "+trainer.args.warmup_epochs=0.0",
         "trainer.args.bf16=true",
         "trainer.args.bf16_full_eval=true",
         "+trainer.args.fp16=false",
-        "trainer.args.gradient_checkpointing=true",
+        "trainer.args.gradient_checkpointing=false",
+        "+trainer.args.gradient_checkpointing_kwargs.use_reentrant=false",
+        "trainer.args.logging_steps=1",
+    ),
+    "muse_books": (
+        "trainer.method_args.gamma=1.0",
+        "trainer.method_args.alpha=10.0",
+        "trainer.method_args.retain_loss_type=EMBED_DIFF",
+        "trainer.method_args.steering_coeff=6.5",
+        'trainer.method_args.module_regex="model[.]layers[.]7"',
+        'trainer.method_args.trainable_params_regex=["model[.]layers[.](5|6|7)[.]mlp[.]down_proj[.]weight"]',
+        "trainer.args.optim=adamw_torch",
+        "+trainer.args.adam_beta1=0.9",
+        "+trainer.args.adam_beta2=0.999",
+        "+trainer.args.adam_epsilon=1e-6",
+        "trainer.args.learning_rate=1e-3",
+        "trainer.args.weight_decay=0.0",
+        "+trainer.args.max_grad_norm=0.0",
+        "trainer.args.per_device_train_batch_size=4",
+        "trainer.args.per_device_eval_batch_size=1",
+        "trainer.args.gradient_accumulation_steps=1",
+        "trainer.args.num_train_epochs=1.0",
+        "+trainer.args.lr_scheduler_type=constant",
+        "+trainer.args.warmup_steps=0",
+        "+trainer.args.warmup_epochs=0.0",
+        "trainer.args.bf16=true",
+        "trainer.args.bf16_full_eval=true",
+        "+trainer.args.fp16=false",
+        "trainer.args.gradient_checkpointing=false",
         "+trainer.args.gradient_checkpointing_kwargs.use_reentrant=false",
         "trainer.args.logging_steps=1",
     ),
@@ -310,7 +346,7 @@ RMU_OVERRIDES = {
         "trainer.args.per_device_train_batch_size=4",
         "trainer.args.per_device_eval_batch_size=1",
         "trainer.args.gradient_accumulation_steps=1",
-        "trainer.args.max_steps=150",
+        "+trainer.args.max_steps=150",
         "+trainer.args.lr_scheduler_type=constant",
         "+trainer.args.warmup_steps=0",
         "+trainer.args.warmup_epochs=0.0",
@@ -405,6 +441,7 @@ def _benchmark_arguments(job):
             f'holdout_split={job["holdout_split"]}',
             f"retain_logs_path={retain_logs}",
             f"tofu_dataset_revision={provenance['dataset']['revision']}",
+            f"retain_logs_sha256={RETAIN_LOG_HASHES[job['benchmark']]}",
         )
     if family == "muse":
         split = job["split"]
@@ -428,6 +465,7 @@ def _benchmark_arguments(job):
             f"reference_model_revision={reference['revision']}",
             f"reference_model_snapshot={reference_snapshot}",
             f"retain_logs_path={retain_logs}",
+            f"muse_retain_logs_sha256={RETAIN_LOG_HASHES[job['benchmark']]}",
         )
     return ("data_split=cyber",)
 
@@ -464,8 +502,24 @@ def build_command(job, output_dir):
         ),
     ]
     if job["method"] == "RMU":
-        command.extend(RMU_OVERRIDES[_benchmark_family(job)])
+        family = _benchmark_family(job)
+        recipe = job["benchmark"] if family == "muse" else family
+        command.extend(RMU_OVERRIDES[recipe])
     return command
+
+
+def build_environment(job):
+    """Return the inherited process environment with benchmark enforcement."""
+    environment = dict(os.environ)
+    if job["benchmark"] == "wmdp_cyber":
+        environment.update(
+            {
+                "HF_DATASETS_OFFLINE": "1",
+                "HF_HUB_OFFLINE": "1",
+                "HF_DATASETS_CACHE": WMDP_EVALUATION_CACHE,
+            }
+        )
+    return environment
 
 
 def _manifest_dry_run(seed):

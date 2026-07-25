@@ -14,12 +14,16 @@ retain_split: retain90
 holdout_split: holdout10
 retain_logs_path: /workspace/re/GU/geo-unlearning/saves/eval/tofu_Llama-3.1-8B-Instruct_retain90/TOFU_EVAL.json
 tofu_dataset_revision: 324592d84ae4f482ac7249b9285c2ecdb53e3a68
+tofu_gibberish_revision: 76672dd7d3575f68ab980705bcec975cc62de71c
+retain_logs_sha256: aa4192bc0e60ee97f47aa514e39510e70f3a8cdc8aa6330591a3d7a0f88e95f2
 question_key: question
 
 model:
   model_args:
     pretrained_model_name_or_path: open-unlearning/tofu_Llama-3.1-8B-Instruct_full
     revision: 1a5c5b1a557f8c99bdadecd5168ebd03f640b00e
+    use_cache: false
+    output_attentions: false
   tokenizer_args:
     pretrained_model_name_or_path: open-unlearning/tofu_Llama-3.1-8B-Instruct_full
     revision: 1a5c5b1a557f8c99bdadecd5168ebd03f640b00e
@@ -51,18 +55,209 @@ eval:
     overwrite: true
     question_key: ${question_key}
     metrics:
+      forget_Q_A_Prob:
+        datasets:
+          TOFU_QA_forget:
+            args:
+              hf_args:
+                revision: ${tofu_dataset_revision}
+      forget_Q_A_ROUGE:
+        datasets:
+          TOFU_QA_forget:
+            args:
+              hf_args:
+                revision: ${tofu_dataset_revision}
+      model_utility:
+        pre_compute:
+          retain_Q_A_Prob:
+            datasets:
+              TOFU_QA_retain_eval:
+                args:
+                  hf_args:
+                    revision: ${tofu_dataset_revision}
+          retain_Q_A_ROUGE:
+            datasets:
+              TOFU_QA_retain_eval:
+                args:
+                  hf_args:
+                    revision: ${tofu_dataset_revision}
+          retain_Truth_Ratio:
+            pre_compute:
+              retain_Q_A_PARA_Prob:
+                datasets:
+                  TOFU_QA_retain_para:
+                    args:
+                      hf_args:
+                        revision: ${tofu_dataset_revision}
+              retain_Q_A_PERT_Prob:
+                datasets:
+                  TOFU_QA_retain_pert:
+                    args:
+                      hf_args:
+                        revision: ${tofu_dataset_revision}
+          ra_Q_A_Prob_normalised:
+            pre_compute:
+              ra_Q_A_Prob:
+                datasets:
+                  TOFU_QA_ra:
+                    args:
+                      hf_args:
+                        revision: ${tofu_dataset_revision}
+              ra_Q_A_PERT_Prob:
+                datasets:
+                  TOFU_QA_ra_pert:
+                    args:
+                      hf_args:
+                        revision: ${tofu_dataset_revision}
+          ra_Q_A_ROUGE:
+            datasets:
+              TOFU_QA_ra:
+                args:
+                  hf_args:
+                    revision: ${tofu_dataset_revision}
+          ra_Truth_Ratio:
+            pre_compute:
+              ra_Q_A_Prob:
+                datasets:
+                  TOFU_QA_ra:
+                    args:
+                      hf_args:
+                        revision: ${tofu_dataset_revision}
+              ra_Q_A_PERT_Prob:
+                datasets:
+                  TOFU_QA_ra_pert:
+                    args:
+                      hf_args:
+                        revision: ${tofu_dataset_revision}
+          wf_Q_A_Prob_normalised:
+            pre_compute:
+              wf_Q_A_Prob:
+                datasets:
+                  TOFU_QA_wf:
+                    args:
+                      hf_args:
+                        revision: ${tofu_dataset_revision}
+              wf_Q_A_PERT_Prob:
+                datasets:
+                  TOFU_QA_wf_pert:
+                    args:
+                      hf_args:
+                        revision: ${tofu_dataset_revision}
+          wf_Q_A_ROUGE:
+            datasets:
+              TOFU_QA_wf:
+                args:
+                  hf_args:
+                    revision: ${tofu_dataset_revision}
+          wf_Truth_Ratio:
+            pre_compute:
+              wf_Q_A_Prob:
+                datasets:
+                  TOFU_QA_wf:
+                    args:
+                      hf_args:
+                        revision: ${tofu_dataset_revision}
+              wf_Q_A_PERT_Prob:
+                datasets:
+                  TOFU_QA_wf_pert:
+                    args:
+                      hf_args:
+                        revision: ${tofu_dataset_revision}
+      privleak:
+        pre_compute:
+          mia_min_k:
+            datasets:
+              TOFU_QA_forget:
+                args:
+                  hf_args:
+                    revision: ${tofu_dataset_revision}
+              TOFU_QA_holdout:
+                args:
+                  hf_args:
+                    revision: ${tofu_dataset_revision}
+        reference_logs:
+          retain_model_logs:
+            sha256: ${retain_logs_sha256}
+      extraction_strength:
+        datasets:
+          TOFU_QA_forget:
+            args:
+              hf_args:
+                revision: ${tofu_dataset_revision}
+      retain_extraction_strength:
+        datasets:
+          TOFU_QA_retain_eval:
+            args:
+              hf_args:
+                revision: ${tofu_dataset_revision}
+      exact_memorization:
+        datasets:
+          TOFU_QA_forget:
+            args:
+              hf_args:
+                revision: ${tofu_dataset_revision}
+      mia_min_k_plus_plus:
+        datasets:
+          TOFU_QA_forget:
+            args:
+              hf_args:
+                revision: ${tofu_dataset_revision}
+          TOFU_QA_holdout:
+            args:
+              hf_args:
+                revision: ${tofu_dataset_revision}
+      mia_min_k:
+        datasets:
+          TOFU_QA_forget:
+            args:
+              hf_args:
+                revision: ${tofu_dataset_revision}
+          TOFU_QA_holdout:
+            args:
+              hf_args:
+                revision: ${tofu_dataset_revision}
+      mia_loss:
+        datasets:
+          TOFU_QA_forget:
+            args:
+              hf_args:
+                revision: ${tofu_dataset_revision}
+          TOFU_QA_holdout:
+            args:
+              hf_args:
+                revision: ${tofu_dataset_revision}
+      mia_zlib:
+        datasets:
+          TOFU_QA_forget:
+            args:
+              hf_args:
+                revision: ${tofu_dataset_revision}
+          TOFU_QA_holdout:
+            args:
+              hf_args:
+                revision: ${tofu_dataset_revision}
+      mia_gradnorm:
+        datasets:
+          TOFU_QA_forget:
+            args:
+              hf_args:
+                revision: ${tofu_dataset_revision}
+          TOFU_QA_holdout:
+            args:
+              hf_args:
+                revision: ${tofu_dataset_revision}
       forget_Q_A_gibberish:
+        pre_compute:
+          forget_Q_A_ROUGE:
+            datasets:
+              TOFU_QA_forget:
+                args:
+                  hf_args:
+                    revision: ${tofu_dataset_revision}
         classifier_model_args:
-          revision: 76672dd7d3575f68ab980705bcec975cc62de71c
+          revision: ${tofu_gibberish_revision}
         classifier_tokenization_args:
-          revision: 76672dd7d3575f68ab980705bcec975cc62de71c
-
-trainer:
-  args:
-    warmup_epochs: 1.0
-    learning_rate: 1.0e-5
-    weight_decay: 0.01
-    num_train_epochs: 10
+          revision: ${tofu_gibberish_revision}
 
 protocol:
   benchmark: tofu
@@ -78,6 +273,14 @@ protocol:
       revision: ${tofu_dataset_revision}
     gibberish_classifier:
       artifact: madhurjindal/autonlp-Gibberish-Detector-492513457
-      revision: 76672dd7d3575f68ab980705bcec975cc62de71c
+      revision: ${tofu_gibberish_revision}
+  rmu_scope_translation:
+    branch_recipe:
+      module_regex: model.layers.15
+      parameter_regex: model[.]layers[.](13|14|15)[.]mlp[.]down_proj[.]weight
+    matrix_protocol:
+      module_regex: model.layers.31
+      parameter_regex: model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight
+    reason: preserve_gradient_path_to_approved_common_gu_scope
 
 task_name: gu_matrix_tofu
