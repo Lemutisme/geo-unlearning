@@ -1339,9 +1339,18 @@ def run_job(job, output_dir, *, parent_job=None, launched=None):
             )
         ):
             exit_status, failure_kind = "failed_infrastructure", "host_io"
-        elif "cache" in lowered and any(
+        elif any(
             marker in lowered
-            for marker in ("absent", "missing", "corrupt", "mismatch", "failed", "error")
+            for marker in (
+                "required cache directory is absent",
+                "cache mismatch",
+                "cache is corrupt",
+                "corrupted cache",
+                "localentrynotfounderror",
+                "not found in the cached files",
+                "couldn't find it in the cached files",
+                "cannot find an appropriate cached dataset",
+            )
         ):
             exit_status, failure_kind = "failed_infrastructure", "cache"
         else:

@@ -337,7 +337,10 @@ class UnlearnTrainer(FinetuneTrainer):
                     raise ValueError(f"GU second moment must be nonnegative for {name}")
                 epsilon = next(group["eps"] for group in optimizer.param_groups
                     if any(candidate is parameter for candidate in group["params"]))
-                diagonal = second_moment.detach().double().sqrt()
+                diagonal = second_moment.detach().to(
+                    device=parameter.device,
+                    dtype=torch.float64,
+                ).sqrt()
                 diagonal.add_(epsilon)
                 if not torch.isfinite(diagonal).all() or (diagonal <= 0).any():
                     raise ValueError(f"GU metric diagonal must be finite for {name}")
@@ -393,7 +396,10 @@ class UnlearnTrainer(FinetuneTrainer):
                     zip(proposal, self._gu_selected)):
                     state = optimizer.state[parameter]
                     key = "exp_avg_sq" if "exp_avg_sq" in state else "state2"
-                    metric = state[key].detach().double().sqrt()
+                    metric = state[key].detach().to(
+                        device=parameter.device,
+                        dtype=torch.float64,
+                    ).sqrt()
                     metric.add_(next(group["eps"] for group in optimizer.param_groups
                         if any(item is parameter for item in group["params"])))
                     weighted = sum((item[block_index].double() * value.item()

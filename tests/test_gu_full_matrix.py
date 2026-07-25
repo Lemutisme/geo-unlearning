@@ -2326,6 +2326,33 @@ def test_run_job_classifies_host_io_and_cache_as_infrastructure(
     assert result["failure_kind"] == failure_kind
 
 
+def test_cache_warning_does_not_hide_a_scientific_runtime_failure(
+    tmp_path,
+    monkeypatch,
+):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        returncode=1,
+        log_text=(
+            "Using the latest cached version of the dataset.\n"
+            "RuntimeError: tensors are on cuda:0 and cpu\n"
+        ),
+        diagnostics=False,
+        endpoint_count=0,
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "invalid_scientific"
+    assert result["failure_kind"] == "subprocess_exit"
+
+
 def test_run_job_rejects_command_record_identity_tampering(tmp_path, monkeypatch):
     registry = load_registry()
     job = first_matrix_job(registry)

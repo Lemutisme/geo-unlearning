@@ -1,10 +1,12 @@
 import copy
+from types import SimpleNamespace
 
 import pytest
 import torch
 from transformers import LlamaConfig, LlamaForCausalLM
 
 from trainer.unlearn.optimizer_geometry import make_optimizer_geometry_adapter
+from trainer.unlearn.base import UnlearnTrainer
 
 
 pytestmark = pytest.mark.gpu
@@ -45,6 +47,41 @@ def test_real_paged_adamw32_state_uses_finite_frozen_coordinates():
     assert sqrt_denominator.dtype == torch.float32
     assert torch.isfinite(sqrt_denominator).all()
     assert (sqrt_denominator > 0).all()
+
+
+def test_realized_delta_projection_accepts_cpu_second_moment(tmp_path):
+    require_cuda()
+    parameter = torch.nn.Parameter(torch.zeros(2, device="cuda"))
+    optimizer = torch.optim.AdamW([parameter], lr=1.0e-3)
+    before = parameter.detach().clone()
+    with torch.no_grad():
+        parameter.add_(torch.tensor([1.0, -0.25], device="cuda"))
+    optimizer.state[parameter]["exp_avg_sq"] = torch.ones(2, device="cpu")
+    pending = (torch.tensor([1.0, 0.0], device="cuda"),)
+    diagnostics_path = tmp_path / "gu_diagnostics.jsonl"
+    diagnostics_path.write_text("")
+    trainer = SimpleNamespace(
+        _gu_parameter_snapshot=(before,),
+        _gu_pending_history_covector=pending,
+        _gu_constraints_used=(pending,),
+        _gu_constraint_history=(),
+        _gu_selected=(("weight", parameter),),
+        _gu_diagnostics_path=diagnostics_path,
+        gu_config={
+            "projection_eps": 1.0e-6,
+            "retain_filter": "first_order",
+            "retain_history_rank": 1,
+        },
+        gu_projection_calls=0,
+        gu_last_diagnostics=None,
+    )
+
+    UnlearnTrainer._gu_optimizer_step_post_hook(trainer, optimizer, (), {})
+
+    applied = parameter.detach() - before
+    assert applied[0].item() <= trainer.gu_config["projection_eps"]
+    assert trainer.gu_projection_calls == 1
+    assert trainer.gu_last_diagnostics["max_violation_after"] <= 1.0e-6
 
 
 def make_llama(attention_implementation, state_dict=None):
