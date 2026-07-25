@@ -1373,6 +1373,7 @@ def _forbidden_artifacts(job, output_dir):
     root_files = {
         "command.json",
         "run.log",
+        f'{job["method"]}.log',
         "gu_diagnostics.jsonl",
         "JOB_RESULT.json",
     }

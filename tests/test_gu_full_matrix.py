@@ -2004,6 +2004,52 @@ def test_run_job_accepts_only_the_exact_valid_evidence_tree(tmp_path, monkeypatc
     assert result["forbidden_artifacts"] == []
 
 
+def test_run_job_accepts_only_its_exact_hydra_handler_log(tmp_path, monkeypatch):
+    registry = load_registry()
+    job = next(
+        candidate
+        for candidate in registry.build_manifest(seed=0)["jobs"]
+        if candidate["method"] == "SimNPO"
+        and candidate["evaluator_kind"] == "muse"
+    )
+    output_dir = tmp_path / job["job_id"]
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        extra_files={"SimNPO.log": b"hydra log\n"},
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "completed"
+    assert result["forbidden_artifacts"] == []
+
+
+def test_run_job_rejects_a_different_methods_hydra_log(tmp_path, monkeypatch):
+    registry = load_registry()
+    job = next(
+        candidate
+        for candidate in registry.build_manifest(seed=0)["jobs"]
+        if candidate["method"] == "SimNPO"
+        and candidate["evaluator_kind"] == "muse"
+    )
+    output_dir = tmp_path / job["job_id"]
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        extra_files={"NPO.log": b"wrong handler log\n"},
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "invalid_scientific"
+    assert result["forbidden_artifacts"] == ["NPO.log"]
+
+
 def test_run_job_classifies_oom_as_scientific_without_retry(tmp_path, monkeypatch):
     registry = load_registry()
     job = first_matrix_job(registry)
