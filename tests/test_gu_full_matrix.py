@@ -1,3 +1,4 @@
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -2319,6 +2320,12 @@ def queue_manifest(registry, output_root):
 
 def queue_result(registry, job, output_root, status="completed", failure_kind=None):
     output_dir = (Path(output_root) / job["output_dir"]).resolve()
+    prefix = job_endpoint_prefix(job)
+    endpoint_dir = output_dir / "checkpoint-1" / "evals"
+    if status == "completed":
+        endpoint_dir.mkdir(parents=True, exist_ok=True)
+        (endpoint_dir / f"{prefix}_SUMMARY.json").write_text('{"metric": 0.25}')
+        (endpoint_dir / f"{prefix}_EVAL.json").write_text('{"metric": 0.25}')
     command_record = {
         "schema_version": registry.SCHEMA_VERSION,
         "protocol": registry.PROTOCOL,
@@ -2351,8 +2358,8 @@ def queue_result(registry, job, output_root, status="completed", failure_kind=No
         "provenance": job["provenance"],
         "run_log_path": "run.log",
         "diagnostics_path": "gu_diagnostics.jsonl",
-        "endpoint_summary_path": "checkpoint-1/evals/MUSE_SUMMARY.json",
-        "endpoint_raw_path": "checkpoint-1/evals/MUSE_EVAL.json",
+        "endpoint_summary_path": f"checkpoint-1/evals/{prefix}_SUMMARY.json",
+        "endpoint_raw_path": f"checkpoint-1/evals/{prefix}_EVAL.json",
         "wall_clock_seconds": 1.0,
         "peak_nvml_mib": 256,
         "peak_gpu_memory_mib": 256,
@@ -2535,7 +2542,7 @@ def test_queue_resume_monitors_exact_live_child_then_adopts_and_continues(
     running, next_job = state["jobs"][:2]
     mark_queue_job_running(registry, running, tmp_path)
     output = tmp_path / running["output_dir"]
-    output.mkdir(parents=True)
+    output.mkdir(parents=True, exist_ok=True)
     (output / "JOB_RESULT.json").write_text(
         json.dumps(queue_result(registry, running, tmp_path))
     )
@@ -2588,7 +2595,7 @@ def test_queue_resume_adopts_valid_result_but_never_an_endpoint_alone(
     first, second = state["jobs"][:2]
     mark_queue_job_running(registry, first, tmp_path, pid=9999)
     first_output = tmp_path / first["output_dir"]
-    first_output.mkdir(parents=True)
+    first_output.mkdir(parents=True, exist_ok=True)
     (first_output / "JOB_RESULT.json").write_text(
         json.dumps(
             queue_result(
@@ -2617,7 +2624,7 @@ def test_queue_resume_adopts_valid_result_but_never_an_endpoint_alone(
     second = state["jobs"][1]
     mark_queue_job_running(registry, second, tmp_path, pid=9999)
     second_output = tmp_path / second["output_dir"] / "checkpoint-1" / "evals"
-    second_output.mkdir(parents=True)
+    second_output.mkdir(parents=True, exist_ok=True)
     (second_output / "MUSE_SUMMARY.json").write_text('{"metric": 1.0}')
     state_path.write_text(json.dumps(state))
     registry.run_queue(manifest_path, state_path)
@@ -2739,7 +2746,7 @@ def test_stage_two_expands_every_valid_seed_zero_parent_exactly_once(tmp_path):
     for job in completed:
         result = finish_queue_job(registry, job, tmp_path, "completed")
         output = tmp_path / job["output_dir"]
-        output.mkdir(parents=True)
+        output.mkdir(parents=True, exist_ok=True)
         (output / "JOB_RESULT.json").write_text(json.dumps(result))
     state_path.write_text(json.dumps(state))
 
@@ -2808,7 +2815,7 @@ def test_stage_two_fails_for_invalid_completed_parent_evidence(tmp_path, evidenc
     finish_queue_job(registry, parent, tmp_path, "completed")
     result_path = tmp_path / parent["output_dir"] / "JOB_RESULT.json"
     if evidence != "missing":
-        result_path.parent.mkdir(parents=True)
+        result_path.parent.mkdir(parents=True, exist_ok=True)
         if evidence == "corrupt":
             result_path.write_text("not-json")
         else:
@@ -2874,6 +2881,7 @@ def test_completed_result_validation_reuses_the_full_task_three_contract(
         "attempt_number",
         "argv",
         "evidence_failure_kind",
+        "running_pid_mismatch",
         "terminal_pid",
         "pending_pid",
     ],
@@ -2904,6 +2912,9 @@ def test_status_rejects_queue_state_tampering_before_process_inspection(
         first["attempt_history"][0]["argv"].append("tampered=true")
     elif tamper == "evidence_failure_kind":
         first["attempt_history"][0]["evidence"]["failure_kind"] = None
+    elif tamper == "running_pid_mismatch":
+        mark_queue_job_running(registry, first, tmp_path, pid=4242)
+        first["pid"] = None
     elif tamper == "terminal_pid":
         first["pid"] = 123
     else:
@@ -2949,6 +2960,158 @@ def test_status_rejects_duplicate_stage_two_job_identity(tmp_path):
         registry.queue_status(state_path)
 
 
+@pytest.mark.parametrize("parent_status", ["invalid_scientific", "failed_infrastructure"])
+def test_status_and_expansion_reject_derived_job_from_invalid_parent(
+    tmp_path,
+    parent_status,
+):
+    registry = load_registry()
+    state_path = tmp_path / "queue_state.json"
+    state = registry.create_queue_state(queue_manifest(registry, tmp_path), state_path)
+    leave_only_pending(state, 0, registry, tmp_path)
+    parent = state["jobs"][0]
+    if parent_status == "invalid_scientific":
+        finish_queue_job(
+            registry,
+            parent,
+            tmp_path,
+            "invalid_scientific",
+            "oom",
+        )
+    else:
+        result = queue_result(
+            registry,
+            parent,
+            tmp_path,
+            "failed_infrastructure",
+            "host_io",
+        )
+        command = registry.build_command(parent, tmp_path / parent["output_dir"])
+        parent.update(
+            status="failed_infrastructure",
+            attempt_count=2,
+            attempt_history=[
+                {
+                    "attempt": attempt,
+                    "status": "failed_infrastructure",
+                    "pid": 4000 + attempt,
+                    "argv": command,
+                    "command_identity": result["command_identity"],
+                    "evidence": result,
+                }
+                for attempt in (1, 2)
+            ],
+            pid=None,
+        )
+    derived = json.loads(json.dumps(parent))
+    derived.update(
+        job_id=parent["job_id"].replace("seed0", "seed1"),
+        seed=1,
+        stage="stage2",
+        status="pending",
+        output_dir=parent["output_dir"].replace("seed0", "seed1"),
+        parent_seed_zero=parent["job_id"],
+        attempt_count=0,
+        attempt_history=[],
+        pid=None,
+    )
+    state["jobs"].append(derived)
+    state_path.write_text(json.dumps(state))
+
+    with pytest.raises(ValueError, match="parent|completed"):
+        registry.queue_status(state_path)
+    with pytest.raises(ValueError, match="parent|completed"):
+        registry.expand_seeds(state_path)
+
+
+@pytest.mark.parametrize(
+    "tamper",
+    ["different_checkpoint", "violation", "traversal", "missing_file"],
+)
+def test_completed_evidence_requires_safe_existing_endpoint_pair_and_tolerance(
+    tmp_path,
+    tamper,
+):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["output_dir"]
+    result = queue_result(registry, job, tmp_path)
+    prefix = job_endpoint_prefix(job)
+    if tamper == "different_checkpoint":
+        other = output_dir / "checkpoint-2" / "evals"
+        other.mkdir(parents=True)
+        (other / f"{prefix}_EVAL.json").write_text('{"metric": 0.25}')
+        result["endpoint_raw_path"] = f"checkpoint-2/evals/{prefix}_EVAL.json"
+    elif tamper == "violation":
+        result["max_violation_after"] = 999.0
+    elif tamper == "traversal":
+        result["endpoint_summary_path"] = (
+            f"../checkpoint-1/evals/{prefix}_SUMMARY.json"
+        )
+    else:
+        (output_dir / result["endpoint_raw_path"]).unlink()
+
+    with pytest.raises(ValueError, match="completed|endpoint|projection"):
+        registry.validate_job_result(
+            result,
+            job,
+            output_dir,
+            expected_status="completed",
+        )
+
+
+@pytest.mark.parametrize("controller", ["queue", "smoke", "run-job"])
+def test_controller_lock_prevents_two_launchers_passing_admission(
+    tmp_path,
+    monkeypatch,
+    controller,
+):
+    registry = load_registry()
+    manifest_path = tmp_path / "manifest.json"
+    state_path = tmp_path / "queue_state.json"
+    manifest = queue_manifest(registry, tmp_path)
+    manifest_path.write_text(json.dumps(manifest))
+    state = registry.create_queue_state(manifest, state_path)
+    leave_only_pending(state, 1, registry, tmp_path)
+    state_path.write_text(json.dumps(state))
+    admitted = []
+    launched = []
+    monkeypatch.setattr(
+        registry,
+        "admit_launch",
+        lambda *args: admitted.append(controller) or 0,
+    )
+    monkeypatch.setattr(registry, "preflight_manifest", lambda *args: {})
+
+    def stub_run_job(job, output_dir, **kwargs):
+        launched.append(job["job_id"])
+        return queue_result(registry, job, tmp_path)
+
+    monkeypatch.setattr(registry, "run_job", stub_run_job)
+    lock_path = tmp_path / ".gu_matrix_controller.lock"
+    with lock_path.open("a+") as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if controller == "queue":
+            with pytest.raises(RuntimeError, match="controller.*active|lock"):
+                registry.run_queue(manifest_path, state_path)
+        elif controller == "smoke":
+            with pytest.raises(RuntimeError, match="controller.*active|lock"):
+                registry.smoke_manifest(manifest_path)
+        else:
+            assert registry.main(
+                [
+                    "run-job",
+                    "--manifest",
+                    str(manifest_path),
+                    "--job-id",
+                    manifest["jobs"][0]["job_id"],
+                ]
+            ) != 0
+
+    assert admitted == []
+    assert launched == []
+
+
 def test_resume_adopts_first_infrastructure_result_then_runs_exact_retry(
     tmp_path,
     monkeypatch,
@@ -2963,7 +3126,7 @@ def test_resume_adopts_first_infrastructure_result_then_runs_exact_retry(
     job = state["jobs"][0]
     mark_queue_job_running(registry, job, tmp_path, pid=9999)
     result_path = tmp_path / job["output_dir"] / "JOB_RESULT.json"
-    result_path.parent.mkdir(parents=True)
+    result_path.parent.mkdir(parents=True, exist_ok=True)
     result_path.write_text(
         json.dumps(
             queue_result(

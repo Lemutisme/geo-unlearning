@@ -2,6 +2,7 @@
 
 import argparse
 import ast
+import fcntl
 import hashlib
 import json
 import math
@@ -12,8 +13,9 @@ import subprocess
 import sys
 import time
 from collections import Counter
+from contextlib import contextmanager
 from copy import deepcopy
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from subprocess import TimeoutExpired
 
 
@@ -243,11 +245,13 @@ COMMON_RUNTIME_ARGUMENTS = (
     "trainer.args.logging_steps=1",
 )
 SHIPPED_GU_RETAIN_FILTER = "first_order"
+GU_PROJECTION_TOLERANCE_TEXT = "1e-6"
+GU_PROJECTION_TOLERANCE = float(GU_PROJECTION_TOLERANCE_TEXT)
 COMMON_GU_ARGUMENTS = (
     "+trainer.method_args.gu.enabled=true",
     '+trainer.method_args.gu.parameter_regex=["{parameter_regex}"]',
     "+trainer.method_args.gu.retain_history_rank=8",
-    "+trainer.method_args.gu.projection_eps=1e-6",
+    f"+trainer.method_args.gu.projection_eps={GU_PROJECTION_TOLERANCE_TEXT}",
     f"+trainer.method_args.gu.retain_filter={SHIPPED_GU_RETAIN_FILTER}",
     "+trainer.method_args.gu.retain_budget=1e-4",
     "+trainer.method_args.gu.backtracking_scales=[1.0,0.5,0.25,0.125]",
@@ -1776,6 +1780,24 @@ def validate_job_result(result, job, output_dir, *, expected_status=None):
     ratios = result["correction_ratio"]
     scales = result["applied_scale_distribution"]
     endpoint_prefix = ENDPOINT_PREFIXES[job["evaluator_kind"]]
+    summary_path = PurePosixPath(result["endpoint_summary_path"] or "")
+    raw_path = PurePosixPath(result["endpoint_raw_path"] or "")
+    checkpoint_pattern = re.compile(r"checkpoint-[0-9]+")
+    endpoint_pair_valid = (
+        not summary_path.is_absolute()
+        and not raw_path.is_absolute()
+        and ".." not in summary_path.parts
+        and ".." not in raw_path.parts
+        and len(summary_path.parts) == 3
+        and len(raw_path.parts) == 3
+        and checkpoint_pattern.fullmatch(summary_path.parts[0]) is not None
+        and summary_path.parent == raw_path.parent
+        and summary_path.parts[1] == "evals"
+        and summary_path.name == f"{endpoint_prefix}_SUMMARY.json"
+        and raw_path.name == f"{endpoint_prefix}_EVAL.json"
+        and (Path(output_dir) / Path(*summary_path.parts)).is_file()
+        and (Path(output_dir) / Path(*raw_path.parts)).is_file()
+    )
     completed_valid = (
         result["failure_kind"] is None
         and type(result["returncode"]) is int
@@ -1788,6 +1810,7 @@ def validate_job_result(result, job, output_dir, *, expected_status=None):
             f"/{endpoint_prefix}_SUMMARY.json"
         )
         and result["endpoint_raw_path"].endswith(f"/{endpoint_prefix}_EVAL.json")
+        and endpoint_pair_valid
         and isinstance(result["wall_clock_seconds"], (int, float))
         and not isinstance(result["wall_clock_seconds"], bool)
         and result["wall_clock_seconds"] >= 0
@@ -1824,7 +1847,7 @@ def validate_job_result(result, job, output_dir, *, expected_status=None):
         and isinstance(result["max_violation_after"], (int, float))
         and not isinstance(result["max_violation_after"], bool)
         and math.isfinite(result["max_violation_after"])
-        and result["max_violation_after"] >= 0
+        and 0 <= result["max_violation_after"] <= GU_PROJECTION_TOLERANCE
         and result["selected_parameter_changed"] is True
         and result["forbidden_artifacts"] == []
         and result["issues"] == []
@@ -1882,6 +1905,8 @@ def validate_queue_state(state):
         parent = parents.get(job.get("parent_seed_zero"))
         if parent is None:
             raise ValueError("queue state derived job has no exact Stage-1 parent")
+        if parent.get("status") != "completed":
+            raise ValueError("queue state derived job parent is not completed")
         validate_job_identity(job, parent_job=parent)
 
     running_count = 0
@@ -1947,9 +1972,7 @@ def validate_queue_state(state):
         if status == "running":
             last_status = history[-1]["status"]
             retry_ready = count == 1 and last_status == "failed_infrastructure" and pid is None
-            live_attempt = last_status == "running" and (
-                pid is None or history[-1]["pid"] == pid
-            )
+            live_attempt = last_status == "running" and history[-1]["pid"] == pid
             if not (retry_ready or live_attempt):
                 raise ValueError(f"running queue job has inconsistent pid/history: {job['job_id']}")
     if running_count > 1:
@@ -1987,6 +2010,25 @@ def live_matrix_children(state, output_root):
             }
         )
     return children
+
+
+@contextmanager
+def controller_lock(output_root):
+    """Hold the one local matrix controller lock until its launch work ends."""
+    root = Path(output_root).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = root / ".gu_matrix_controller.lock"
+    with lock_path.open("a+") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError(
+                f"another GU matrix controller is active: {lock_path}"
+            ) from error
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def admit_launch(state, output_root):
@@ -2044,167 +2086,171 @@ def preflight_manifest(manifest_path):
 def smoke_manifest(manifest_path):
     """Run one job per method plus every benchmark-specific RMU job."""
     manifest_path = Path(manifest_path)
-    preflight_manifest(manifest_path)
     manifest = validate_manifest(_read_json(manifest_path))
     output_root = Path(manifest.get("output_root", manifest_path.parent)).resolve()
-    selected = []
-    seen_methods = set()
-    for job in manifest["jobs"]:
-        if job["method"] not in seen_methods or job["method"] == "RMU":
-            selected.append(job)
-            seen_methods.add(job["method"])
-    smoke_state = {
-        "jobs": [
-            {**deepcopy(job), "status": "pending", "attempt_count": 0}
-            for job in selected
-        ]
-    }
-    results = []
-    for job in selected:
-        admit_launch(smoke_state, output_root)
-        results.append(run_job(job, output_root / "smoke" / job["job_id"]))
-    return results
+    with controller_lock(output_root):
+        preflight_manifest(manifest_path)
+        selected = []
+        seen_methods = set()
+        for job in manifest["jobs"]:
+            if job["method"] not in seen_methods or job["method"] == "RMU":
+                selected.append(job)
+                seen_methods.add(job["method"])
+        smoke_state = {
+            "jobs": [
+                {**deepcopy(job), "status": "pending", "attempt_count": 0}
+                for job in selected
+            ]
+        }
+        results = []
+        for job in selected:
+            admit_launch(smoke_state, output_root)
+            results.append(run_job(job, output_root / "smoke" / job["job_id"]))
+        return results
 
 
 def run_queue(manifest_path, state_path):
     """Resume and drain the persistent local queue sequentially on GPU 0."""
     manifest_path, state_path = Path(manifest_path), Path(state_path)
     manifest = validate_manifest(_read_json(manifest_path))
-    if not state_path.exists():
-        state = create_queue_state(manifest, state_path)
-    else:
-        state = _read_json(state_path)
-    validate_queue_state(state)
-    output_root = Path(state["output_root"])
-    expected_root = Path(manifest.get("output_root", manifest_path.parent)).resolve()
-    if output_root != expected_root:
-        raise ValueError("queue state output_root does not match manifest")
-    jobs = state["jobs"]
-    parents = {job["job_id"]: job for job in jobs[:60]}
-    running = [job for job in jobs if job["status"] == "running"]
+    output_root = Path(manifest.get("output_root", manifest_path.parent)).resolve()
+    with controller_lock(output_root):
+        if not state_path.exists():
+            state = create_queue_state(manifest, state_path)
+        else:
+            state = _read_json(state_path)
+        validate_queue_state(state)
+        if Path(state["output_root"]) != output_root:
+            raise ValueError("queue state output_root does not match manifest")
+        jobs = state["jobs"]
+        parents = {job["job_id"]: job for job in jobs[:60]}
+        running = [job for job in jobs if job["status"] == "running"]
 
-    if running:
-        job = running[0]
-        while True:
-            children = live_matrix_children(state, output_root)
-            exact_child_live = any(
-                child["pid"] == job.get("pid")
-                and child["job_id"] == job["job_id"]
-                and child.get("exact", True)
-                for child in children
-            )
-            if not exact_child_live:
-                break
-            time.sleep(1.0)
-        output_dir = output_root / job["output_dir"]
-        history = job["attempt_history"]
-        if history[-1]["status"] == "running":
-            result_path = output_dir / "JOB_RESULT.json"
-            result = None
-            try:
-                observed = _read_json(result_path)
-                result = validate_job_result(
-                    observed,
-                    job,
-                    output_dir,
-                    expected_status=observed.get("status")
-                    if isinstance(observed, dict)
-                    else None,
+        if running:
+            job = running[0]
+            while True:
+                children = live_matrix_children(state, output_root)
+                exact_child_live = any(
+                    child["pid"] == job.get("pid")
+                    and child["job_id"] == job["job_id"]
+                    and child.get("exact", True)
+                    for child in children
                 )
-            except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+                if not exact_child_live:
+                    break
+                time.sleep(1.0)
+            output_dir = output_root / job["output_dir"]
+            history = job["attempt_history"]
+            if history[-1]["status"] == "running":
+                result_path = output_dir / "JOB_RESULT.json"
                 result = None
-            if result is None:
-                command = _command_record(job, output_dir)
-                result = {
-                    "schema_version": SCHEMA_VERSION,
-                    "protocol": PROTOCOL,
-                    "job_id": job["job_id"],
-                    "method": job["method"],
-                    "benchmark": job["benchmark"],
-                    "seed": job["seed"],
-                    "stage": job["stage"],
-                    "status": "failed_infrastructure",
-                    "failure_kind": "stale_running_without_valid_result",
-                    "command_identity": _command_identity(command),
-                    "environment_overrides": command["environment_overrides"],
-                    "provenance": deepcopy(job["provenance"]),
-                }
-            history[-1].update(status=result["status"], evidence=result)
-            job["pid"] = None
-            if result["status"] != "failed_infrastructure" or job["attempt_count"] >= 2:
-                job["status"] = result["status"]
-            _atomic_write_json(state_path, state)
-
-    for job in jobs:
-        if job["status"] in TERMINAL_STATUSES:
-            continue
-        parent = parents.get(job.get("parent_seed_zero"))
-        output_dir = output_root / job["output_dir"]
-        while job["status"] in {"pending", "running"}:
-            admit_launch(state, output_root)
-            job["status"] = "running"
-            job["attempt_count"] += 1
-            command_record = _command_record(job, output_dir)
-            attempt = {
-                "attempt": job["attempt_count"],
-                "status": "running",
-                "pid": None,
-                "argv": command_record["argv"],
-                "command_identity": _command_identity(command_record),
-            }
-            job["attempt_history"].append(attempt)
-            _atomic_write_json(state_path, state)
-
-            def record_pid(pid):
-                job["pid"] = pid
-                attempt["pid"] = pid
+                try:
+                    observed = _read_json(result_path)
+                    result = validate_job_result(
+                        observed,
+                        job,
+                        output_dir,
+                        expected_status=observed.get("status")
+                        if isinstance(observed, dict)
+                        else None,
+                    )
+                except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+                    result = None
+                if result is None:
+                    command = _command_record(job, output_dir)
+                    result = {
+                        "schema_version": SCHEMA_VERSION,
+                        "protocol": PROTOCOL,
+                        "job_id": job["job_id"],
+                        "method": job["method"],
+                        "benchmark": job["benchmark"],
+                        "seed": job["seed"],
+                        "stage": job["stage"],
+                        "status": "failed_infrastructure",
+                        "failure_kind": "stale_running_without_valid_result",
+                        "command_identity": _command_identity(command),
+                        "environment_overrides": command["environment_overrides"],
+                        "provenance": deepcopy(job["provenance"]),
+                    }
+                history[-1].update(status=result["status"], evidence=result)
+                job["pid"] = None
+                if (
+                    result["status"] != "failed_infrastructure"
+                    or job["attempt_count"] >= 2
+                ):
+                    job["status"] = result["status"]
                 _atomic_write_json(state_path, state)
 
-            try:
-                result = run_job(
-                    job,
-                    output_dir,
-                    parent_job=parent,
-                    launched=record_pid,
-                )
-                validate_job_result(
-                    result,
-                    job,
-                    output_dir,
-                    expected_status=result.get("status")
-                    if isinstance(result, dict)
-                    else None,
-                )
-            except Exception as error:
-                command_record = _command_record(job, output_dir)
-                result = {
-                    "schema_version": SCHEMA_VERSION,
-                    "protocol": PROTOCOL,
-                    "job_id": job["job_id"],
-                    "method": job["method"],
-                    "benchmark": job["benchmark"],
-                    "seed": job["seed"],
-                    "stage": job["stage"],
-                    "status": "failed_infrastructure",
-                    "failure_kind": "queue_orchestration",
-                    "command_identity": _command_identity(command_record),
-                    "environment_overrides": command_record["environment_overrides"],
-                    "provenance": deepcopy(job["provenance"]),
-                    "error": str(error),
-                }
-            attempt.update(status=result["status"], evidence=result)
-            job["pid"] = None
-            if (
-                result["status"] == "failed_infrastructure"
-                and job["attempt_count"] < 2
-            ):
-                _atomic_write_json(state_path, state)
+        for job in jobs:
+            if job["status"] in TERMINAL_STATUSES:
                 continue
-            job["status"] = result["status"]
-            _atomic_write_json(state_path, state)
-            break
-    validate_queue_state(state)
-    return state
+            parent = parents.get(job.get("parent_seed_zero"))
+            output_dir = output_root / job["output_dir"]
+            while job["status"] in {"pending", "running"}:
+                admit_launch(state, output_root)
+                job["status"] = "running"
+                job["attempt_count"] += 1
+                command_record = _command_record(job, output_dir)
+                attempt = {
+                    "attempt": job["attempt_count"],
+                    "status": "running",
+                    "pid": None,
+                    "argv": command_record["argv"],
+                    "command_identity": _command_identity(command_record),
+                }
+                job["attempt_history"].append(attempt)
+                _atomic_write_json(state_path, state)
+
+                def record_pid(pid):
+                    job["pid"] = pid
+                    attempt["pid"] = pid
+                    _atomic_write_json(state_path, state)
+
+                try:
+                    result = run_job(
+                        job,
+                        output_dir,
+                        parent_job=parent,
+                        launched=record_pid,
+                    )
+                    validate_job_result(
+                        result,
+                        job,
+                        output_dir,
+                        expected_status=result.get("status")
+                        if isinstance(result, dict)
+                        else None,
+                    )
+                except Exception as error:
+                    command_record = _command_record(job, output_dir)
+                    result = {
+                        "schema_version": SCHEMA_VERSION,
+                        "protocol": PROTOCOL,
+                        "job_id": job["job_id"],
+                        "method": job["method"],
+                        "benchmark": job["benchmark"],
+                        "seed": job["seed"],
+                        "stage": job["stage"],
+                        "status": "failed_infrastructure",
+                        "failure_kind": "queue_orchestration",
+                        "command_identity": _command_identity(command_record),
+                        "environment_overrides": command_record["environment_overrides"],
+                        "provenance": deepcopy(job["provenance"]),
+                        "error": str(error),
+                    }
+                attempt.update(status=result["status"], evidence=result)
+                job["pid"] = None
+                if (
+                    result["status"] == "failed_infrastructure"
+                    and job["attempt_count"] < 2
+                ):
+                    _atomic_write_json(state_path, state)
+                    continue
+                job["status"] = result["status"]
+                _atomic_write_json(state_path, state)
+                break
+        validate_queue_state(state)
+        return state
 
 
 def expand_seeds(state_path):
@@ -2364,8 +2410,9 @@ def main(argv=None):
                 manifest.get("output_root", args.manifest.parent)
             ).resolve()
             admission_state = {"jobs": deepcopy(manifest["jobs"])}
-            admit_launch(admission_state, output_root)
-            result = run_job(job, output_root / job["output_dir"])
+            with controller_lock(output_root):
+                admit_launch(admission_state, output_root)
+                result = run_job(job, output_root / job["output_dir"])
             print(json.dumps(result, indent=2, sort_keys=True))
             return int(result["status"] != "completed")
         raise AssertionError(f"unsupported command: {args.command}")
