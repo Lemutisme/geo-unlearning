@@ -515,6 +515,16 @@ NVML_QUERY_COMMAND = [
     "--query-compute-apps=pid,used_memory",
     "--format=csv,noheader",
 ]
+GPU_ADMISSION_COMMAND = [
+    "nvidia-smi",
+    "--query-gpu=index,memory.used",
+    "--format=csv,noheader,nounits",
+]
+TERMINAL_STATUSES = {
+    "completed",
+    "invalid_scientific",
+    "failed_infrastructure",
+}
 IMMUTABLE_JOB_FIELDS = (
     "method",
     "benchmark",
@@ -710,6 +720,7 @@ def environment_overrides(job):
     root = runtime_root(job)
     hub = str(root / "hub")
     return {
+        "CUDA_VISIBLE_DEVICES": "0",
         "HF_DATASETS_CACHE": str(root / "datasets"),
         "HF_DATASETS_OFFLINE": "1",
         "HF_HOME": hub,
@@ -1130,6 +1141,27 @@ def _atomic_write_json(path, payload):
             temporary.unlink()
 
 
+def _command_record(job, output_dir):
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "protocol": PROTOCOL,
+        "job_id": job["job_id"],
+        "method": job["method"],
+        "benchmark": job["benchmark"],
+        "seed": job["seed"],
+        "stage": job["stage"],
+        "argv": build_command(job, output_dir),
+        "environment_overrides": environment_overrides(job),
+        "provenance": deepcopy(job["provenance"]),
+    }
+
+
+def _command_identity(record):
+    return hashlib.sha256(
+        json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
 def _finite_tree(value):
     if isinstance(value, bool) or value is None or isinstance(value, str):
         return True
@@ -1143,9 +1175,38 @@ def _finite_tree(value):
 
 
 def validate_job_identity(job, *, parent_job=None):
-    """Return the exact registered job; reserve parent validation for Task 4."""
+    """Return an exact registered Stage-1 job or parent-derived Stage-2 job."""
     if parent_job is not None:
-        raise ValueError("Stage-2 identity validation is unavailable until Task 4")
+        registered_parent = validate_job_identity(parent_job)
+        expected = deepcopy(registered_parent)
+        seed = job.get("seed") if isinstance(job, dict) else None
+        if seed not in {1, 2}:
+            raise ValueError("derived Stage-2 job seed must be 1 or 2")
+        expected.update(
+            {
+                "job_id": registered_parent["job_id"].replace("seed0", f"seed{seed}"),
+                "seed": seed,
+                "stage": "stage2",
+                "status": "pending",
+                "output_dir": registered_parent["output_dir"].replace(
+                    "seed0", f"seed{seed}"
+                ),
+                "parent_seed_zero": registered_parent["job_id"],
+            }
+        )
+        missing = object()
+        fields = (*IMMUTABLE_JOB_FIELDS, "job_id", "parent_seed_zero")
+        mismatches = [
+            field
+            for field in fields
+            if job.get(field, missing) != expected.get(field, missing)
+        ]
+        if mismatches:
+            raise ValueError(
+                "derived Stage-2 job does not match its seed-zero parent: "
+                + ",".join(mismatches)
+            )
+        return expected
     if not isinstance(job, dict) or not isinstance(job.get("job_id"), str):
         raise ValueError("job is not an exact registered Stage-1 job: invalid job_id")
     registered = {
@@ -1168,9 +1229,9 @@ def validate_job_identity(job, *, parent_job=None):
     return expected
 
 
-def run_job(job, output_dir):
+def run_job(job, output_dir, *, parent_job=None, launched=None):
     """Run one unchanged matrix command and persist its complete evidence audit."""
-    validate_job_identity(job)
+    validate_job_identity(job, parent_job=parent_job)
     output = Path(output_dir).resolve()
     if output.exists():
         if output.is_dir() and not output.is_symlink():
@@ -1183,18 +1244,7 @@ def run_job(job, output_dir):
     run_log_path = output / "run.log"
     diagnostics_path = output / "gu_diagnostics.jsonl"
     result_path = output / "JOB_RESULT.json"
-    expected_command_record = {
-        "schema_version": SCHEMA_VERSION,
-        "protocol": PROTOCOL,
-        "job_id": job["job_id"],
-        "method": job["method"],
-        "benchmark": job["benchmark"],
-        "seed": job["seed"],
-        "stage": job["stage"],
-        "argv": build_command(job, output),
-        "environment_overrides": environment_overrides(job),
-        "provenance": deepcopy(job["provenance"]),
-    }
+    expected_command_record = _command_record(job, output)
     _atomic_write_json(command_path, expected_command_record)
 
     # Phase 1: launch once and sample only the direct child process.
@@ -1212,6 +1262,8 @@ def run_job(job, output_dir):
             launch_error = str(error)
             run_log.write(f"subprocess launch failed: {error}\n")
         else:
+            if launched is not None:
+                launched(process.pid)
             while True:
                 used_memory, observed_child, sampling_error = 0, False, None
                 try:
@@ -1581,13 +1633,7 @@ def run_job(job, output_dir):
         "failure_kind": failure_kind,
         "returncode": returncode,
         "command_path": command_path.relative_to(output).as_posix(),
-        "command_identity": hashlib.sha256(
-            json.dumps(
-                expected_command_record,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest(),
+        "command_identity": _command_identity(expected_command_record),
         "environment_overrides": expected_command_record["environment_overrides"],
         "provenance": deepcopy(job["provenance"]),
         "run_log_path": run_log_path.relative_to(output).as_posix(),
@@ -1611,6 +1657,392 @@ def run_job(job, output_dir):
     }
     _atomic_write_json(result_path, result)
     return result
+
+
+def _read_json(path):
+    return json.loads(
+        Path(path).read_text(),
+        parse_constant=lambda value: (_ for _ in ()).throw(
+            ValueError(f"nonfinite JSON constant: {value}")
+        ),
+    )
+
+
+def validate_manifest(manifest):
+    """Validate the complete deterministic Stage-1 registry before use."""
+    if not isinstance(manifest, dict):
+        raise ValueError("manifest must be a JSON object")
+    expected = build_manifest(seed=0)
+    for field in ("schema_version", "protocol", "stage", "seed", "not_applicable"):
+        if manifest.get(field) != expected[field]:
+            raise ValueError(f"manifest mismatch: {field}")
+    jobs = manifest.get("jobs")
+    if not isinstance(jobs, list) or len(jobs) != len(expected["jobs"]):
+        raise ValueError("manifest must contain every registered Stage-1 job")
+    if [job.get("job_id") for job in jobs if isinstance(job, dict)] != [
+        job["job_id"] for job in expected["jobs"]
+    ]:
+        raise ValueError("manifest Stage-1 job order or membership mismatch")
+    for job in jobs:
+        validate_job_identity(job)
+    output_root = manifest.get("output_root")
+    if output_root is not None and (
+        not isinstance(output_root, str) or not Path(output_root).is_absolute()
+    ):
+        raise ValueError("manifest output_root must be an absolute path")
+    return manifest
+
+
+def create_queue_state(manifest, state_path):
+    """Create the persistent direct queue state with every job pending."""
+    validate_manifest(manifest)
+    destination = Path(state_path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    output_root = Path(manifest.get("output_root", destination.parent)).resolve()
+    state = {
+        "schema_version": SCHEMA_VERSION,
+        "protocol": PROTOCOL,
+        "output_root": str(output_root),
+        "jobs": [],
+    }
+    for registered in manifest["jobs"]:
+        job = deepcopy(registered)
+        job.update(
+            {
+                "status": "pending",
+                "attempt_count": 0,
+                "attempt_history": [],
+                "pid": None,
+            }
+        )
+        state["jobs"].append(job)
+    _atomic_write_json(destination, state)
+    return state
+
+
+def validate_job_result(result, job, output_dir):
+    """Require durable result evidence for this exact job and command."""
+    if not isinstance(result, dict) or result.get("status") not in TERMINAL_STATUSES:
+        raise ValueError("JOB_RESULT has no terminal status")
+    expected = {
+        "schema_version": SCHEMA_VERSION,
+        "protocol": PROTOCOL,
+        "job_id": job["job_id"],
+        "method": job["method"],
+        "benchmark": job["benchmark"],
+        "seed": job["seed"],
+        "stage": job["stage"],
+        "command_identity": _command_identity(_command_record(job, output_dir)),
+        "environment_overrides": environment_overrides(job),
+        "provenance": job["provenance"],
+    }
+    mismatches = [field for field, value in expected.items() if result.get(field) != value]
+    if mismatches:
+        raise ValueError("JOB_RESULT identity mismatch: " + ",".join(mismatches))
+    return result
+
+
+def live_matrix_children(state, output_root):
+    """Return live registered matrix children and whether each command is exact."""
+    root = Path(output_root)
+    by_id = {job["job_id"]: job for job in state["jobs"]}
+    children = []
+    for cmdline_path in Path("/proc").glob("[0-9]*/cmdline"):
+        try:
+            raw = cmdline_path.read_bytes()
+            argv = [part.decode() for part in raw.rstrip(b"\0").split(b"\0")]
+        except (OSError, UnicodeError):
+            continue
+        if len(argv) < 3 or argv[1:3] != [
+            str(CODE_ROOT / "src/train.py"),
+            "--config-name=unlearn.yaml",
+        ]:
+            continue
+        task_arguments = [value for value in argv if value.startswith("task_name=")]
+        if "+trainer.method_args.gu.enabled=true" not in argv or len(task_arguments) != 1:
+            continue
+        job_id = task_arguments[0].split("=", 1)[1]
+        job = by_id.get(job_id)
+        children.append(
+            {
+                "pid": int(cmdline_path.parent.name),
+                "job_id": job_id,
+                "exact": job is not None
+                and argv == build_command(job, root / job["output_dir"]),
+            }
+        )
+    return children
+
+
+def admit_launch(state, output_root):
+    """Require an idle matrix and less than 500 MiB already used on GPU 0."""
+    children = live_matrix_children(state, output_root)
+    if children:
+        raise RuntimeError(f"matrix child already running: {children}")
+    try:
+        sample = subprocess.run(
+            GPU_ADMISSION_COMMAND,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5.0,
+        )
+    except TimeoutExpired as error:
+        raise RuntimeError(
+            f"GPU admission timed out after {error.timeout} seconds"
+        ) from error
+    except OSError as error:
+        raise RuntimeError(f"GPU admission launch failed: {error}") from error
+    if sample.returncode != 0:
+        raise RuntimeError(
+            f"GPU admission failed with exit {sample.returncode}: "
+            f"{(sample.stderr or '').strip()}"
+        )
+    device_zero = []
+    for line in sample.stdout.splitlines():
+        fields = [field.strip() for field in line.split(",", 1)]
+        if len(fields) != 2 or fields[0] != "0":
+            continue
+        try:
+            device_zero.append(int(re.sub(r"\s*MiB\s*$", "", fields[1])))
+        except ValueError:
+            continue
+    if len(device_zero) != 1:
+        raise RuntimeError("GPU admission did not return exactly one device 0 sample")
+    if device_zero[0] >= 500:
+        raise RuntimeError(
+            f"GPU 0 has {device_zero[0]} MiB used; launch requires below 500 MiB"
+        )
+    return device_zero[0]
+
+
+def preflight_manifest(manifest_path):
+    """Validate every registered identity and pinned source before launch."""
+    manifest = validate_manifest(_read_json(manifest_path))
+    fingerprints = {}
+    memo = {}
+    for job in manifest["jobs"]:
+        fingerprints[job["job_id"]] = validate_sources(job, memo)
+    return fingerprints
+
+
+def smoke_manifest(manifest_path):
+    """Run one job per method plus every benchmark-specific RMU job."""
+    manifest_path = Path(manifest_path)
+    preflight_manifest(manifest_path)
+    manifest = validate_manifest(_read_json(manifest_path))
+    output_root = Path(manifest.get("output_root", manifest_path.parent)).resolve()
+    selected = []
+    seen_methods = set()
+    for job in manifest["jobs"]:
+        if job["method"] not in seen_methods or job["method"] == "RMU":
+            selected.append(job)
+            seen_methods.add(job["method"])
+    smoke_state = {
+        "jobs": [
+            {**deepcopy(job), "status": "pending", "attempt_count": 0}
+            for job in selected
+        ]
+    }
+    results = []
+    for job in selected:
+        admit_launch(smoke_state, output_root)
+        results.append(run_job(job, output_root / "smoke" / job["job_id"]))
+    return results
+
+
+def run_queue(manifest_path, state_path):
+    """Resume and drain the persistent local queue sequentially on GPU 0."""
+    manifest_path, state_path = Path(manifest_path), Path(state_path)
+    manifest = validate_manifest(_read_json(manifest_path))
+    if not state_path.exists():
+        state = create_queue_state(manifest, state_path)
+    else:
+        state = _read_json(state_path)
+    if state.get("schema_version") != SCHEMA_VERSION or state.get("protocol") != PROTOCOL:
+        raise ValueError("queue state schema or protocol mismatch")
+    output_root = Path(state.get("output_root", "")).resolve()
+    expected_root = Path(manifest.get("output_root", manifest_path.parent)).resolve()
+    if output_root != expected_root:
+        raise ValueError("queue state output_root does not match manifest")
+    jobs = state.get("jobs")
+    if not isinstance(jobs, list):
+        raise ValueError("queue state jobs must be a list")
+    parents = {job["job_id"]: job for job in jobs if job.get("seed") == 0}
+    if set(parents) != {job["job_id"] for job in manifest["jobs"]}:
+        raise ValueError("queue state is missing registered Stage-1 jobs")
+    for job in jobs:
+        parent_id = job.get("parent_seed_zero")
+        validate_job_identity(job, parent_job=parents.get(parent_id) if parent_id else None)
+        if job.get("status") not in TERMINAL_STATUSES | {"pending", "running"}:
+            raise ValueError(f"invalid queue status for {job['job_id']}")
+        if not isinstance(job.get("attempt_count"), int) or not isinstance(
+            job.get("attempt_history"), list
+        ):
+            raise ValueError(f"invalid attempt audit for {job['job_id']}")
+    running = [job for job in jobs if job["status"] == "running"]
+    if len(running) > 1:
+        raise ValueError("queue state permits at most one running job")
+
+    if running:
+        job = running[0]
+        children = live_matrix_children(state, output_root)
+        if any(
+            child["pid"] == job.get("pid")
+            and child["job_id"] == job["job_id"]
+            and child.get("exact", True)
+            for child in children
+        ):
+            raise RuntimeError(
+                f"exact matrix child already running for {job['job_id']}"
+            )
+        output_dir = output_root / job["output_dir"]
+        result_path = output_dir / "JOB_RESULT.json"
+        result = None
+        if result_path.is_file():
+            try:
+                result = validate_job_result(_read_json(result_path), job, output_dir)
+            except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+                result = None
+        history = job["attempt_history"]
+        if not history:
+            history.append({"attempt": job["attempt_count"], "status": "running"})
+        if result is not None:
+            history[-1].update(status=result["status"], evidence=result)
+            job.update(status=result["status"], pid=None)
+            _atomic_write_json(state_path, state)
+        else:
+            stale = {
+                "schema_version": SCHEMA_VERSION,
+                "protocol": PROTOCOL,
+                "job_id": job["job_id"],
+                "status": "failed_infrastructure",
+                "failure_kind": "stale_running_without_valid_result",
+                "pid": job.get("pid"),
+            }
+            history[-1].update(status="failed_infrastructure", evidence=stale)
+            job["pid"] = None
+            if job["attempt_count"] >= 2:
+                job["status"] = "failed_infrastructure"
+            _atomic_write_json(state_path, state)
+
+    for job in jobs:
+        if job["status"] in TERMINAL_STATUSES:
+            continue
+        parent = parents.get(job.get("parent_seed_zero"))
+        output_dir = output_root / job["output_dir"]
+        while job["status"] in {"pending", "running"}:
+            admit_launch(state, output_root)
+            job["status"] = "running"
+            job["attempt_count"] += 1
+            command_record = _command_record(job, output_dir)
+            attempt = {
+                "attempt": job["attempt_count"],
+                "status": "running",
+                "pid": None,
+                "argv": command_record["argv"],
+                "command_identity": _command_identity(command_record),
+            }
+            job["attempt_history"].append(attempt)
+            _atomic_write_json(state_path, state)
+
+            def record_pid(pid):
+                job["pid"] = pid
+                attempt["pid"] = pid
+                _atomic_write_json(state_path, state)
+
+            try:
+                result = run_job(
+                    job,
+                    output_dir,
+                    parent_job=parent,
+                    launched=record_pid,
+                )
+                validate_job_result(result, job, output_dir)
+            except Exception as error:
+                result = {
+                    "schema_version": SCHEMA_VERSION,
+                    "protocol": PROTOCOL,
+                    "job_id": job["job_id"],
+                    "status": "failed_infrastructure",
+                    "failure_kind": "queue_orchestration",
+                    "error": str(error),
+                }
+            attempt.update(status=result["status"], evidence=result)
+            job["pid"] = None
+            if (
+                result["status"] == "failed_infrastructure"
+                and job["attempt_count"] < 2
+            ):
+                _atomic_write_json(state_path, state)
+                continue
+            job["status"] = result["status"]
+            _atomic_write_json(state_path, state)
+            break
+    return state
+
+
+def expand_seeds(state_path):
+    """Add seeds 1 and 2 for every valid completed seed-zero parent."""
+    state_path = Path(state_path)
+    state = _read_json(state_path)
+    jobs = state.get("jobs")
+    if not isinstance(jobs, list):
+        raise ValueError("queue state jobs must be a list")
+    stage_one = [job for job in jobs if job.get("seed") == 0]
+    if any(job.get("status") not in TERMINAL_STATUSES for job in stage_one):
+        raise ValueError("Stage 1 must be terminal before seed expansion")
+    output_root = Path(state["output_root"])
+    by_id = {job["job_id"]: job for job in jobs}
+    additions = []
+    for parent in stage_one:
+        validate_job_identity(parent)
+        if parent["status"] != "completed":
+            continue
+        result_path = output_root / parent["output_dir"] / "JOB_RESULT.json"
+        try:
+            validate_job_result(_read_json(result_path), parent, result_path.parent)
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+            continue
+        for seed in (1, 2):
+            job_id = parent["job_id"].replace("seed0", f"seed{seed}")
+            if job_id in by_id:
+                validate_job_identity(by_id[job_id], parent_job=parent)
+                continue
+            derived = deepcopy(parent)
+            derived.update(
+                {
+                    "job_id": job_id,
+                    "seed": seed,
+                    "stage": "stage2",
+                    "status": "pending",
+                    "output_dir": parent["output_dir"].replace(
+                        "seed0", f"seed{seed}"
+                    ),
+                    "parent_seed_zero": parent["job_id"],
+                    "attempt_count": 0,
+                    "attempt_history": [],
+                    "pid": None,
+                }
+            )
+            validate_job_identity(derived, parent_job=parent)
+            additions.append(derived)
+            by_id[job_id] = derived
+    if additions:
+        state["jobs"].extend(additions)
+        state["jobs"].sort(key=lambda job: (job["seed"], job["job_id"]))
+        _atomic_write_json(state_path, state)
+    return state
+
+
+def queue_status(state_path):
+    """Return durable status counts plus any live registered child."""
+    state = _read_json(state_path)
+    counts = Counter(job["status"] for job in state["jobs"])
+    return {
+        "counts": dict(sorted(counts.items())),
+        "live_matrix_children": live_matrix_children(state, state["output_root"]),
+    }
 
 
 def _manifest_dry_run(seed):
@@ -1643,13 +2075,75 @@ def main(argv=None):
     manifest_parser.add_argument("--seed", type=int, default=0)
     manifest_parser.add_argument("--seed0", action="store_const", const=0, dest="seed")
     manifest_parser.add_argument("--dry-run", action="store_true")
+    manifest_parser.add_argument("--output-root", type=Path)
+    for name in ("preflight", "smoke"):
+        command_parser = subparsers.add_parser(name)
+        command_parser.add_argument("--manifest", type=Path, required=True)
+    queue_parser = subparsers.add_parser("queue")
+    queue_parser.add_argument("--manifest", type=Path, required=True)
+    queue_parser.add_argument("--state", type=Path, required=True)
+    expand_parser = subparsers.add_parser("expand-seeds")
+    expand_parser.add_argument("--state", type=Path, required=True)
+    status_parser = subparsers.add_parser("status")
+    status_parser.add_argument("--state", type=Path, required=True)
+    run_parser = subparsers.add_parser("run-job")
+    run_parser.add_argument("--manifest", type=Path, required=True)
+    run_parser.add_argument("--job-id", required=True)
     args = parser.parse_args(argv)
 
-    if args.command == "manifest":
-        payload = _manifest_dry_run(args.seed) if args.dry_run else build_manifest(args.seed)
-        print(json.dumps(payload, indent=2, sort_keys=True))
-        return int("source_validation_error" in payload)
-    raise AssertionError(f"unsupported command: {args.command}")
+    try:
+        if args.command == "manifest":
+            if args.dry_run:
+                payload = _manifest_dry_run(args.seed)
+                print(json.dumps(payload, indent=2, sort_keys=True))
+                return int("source_validation_error" in payload)
+            payload = build_manifest(args.seed)
+            if args.output_root is None:
+                print(json.dumps(payload, indent=2, sort_keys=True))
+                return 0
+            output_root = args.output_root.resolve()
+            payload["output_root"] = str(output_root)
+            validate_manifest(payload)
+            output_root.mkdir(parents=True, exist_ok=True)
+            _atomic_write_json(output_root / "manifest.json", payload)
+            print(output_root / "manifest.json")
+            return 0
+        if args.command == "preflight":
+            print(json.dumps(preflight_manifest(args.manifest), indent=2, sort_keys=True))
+            return 0
+        if args.command == "smoke":
+            results = smoke_manifest(args.manifest)
+            print(json.dumps(results, indent=2, sort_keys=True))
+            return int(any(result["status"] != "completed" for result in results))
+        if args.command == "queue":
+            state = run_queue(args.manifest, args.state)
+            print(json.dumps(dict(Counter(job["status"] for job in state["jobs"])), sort_keys=True))
+            return 0
+        if args.command == "expand-seeds":
+            state = expand_seeds(args.state)
+            print(json.dumps(dict(Counter(job["status"] for job in state["jobs"])), sort_keys=True))
+            return 0
+        if args.command == "status":
+            print(json.dumps(queue_status(args.state), indent=2, sort_keys=True))
+            return 0
+        if args.command == "run-job":
+            manifest = validate_manifest(_read_json(args.manifest))
+            registered = {job["job_id"]: job for job in manifest["jobs"]}
+            if args.job_id not in registered:
+                raise ValueError(f"unregistered job id: {args.job_id}")
+            job = registered[args.job_id]
+            output_root = Path(
+                manifest.get("output_root", args.manifest.parent)
+            ).resolve()
+            admission_state = {"jobs": deepcopy(manifest["jobs"])}
+            admit_launch(admission_state, output_root)
+            result = run_job(job, output_root / job["output_dir"])
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return int(result["status"] != "completed")
+        raise AssertionError(f"unsupported command: {args.command}")
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError, RuntimeError) as error:
+        print(f"{args.command}: {error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
