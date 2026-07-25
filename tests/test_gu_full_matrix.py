@@ -1359,14 +1359,14 @@ def job_diagnostic(job, step, **overrides):
         "corrected_norm": 1.0,
         "correction_ratio": 0.5,
         "constraint_count": 2,
-        "active_constraints": 1,
+        "active_constraints": [1],
         "max_violation_before": 0.2,
         "max_violation_after": 5.0e-8,
         "kkt_residual": 1.0e-8,
         "projection_tolerance": 1.0e-6,
         "applied_scale": 0.5,
-        "retain_loss_before": 1.0,
-        "retain_loss_after": 1.00001,
+        "retain_loss_before": None,
+        "retain_loss_after": None,
         "zero_step": False,
         "zero_step_reason": None,
         "optimizer_state_semantics": "proposal_state_committed",
@@ -1398,6 +1398,7 @@ def install_job_subprocess_stub(
     endpoint_count=1,
     forbidden_path=None,
     extra_files=None,
+    extra_dirs=None,
     nvml_results=None,
     tamper_command=False,
 ):
@@ -1414,6 +1415,8 @@ def install_job_subprocess_stub(
         diagnostics = [job_diagnostic(job, 1), job_diagnostic(job, 2)]
     if extra_files is None:
         extra_files = {}
+    if extra_dirs is None:
+        extra_dirs = []
     captured = {"nvidia_commands": []}
 
     class StubPopen:
@@ -1447,6 +1450,8 @@ def install_job_subprocess_stub(
                 path = output_dir / relative_path
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(contents)
+            for relative_path in extra_dirs:
+                (output_dir / relative_path).mkdir(parents=True, exist_ok=True)
             if tamper_command:
                 payload = json.loads((output_dir / "command.json").read_text())
                 payload["argv"].append("trainer.args.learning_rate=999")
@@ -1691,6 +1696,113 @@ def test_run_job_rejects_nonfinite_diagnostic(tmp_path, monkeypatch):
     assert "nonfinite" in " ".join(result["issues"]).lower()
 
 
+def test_run_job_accepts_exact_first_order_producer_diagnostics(
+    tmp_path,
+    monkeypatch,
+):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    records = [
+        job_diagnostic(
+            job,
+            1,
+            active_constraints=[],
+            retain_loss_before=None,
+            retain_loss_after=None,
+        ),
+        job_diagnostic(
+            job,
+            2,
+            active_constraints=[0, 1],
+            retain_loss_before=None,
+            retain_loss_after=None,
+        ),
+    ]
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        diagnostics=records,
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "completed"
+    assert result["projection_count"] == 2
+
+
+@pytest.mark.parametrize(
+    "active_constraints",
+    [[True], [2], [1, 1], [1, 0], ["0"]],
+)
+def test_run_job_rejects_malformed_active_constraint_lists(
+    tmp_path,
+    monkeypatch,
+    active_constraints,
+):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    records = [
+        job_diagnostic(job, 1),
+        job_diagnostic(job, 2, active_constraints=active_constraints),
+    ]
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        diagnostics=records,
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "invalid_scientific"
+    assert "active_constraints" in " ".join(result["issues"])
+
+
+@pytest.mark.parametrize(
+    ("retain_before", "retain_after"),
+    [
+        (None, 1.0),
+        ("missing", "missing"),
+        (math.nan, 1.0),
+        (1.0, math.inf),
+    ],
+)
+def test_run_job_rejects_malformed_or_nonfinite_retain_losses(
+    tmp_path,
+    monkeypatch,
+    retain_before,
+    retain_after,
+):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    records = [
+        job_diagnostic(job, 1),
+        job_diagnostic(
+            job,
+            2,
+            retain_loss_before=retain_before,
+            retain_loss_after=retain_after,
+        ),
+    ]
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        diagnostics=records,
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "invalid_scientific"
+
+
 @pytest.mark.parametrize("endpoint_count", [0, 2])
 def test_run_job_requires_exactly_one_endpoint_pair(
     tmp_path,
@@ -1818,6 +1930,9 @@ def test_run_job_rejects_any_mixed_zero_or_rejection_record(
         "model.pkl",
         "arbitrary_state/trace.log",
         "unknown.json",
+        "payload.log",
+        "trainer_state.log",
+        "logs/payload.log",
         ".hydra/extra.yaml",
         "checkpoint-2/evals/EXTRA.json",
         "checkpoint-3/notes.txt",
@@ -1879,8 +1994,8 @@ def test_run_job_accepts_only_the_exact_valid_evidence_tree(tmp_path, monkeypatc
             ".hydra/config.yaml": b"config\n",
             ".hydra/hydra.yaml": b"hydra\n",
             ".hydra/overrides.yaml": b"overrides\n",
-            "logs/trainer.log": b"trainer log\n",
         },
+        extra_dirs=["logs", "checkpoint-9", "checkpoint-9/evals"],
     )
 
     result = registry.run_job(job, output_dir)

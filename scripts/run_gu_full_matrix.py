@@ -241,12 +241,13 @@ COMMON_RUNTIME_ARGUMENTS = (
     "trainer.args.report_to=none",
     "trainer.args.logging_steps=1",
 )
+SHIPPED_GU_RETAIN_FILTER = "first_order"
 COMMON_GU_ARGUMENTS = (
     "+trainer.method_args.gu.enabled=true",
     '+trainer.method_args.gu.parameter_regex=["{parameter_regex}"]',
     "+trainer.method_args.gu.retain_history_rank=8",
     "+trainer.method_args.gu.projection_eps=1e-6",
-    "+trainer.method_args.gu.retain_filter=first_order",
+    f"+trainer.method_args.gu.retain_filter={SHIPPED_GU_RETAIN_FILTER}",
     "+trainer.method_args.gu.retain_budget=1e-4",
     "+trainer.method_args.gu.backtracking_scales=[1.0,0.5,0.25,0.125]",
     "+trainer.method_args.gu.diagnostics_path=gu_diagnostics.jsonl",
@@ -495,12 +496,13 @@ NUMERIC_DIAGNOSTIC_FIELDS = GU_DIAGNOSTIC_FIELDS - {
     "zero_step",
     "zero_step_reason",
     "optimizer_state_semantics",
+    "retain_loss_before",
+    "retain_loss_after",
 }
 INTEGER_DIAGNOSTIC_FIELDS = {
     "step",
     "selected_parameter_count",
     "constraint_count",
-    "active_constraints",
 }
 ENDPOINT_PREFIXES = {
     "tofu": "TOFU",
@@ -1257,6 +1259,41 @@ def _parse_gu_diagnostics(path, job):
                 raise ValueError(
                     f"GU diagnostics record {line_number} field {name} is not numeric"
                 )
+        active_constraints = record["active_constraints"]
+        if (
+            not isinstance(active_constraints, list)
+            or any(
+                isinstance(index, bool) or not isinstance(index, int)
+                for index in active_constraints
+            )
+            or active_constraints != sorted(set(active_constraints))
+            or any(
+                index < 0 or index >= record["constraint_count"]
+                for index in active_constraints
+            )
+        ):
+            raise ValueError(
+                f"GU diagnostics record {line_number} active_constraints is malformed"
+            )
+        retain_losses = (
+            record["retain_loss_before"],
+            record["retain_loss_after"],
+        )
+        if retain_losses == (None, None):
+            if SHIPPED_GU_RETAIN_FILTER != "first_order":
+                raise ValueError(
+                    f"GU diagnostics record {line_number} retain losses are missing"
+                )
+        elif any(
+            value is None
+            or isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            for value in retain_losses
+        ):
+            raise ValueError(
+                f"GU diagnostics record {line_number} retain losses are malformed"
+            )
         if record["step"] != line_number:
             raise ValueError("GU diagnostics step ids are not sequential from one")
         if record["objective"] != job["method"]:
@@ -1353,12 +1390,6 @@ def _forbidden_artifacts(job, output_dir):
         relative_name = relative.as_posix()
         is_root_file = len(parts) == 1 and parts[0] in root_files
         is_hydra_file = relative_name in hydra_files
-        is_root_trainer_log = len(parts) == 1 and path.suffix.lower() == ".log"
-        is_logs_trainer_log = (
-            len(parts) == 2
-            and parts[0] == "logs"
-            and path.suffix.lower() == ".log"
-        )
         is_endpoint = (
             len(parts) == 3
             and checkpoint_pattern.fullmatch(parts[0]) is not None
@@ -1368,8 +1399,6 @@ def _forbidden_artifacts(job, output_dir):
         if not (
             is_root_file
             or is_hydra_file
-            or is_root_trainer_log
-            or is_logs_trainer_log
             or is_endpoint
         ):
             forbidden.add(relative_name)
