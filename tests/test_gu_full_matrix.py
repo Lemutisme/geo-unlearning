@@ -592,6 +592,13 @@ def test_all_60_commands_hydra_compose_without_missing_or_unresolved_values(tmp_
         assert config.trainer.args.eval_strategy == "no"
         assert config.trainer.args.report_to == "none"
         assert config.trainer.args.seed == config.trainer.args.data_seed == 0
+        expected_effective_batch = 4 if job["method"] == "RMU" else 32
+        assert config.trainer.args.per_device_train_batch_size == 1
+        assert (
+            config.trainer.args.per_device_train_batch_size
+            * config.trainer.args.gradient_accumulation_steps
+            == expected_effective_batch
+        )
         assert dict(config.trainer.method_args.gu) == {
             "enabled": True,
             "parameter_regex": [job["selected_parameter_regex"]],
@@ -633,6 +640,8 @@ def test_non_rmu_commands_keep_direct_shipped_model_and_trainer_defaults(tmp_pat
         "logging_steps",
         "seed",
         "data_seed",
+        "per_device_train_batch_size",
+        "gradient_accumulation_steps",
     }
     identity_args = {"pretrained_model_name_or_path", "revision"}
     for job in representatives.values():
