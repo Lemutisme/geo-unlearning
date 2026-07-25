@@ -45,8 +45,10 @@ class UnlearnTrainer(FinetuneTrainer):
     def create_optimizer(self):
         if self.gu_config is None:
             return super().create_optimizer()
-        original_requires_grad = tuple((parameter, parameter.requires_grad)
-            for parameter in self.model.parameters())
+        original_parameter_state = tuple(
+            (parameter, parameter.requires_grad, parameter.dtype)
+            for parameter in self.model.parameters()
+        )
         setup_required = not getattr(self, "_gu_setup_complete", False)
         try:
             required_keys = {
@@ -180,6 +182,9 @@ class UnlearnTrainer(FinetuneTrainer):
                     raise ValueError("GU parameter_regex did not select any parameters")
                 if any(parameter.dtype == torch.float16 for _, parameter in selected):
                     raise ValueError("GU does not support selected FP16 parameters")
+                for _, parameter in selected:
+                    if parameter.dtype == torch.bfloat16:
+                        parameter.data = parameter.detach().to(torch.float32)
                 selected_ids = {id(parameter) for _, parameter in selected}
                 for parameter in self.model.parameters():
                     if id(parameter) not in selected_ids:
@@ -269,8 +274,10 @@ class UnlearnTrainer(FinetuneTrainer):
                 self._gu_diagnostics_path = resolved_candidate
                 self._gu_setup_complete = True
         except Exception:
-            for parameter, requires_grad in original_requires_grad:
+            for parameter, requires_grad, dtype in original_parameter_state:
                 parameter.requires_grad_(requires_grad)
+                if parameter.dtype != dtype:
+                    parameter.data = parameter.detach().to(dtype)
             raise
         return optimizer
 

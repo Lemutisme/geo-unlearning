@@ -297,10 +297,13 @@ def test_gu_rejects_sgd_optimizer(tmp_path):
 
 
 def test_gu_rejected_optimizer_rolls_back_entire_setup(tmp_path):
-    model = TinyCausalLM()
+    model = TinyCausalLM().to(dtype=torch.bfloat16)
     model.embed.weight.requires_grad_(False)
     original_requires_grad = {
         name: parameter.requires_grad for name, parameter in model.named_parameters()
+    }
+    original_dtypes = {
+        name: parameter.dtype for name, parameter in model.named_parameters()
     }
     optimizer = torch.optim.SGD([model.protected.weight], lr=1.0e-3)
     output_dir = tmp_path / "output"
@@ -318,6 +321,9 @@ def test_gu_rejected_optimizer_rolls_back_entire_setup(tmp_path):
     assert {
         name: parameter.requires_grad for name, parameter in model.named_parameters()
     } == original_requires_grad
+    assert {
+        name: parameter.dtype for name, parameter in model.named_parameters()
+    } == original_dtypes
     assert not diagnostics_path.exists()
     for attribute in (
         "_gu_selected",
@@ -1548,11 +1554,12 @@ def test_gu_pre_hook_rejects_unready_or_duplicate_state(
     assert not trainer.optimizer.state
 
 
-def test_gu_bf16_snapshot_uses_native_dtype_and_storage(tmp_path):
+def test_gu_promotes_selected_bf16_parameter_to_fp32_master_storage(tmp_path):
     model = TinyCausalLM().to(dtype=torch.bfloat16)
     trainer = make_trainer(model, tmp_path, gu=gu_config())
     trainer.create_optimizer()
     parameter = trainer._gu_selected[0][1]
+    assert parameter.dtype == torch.float32
     pending = (torch.ones_like(parameter),)
     trainer._gu_constraints_used = (pending,)
     trainer._gu_pending_history_covector = pending
@@ -1560,7 +1567,7 @@ def test_gu_bf16_snapshot_uses_native_dtype_and_storage(tmp_path):
     trainer._gu_optimizer_step_pre_hook(trainer.optimizer, (), {})
 
     (snapshot,) = trainer._gu_parameter_snapshot
-    assert snapshot.dtype == torch.bfloat16
+    assert snapshot.dtype == torch.float32
     assert snapshot.untyped_storage().nbytes() == (
         parameter.numel() * parameter.element_size()
     )
@@ -3108,6 +3115,7 @@ def test_task8_bf16_trainer_applies_one_safe_delta_per_update(tmp_path):
     )
     trainer.create_optimizer()
     assert isinstance(trainer.optimizer, torch.optim.AdamW)
+    assert trainer._gu_selected[0][1].dtype == torch.float32
     before = tuple(
         parameter.detach().clone() for _, parameter in trainer._gu_selected
     )
