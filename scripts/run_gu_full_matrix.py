@@ -635,11 +635,15 @@ def build_command(job, output_dir):
 def environment_overrides(job):
     """Return the environment values enforced beyond the caller environment."""
     root = runtime_root(job)
+    hub = str(root / "hub")
     return {
         "HF_DATASETS_CACHE": str(root / "datasets"),
         "HF_DATASETS_OFFLINE": "1",
-        "HF_HUB_CACHE": str(root / "hub"),
+        "HF_HOME": hub,
+        "HF_HUB_CACHE": hub,
         "HF_HUB_OFFLINE": "1",
+        "HUGGINGFACE_HUB_CACHE": hub,
+        "TRANSFORMERS_CACHE": hub,
     }
 
 

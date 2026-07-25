@@ -942,7 +942,9 @@ def test_build_environment_enforces_wmdp_verified_offline_dataset_cache(monkeypa
     assert environment["HF_HUB_OFFLINE"] == "1"
     assert environment["HF_DATASETS_CACHE"] == "/dev/shm/gu-matrix-wmdp/datasets"
     assert environment["HF_HUB_CACHE"] == "/dev/shm/gu-matrix-wmdp/hub"
-    assert environment["HF_HOME"] == "/registered/model-cache"
+    assert environment["HF_HOME"] == "/dev/shm/gu-matrix-wmdp/hub"
+    assert environment["HUGGINGFACE_HUB_CACHE"] == "/dev/shm/gu-matrix-wmdp/hub"
+    assert environment["TRANSFORMERS_CACHE"] == "/dev/shm/gu-matrix-wmdp/hub"
     assert environment["MATRIX_CALLER_VALUE"] == "preserved"
 
 
@@ -956,8 +958,11 @@ def test_every_job_binds_environment_requirements_and_reference_to_one_root():
         assert environment == {
             "HF_DATASETS_CACHE": str(root / "datasets"),
             "HF_DATASETS_OFFLINE": "1",
+            "HF_HOME": str(root / "hub"),
             "HF_HUB_CACHE": str(root / "hub"),
             "HF_HUB_OFFLINE": "1",
+            "HUGGINGFACE_HUB_CACHE": str(root / "hub"),
+            "TRANSFORMERS_CACHE": str(root / "hub"),
         }
         for requirement in registry.source_requirements(job)["content_requirements"]:
             expected_root = root / (
@@ -972,6 +977,68 @@ def test_every_job_binds_environment_requirements_and_reference_to_one_root():
             )
             reference_path = Path(reference_argument.split("=", 1)[1])
             assert reference_path.is_relative_to(root / "hub")
+
+
+def test_fresh_model_import_and_loaders_use_validated_hub_cache():
+    registry = load_registry()
+    job = next(
+        job
+        for job in registry.build_manifest(seed=0)["jobs"]
+        if job["benchmark"] == "wmdp_cyber"
+    )
+    environment = registry.build_environment(job)
+    environment["PYTHONPATH"] = str(ROOT / "src")
+    script = """
+import json
+from omegaconf import OmegaConf
+import model
+
+captured = {}
+
+class FakeModel:
+    @classmethod
+    def from_pretrained(cls, **kwargs):
+        captured["model_cache_dir"] = kwargs["cache_dir"]
+        return object()
+
+class FakeTokenizer:
+    eos_token_id = 1
+    pad_token_id = 1
+
+def fake_tokenizer_from_pretrained(**kwargs):
+    captured["tokenizer_cache_dir"] = kwargs["cache_dir"]
+    return FakeTokenizer()
+
+model.MODEL_REGISTRY["AutoModelForCausalLM"] = FakeModel
+model.AutoTokenizer.from_pretrained = fake_tokenizer_from_pretrained
+config = OmegaConf.create({
+    "model_args": {
+        "pretrained_model_name_or_path": "example/model",
+        "torch_dtype": "float32",
+    },
+    "tokenizer_args": {
+        "pretrained_model_name_or_path": "example/tokenizer",
+    },
+})
+model.get_model(config)
+print(json.dumps({"hf_home": model.hf_home, **captured}, sort_keys=True))
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    hub = str(RUNTIME_ROOTS["wmdp"] / "hub")
+    assert json.loads(result.stdout) == {
+        "hf_home": hub,
+        "model_cache_dir": hub,
+        "tokenizer_cache_dir": hub,
+    }
 
 
 def fixture_content_manifest(path, registered_suffixes=None):
@@ -1245,8 +1312,11 @@ def test_manifest_seed_zero_dry_run_prints_commands_without_creating_outputs(tmp
         assert job["environment"] == {
             "HF_DATASETS_CACHE": "/dev/shm/gu-matrix-muse-books/datasets",
             "HF_DATASETS_OFFLINE": "1",
+            "HF_HOME": "/dev/shm/gu-matrix-muse-books/hub",
             "HF_HUB_CACHE": "/dev/shm/gu-matrix-muse-books/hub",
             "HF_HUB_OFFLINE": "1",
+            "HUGGINGFACE_HUB_CACHE": "/dev/shm/gu-matrix-muse-books/hub",
+            "TRANSFORMERS_CACHE": "/dev/shm/gu-matrix-muse-books/hub",
         }
     after = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
     assert after == before
