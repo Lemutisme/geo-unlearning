@@ -1412,7 +1412,7 @@ def install_job_subprocess_stub(
             for record in (
                 {"loss": 2.0, "grad_norm": 1.0, "epoch": 0.1},
                 {"loss": 1.5, "grad_norm": 0.8, "epoch": 0.2},
-                {"train_runtime": 3.0, "train_loss": 1.75, "global_step": 2},
+                {"train_runtime": 3.0, "train_loss": 1.75},
             )
         )
     if diagnostics is None:
@@ -1531,6 +1531,7 @@ def test_completed_job_requires_exact_gu_endpoint_and_resource_evidence(
     assert result["status"] == "completed"
     assert result["returncode"] == 0
     assert result["projection_count"] == result["optimizer_update_count"] == 2
+    assert result["final_global_step"] is None
     assert result["selected_parameter_changed"] is True
     assert result["zero_step_count"] == 0
     assert result["applied_scale_distribution"] == {"0.5": 2}
@@ -2863,6 +2864,48 @@ def test_completed_result_validation_reuses_the_full_task_three_contract(
     result[field] = value
 
     with pytest.raises(ValueError, match="completed|evidence|status"):
+        registry.validate_job_result(
+            result,
+            job,
+            tmp_path / job["output_dir"],
+            expected_status="completed",
+        )
+
+
+def test_completed_result_and_queue_accept_absent_global_step(tmp_path):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    result = queue_result(registry, job, tmp_path)
+    result["final_global_step"] = None
+
+    assert registry.validate_job_result(
+        result,
+        job,
+        tmp_path / job["output_dir"],
+        expected_status="completed",
+    ) == result
+
+    state_path = tmp_path / "queue_state.json"
+    state = registry.create_queue_state(queue_manifest(registry, tmp_path), state_path)
+    leave_only_pending(state, 0, registry, tmp_path)
+    parent = state["jobs"][0]
+    finish_queue_job(registry, parent, tmp_path, "completed")
+    parent["attempt_history"][-1]["evidence"]["final_global_step"] = None
+    state_path.write_text(json.dumps(state))
+    assert registry.queue_status(state_path)["counts"]["completed"] == 1
+
+
+@pytest.mark.parametrize("global_step", [0, True, 1, 3])
+def test_completed_result_rejects_invalid_present_global_step(
+    tmp_path,
+    global_step,
+):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    result = queue_result(registry, job, tmp_path)
+    result["final_global_step"] = global_step
+
+    with pytest.raises(ValueError, match="completed"):
         registry.validate_job_result(
             result,
             job,

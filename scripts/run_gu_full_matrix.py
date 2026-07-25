@@ -1776,7 +1776,7 @@ def validate_job_result(result, job, output_dir, *, expected_status=None):
     )
     counts = (
         result["gpu_memory_sample_count"], result["optimizer_update_count"],
-        result["final_global_step"], result["projection_count"],
+        result["projection_count"],
     )
     ratios = result["correction_ratio"]
     scales = result["applied_scale_distribution"]
@@ -1856,7 +1856,14 @@ def validate_job_result(result, job, output_dir, *, expected_status=None):
         and result["peak_gpu_memory_mib"] == result["peak_nvml_mib"]
         and all(type(value) is int and value > 0 for value in counts)
         and result["projection_count"] == result["optimizer_update_count"]
-        and result["final_global_step"] == result["optimizer_update_count"]
+        and (
+            result["final_global_step"] is None
+            or (
+                type(result["final_global_step"]) is int
+                and result["final_global_step"] > 0
+                and result["final_global_step"] == result["optimizer_update_count"]
+            )
+        )
         and type(result["zero_step_count"]) is int
         and result["zero_step_count"] == 0
         and isinstance(scales, dict)
