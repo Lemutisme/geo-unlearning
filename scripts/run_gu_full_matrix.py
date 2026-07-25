@@ -14,6 +14,7 @@ import time
 from collections import Counter
 from copy import deepcopy
 from pathlib import Path
+from subprocess import TimeoutExpired
 
 
 SCHEMA_VERSION = 1
@@ -1111,15 +1112,13 @@ def validate_sources(job, fingerprint_memo=None):
     return fingerprints
 
 
-def _json_bytes(payload):
-    return (json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n").encode()
-
-
 def _atomic_write_json(path, payload):
     """Durably replace one JSON record without exposing a partial file."""
     destination = Path(path)
     temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
-    contents = _json_bytes(payload)
+    contents = (
+        json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n"
+    ).encode()
     try:
         with temporary.open("wb") as output:
             output.write(contents)
@@ -1129,33 +1128,6 @@ def _atomic_write_json(path, payload):
     finally:
         if temporary.exists():
             temporary.unlink()
-
-
-def _command_record(job, output_dir):
-    return {
-        "schema_version": SCHEMA_VERSION,
-        "protocol": PROTOCOL,
-        "job_id": job["job_id"],
-        "method": job["method"],
-        "benchmark": job["benchmark"],
-        "seed": job["seed"],
-        "stage": job["stage"],
-        "argv": build_command(job, output_dir),
-        "environment_overrides": environment_overrides(job),
-        "provenance": deepcopy(job["provenance"]),
-    }
-
-
-def _command_identity(record):
-    payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode()).hexdigest()
-
-
-def _strict_json_file(path):
-    def reject_constant(value):
-        raise ValueError(f"nonfinite JSON constant: {value}")
-
-    return json.loads(Path(path).read_text(), parse_constant=reject_constant)
 
 
 def _finite_tree(value):
@@ -1168,287 +1140,6 @@ def _finite_tree(value):
     if isinstance(value, dict):
         return all(isinstance(key, str) and _finite_tree(item) for key, item in value.items())
     return False
-
-
-def _contains_number(value):
-    if isinstance(value, bool):
-        return False
-    if isinstance(value, (int, float)):
-        return True
-    if isinstance(value, list):
-        return any(_contains_number(item) for item in value)
-    if isinstance(value, dict):
-        return any(_contains_number(item) for item in value.values())
-    return False
-
-
-def _endpoint_paths(job, output_dir):
-    prefix = ENDPOINT_PREFIXES[job["evaluator_kind"]]
-    output = Path(output_dir)
-    checkpoint_pattern = re.compile(r"checkpoint-[0-9]+")
-
-    def is_live_endpoint(path):
-        return (
-            path.parent.name == "evals"
-            and checkpoint_pattern.fullmatch(path.parent.parent.name) is not None
-        )
-
-    summaries = sorted(
-        path
-        for path in output.rglob(f"{prefix}_SUMMARY.json")
-        if is_live_endpoint(path)
-    )
-    raw_files = sorted(
-        path for path in output.rglob(f"{prefix}_EVAL.json") if is_live_endpoint(path)
-    )
-    if len(summaries) != 1 or len(raw_files) != 1:
-        raise ValueError(
-            "endpoint pair count mismatch: "
-            f"summary={len(summaries)}, raw={len(raw_files)}"
-        )
-    if summaries[0].parent != raw_files[0].parent:
-        raise ValueError("endpoint summary and raw evaluation are in different checkpoints")
-    return summaries[0], raw_files[0]
-
-
-def _validate_endpoint(path, label):
-    try:
-        payload = _strict_json_file(path)
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
-        raise ValueError(f"{label} endpoint JSON is invalid: {error}") from error
-    if not isinstance(payload, dict) or not payload:
-        raise ValueError(f"{label} endpoint schema must be a nonempty object")
-    if not _finite_tree(payload):
-        raise ValueError(f"{label} endpoint contains nonfinite or unsupported values")
-    if not _contains_number(payload):
-        raise ValueError(f"{label} endpoint contains no numeric result")
-    return payload
-
-
-def _parse_gu_diagnostics(path, job):
-    diagnostics_path = Path(path)
-    if not diagnostics_path.is_file():
-        raise ValueError("GU diagnostics file is missing")
-    lines = diagnostics_path.read_text().splitlines()
-    if not lines or any(not line.strip() for line in lines):
-        raise ValueError("GU diagnostics JSONL is empty or contains blank records")
-    records = []
-    for line_number, line in enumerate(lines, start=1):
-        try:
-            record = json.loads(
-                line,
-                parse_constant=lambda value: (_ for _ in ()).throw(
-                    ValueError(f"nonfinite JSON constant: {value}")
-                ),
-            )
-        except (json.JSONDecodeError, ValueError) as error:
-            raise ValueError(
-                f"GU diagnostics record {line_number} is invalid: {error}"
-            ) from error
-        if not isinstance(record, dict) or set(record) != GU_DIAGNOSTIC_FIELDS:
-            raise ValueError(f"GU diagnostics record {line_number} has the wrong schema")
-        if not _finite_tree(record):
-            raise ValueError(f"GU diagnostics record {line_number} is nonfinite")
-        for name in INTEGER_DIAGNOSTIC_FIELDS:
-            if isinstance(record[name], bool) or not isinstance(record[name], int):
-                raise ValueError(
-                    f"GU diagnostics record {line_number} field {name} is not an integer"
-                )
-        for name in NUMERIC_DIAGNOSTIC_FIELDS:
-            if isinstance(record[name], bool) or not isinstance(record[name], (int, float)):
-                raise ValueError(
-                    f"GU diagnostics record {line_number} field {name} is not numeric"
-                )
-        active_constraints = record["active_constraints"]
-        if (
-            not isinstance(active_constraints, list)
-            or any(
-                isinstance(index, bool) or not isinstance(index, int)
-                for index in active_constraints
-            )
-            or active_constraints != sorted(set(active_constraints))
-            or any(
-                index < 0 or index >= record["constraint_count"]
-                for index in active_constraints
-            )
-        ):
-            raise ValueError(
-                f"GU diagnostics record {line_number} active_constraints is malformed"
-            )
-        retain_losses = (
-            record["retain_loss_before"],
-            record["retain_loss_after"],
-        )
-        if retain_losses == (None, None):
-            if SHIPPED_GU_RETAIN_FILTER != "first_order":
-                raise ValueError(
-                    f"GU diagnostics record {line_number} retain losses are missing"
-                )
-        elif any(
-            value is None
-            or isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(value)
-            for value in retain_losses
-        ):
-            raise ValueError(
-                f"GU diagnostics record {line_number} retain losses are malformed"
-            )
-        if record["step"] != line_number:
-            raise ValueError("GU diagnostics step ids are not sequential from one")
-        if record["objective"] != job["method"]:
-            raise ValueError("GU diagnostics objective does not match the job")
-        if record["selected_parameter_count"] <= 0:
-            raise ValueError("GU selected parameter count must be positive")
-        if not isinstance(record["zero_step"], bool):
-            raise ValueError("GU zero_step must be boolean")
-        if record["optimizer_state_semantics"] != "proposal_state_committed":
-            raise ValueError("GU optimizer state semantics mismatch")
-        if record["proposal_norm"] < 0 or record["corrected_norm"] < 0:
-            raise ValueError("GU diagnostic norm has the wrong sign")
-        if record["correction_ratio"] < 0 or record["applied_scale"] < 0:
-            raise ValueError("GU correction or applied scale has the wrong sign")
-        if record["projection_tolerance"] < 0:
-            raise ValueError("GU projection tolerance has the wrong sign")
-        if record["max_violation_after"] > record["projection_tolerance"]:
-            raise ValueError("GU final projection violation exceeds tolerance")
-        records.append(record)
-    return records
-
-
-def _mapping_in_log_line(line):
-    opening = line.find("{")
-    closing = line.rfind("}")
-    if opening < 0 or closing < opening:
-        return None
-    candidate = line[opening : closing + 1]
-    try:
-        value = json.loads(candidate)
-    except json.JSONDecodeError:
-        try:
-            value = ast.literal_eval(candidate)
-        except (SyntaxError, ValueError):
-            return None
-    return value if isinstance(value, dict) else None
-
-
-def _optimizer_updates_from_log(path):
-    log_path = Path(path)
-    if not log_path.is_file():
-        raise ValueError("run log is missing")
-    loss_records = []
-    final_global_step = None
-    for line in log_path.read_text(errors="replace").splitlines():
-        record = _mapping_in_log_line(line)
-        if record is not None:
-            if "loss" in record:
-                if not _finite_tree(record) or isinstance(record["loss"], bool):
-                    raise ValueError("Trainer loss log contains nonfinite values")
-                if not isinstance(record["loss"], (int, float)):
-                    raise ValueError("Trainer loss log has a nonnumeric loss")
-                loss_records.append(record)
-            if "global_step" in record:
-                step = record["global_step"]
-                if isinstance(step, bool) or not isinstance(step, int) or step < 0:
-                    raise ValueError("Trainer final global_step is invalid")
-                final_global_step = step
-        matches = re.findall(r"global_step\s*[=:]\s*([0-9]+)", line)
-        if matches:
-            final_global_step = int(matches[-1])
-    update_count = len(loss_records)
-    if update_count == 0:
-        raise ValueError("Trainer optimizer update loss logs are missing")
-    if final_global_step is not None and final_global_step != update_count:
-        raise ValueError(
-            "Trainer final global_step and optimizer update loss-log count mismatch"
-        )
-    return update_count, final_global_step
-
-
-def _forbidden_artifacts(job, output_dir):
-    output = Path(output_dir)
-    forbidden = set()
-    checkpoint_pattern = re.compile(r"checkpoint-[0-9]+")
-    prefix = ENDPOINT_PREFIXES[job["evaluator_kind"]]
-    root_files = {
-        "command.json",
-        "run.log",
-        f'{job["method"]}.log',
-        "gu_diagnostics.jsonl",
-        "JOB_RESULT.json",
-    }
-    hydra_files = {
-        ".hydra/config.yaml",
-        ".hydra/hydra.yaml",
-        ".hydra/overrides.yaml",
-    }
-    endpoint_files = {f"{prefix}_EVAL.json", f"{prefix}_SUMMARY.json"}
-    for path in output.rglob("*"):
-        if not path.is_file():
-            continue
-        relative = path.relative_to(output)
-        parts = relative.parts
-        relative_name = relative.as_posix()
-        is_root_file = len(parts) == 1 and parts[0] in root_files
-        is_hydra_file = relative_name in hydra_files
-        is_endpoint = (
-            len(parts) == 3
-            and checkpoint_pattern.fullmatch(parts[0]) is not None
-            and parts[1] == "evals"
-            and parts[2] in endpoint_files
-        )
-        if not (
-            is_root_file
-            or is_hydra_file
-            or is_endpoint
-        ):
-            forbidden.add(relative_name)
-    for path in output.rglob("*"):
-        if not path.is_dir() or not any(path.iterdir()):
-            continue
-        relative = path.relative_to(output)
-        parts = relative.parts
-        is_known = relative.as_posix() in {".hydra", "logs"} or (
-            len(parts) == 1
-            and checkpoint_pattern.fullmatch(parts[0]) is not None
-        ) or (
-            len(parts) == 2
-            and checkpoint_pattern.fullmatch(parts[0]) is not None
-            and parts[1] == "evals"
-        )
-        if not is_known:
-            forbidden.add(relative.as_posix() + "/")
-    return sorted(forbidden)
-
-
-def _sample_process_memory_mib(pid):
-    try:
-        sample = subprocess.run(
-            NVML_QUERY_COMMAND,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError as error:
-        return 0, False, f"NVML sampling launch failed: {error}"
-    if sample.returncode != 0:
-        detail = (sample.stderr or "").strip()
-        return 0, False, f"NVML sampling failed with exit {sample.returncode}: {detail}"
-    peak = 0
-    observed_child = False
-    for line in sample.stdout.splitlines():
-        fields = [field.strip() for field in line.split(",", 1)]
-        if len(fields) != 2:
-            continue
-        try:
-            observed_pid = int(fields[0])
-            used_memory = int(re.sub(r"\s*MiB\s*$", "", fields[1]))
-        except ValueError:
-            continue
-        if observed_pid == pid:
-            observed_child = True
-            peak = max(peak, used_memory)
-    return peak, observed_child, None
 
 
 def validate_job_identity(job, *, parent_job=None):
@@ -1477,41 +1168,6 @@ def validate_job_identity(job, *, parent_job=None):
     return expected
 
 
-def _failure_from_log(returncode, log_text, launch_error):
-    if launch_error is not None:
-        return "failed_infrastructure", "subprocess_launch"
-    if returncode == 0:
-        return None, None
-    lowered = log_text.lower()
-    if "outofmemory" in lowered or "out of memory" in lowered or "cuda oom" in lowered:
-        return "invalid_scientific", "oom"
-    if any(marker in lowered for marker in ("nan", "nonfinite", "non-finite", "infinite")):
-        return "invalid_scientific", "nonfinite"
-    if "wrong sign" in lowered:
-        return "invalid_scientific", "wrong_sign"
-    if any(marker in lowered for marker in ("gu rejection", "retain_budget_exceeded")):
-        return "invalid_scientific", "gu_rejection"
-    if "zero step" in lowered or "zero_step" in lowered:
-        return "invalid_scientific", "zero_step"
-    if any(
-        marker in lowered
-        for marker in (
-            "input/output error",
-            "i/o error",
-            "no space left on device",
-            "read-only file system",
-            "stale file handle",
-        )
-    ):
-        return "failed_infrastructure", "host_io"
-    if "cache" in lowered and any(
-        marker in lowered
-        for marker in ("absent", "missing", "corrupt", "mismatch", "failed", "error")
-    ):
-        return "failed_infrastructure", "cache"
-    return "invalid_scientific", "subprocess_exit"
-
-
 def run_job(job, output_dir):
     """Run one unchanged matrix command and persist its complete evidence audit."""
     validate_job_identity(job)
@@ -1527,33 +1183,63 @@ def run_job(job, output_dir):
     run_log_path = output / "run.log"
     diagnostics_path = output / "gu_diagnostics.jsonl"
     result_path = output / "JOB_RESULT.json"
-    expected_command_record = _command_record(job, output)
+    expected_command_record = {
+        "schema_version": SCHEMA_VERSION,
+        "protocol": PROTOCOL,
+        "job_id": job["job_id"],
+        "method": job["method"],
+        "benchmark": job["benchmark"],
+        "seed": job["seed"],
+        "stage": job["stage"],
+        "argv": build_command(job, output),
+        "environment_overrides": environment_overrides(job),
+        "provenance": deepcopy(job["provenance"]),
+    }
     _atomic_write_json(command_path, expected_command_record)
 
-    issues = []
-    infrastructure_issues = []
-    peak_nvml_mib = 0
-    gpu_memory_sample_count = 0
-    launch_error = None
-    returncode = None
+    # Phase 1: launch once and sample only the direct child process.
+    issues, infrastructure_issues = [], []
+    peak_nvml_mib = gpu_memory_sample_count = 0
+    launch_error = returncode = None
     started = time.monotonic()
     with run_log_path.open("w", encoding="utf-8") as run_log:
         try:
             process = subprocess.Popen(
-                expected_command_record["argv"],
-                cwd=CODE_ROOT,
-                env=build_environment(job),
-                stdout=run_log,
-                stderr=subprocess.STDOUT,
+                expected_command_record["argv"], cwd=CODE_ROOT,
+                env=build_environment(job), stdout=run_log, stderr=subprocess.STDOUT,
             )
         except OSError as error:
             launch_error = str(error)
             run_log.write(f"subprocess launch failed: {error}\n")
         else:
             while True:
-                used_memory, observed_child, sampling_error = (
-                    _sample_process_memory_mib(process.pid)
-                )
+                used_memory, observed_child, sampling_error = 0, False, None
+                try:
+                    sample = subprocess.run(
+                        NVML_QUERY_COMMAND, capture_output=True, text=True,
+                        check=False, timeout=5.0,
+                    )
+                except TimeoutExpired as error:
+                    sampling_error = f"NVML sampling timed out after {error.timeout} seconds"
+                except OSError as error:
+                    sampling_error = f"NVML sampling launch failed: {error}"
+                else:
+                    if sample.returncode != 0:
+                        detail = (sample.stderr or "").strip()
+                        sampling_error = f"NVML sampling failed with exit {sample.returncode}: {detail}"
+                    else:
+                        for line in sample.stdout.splitlines():
+                            fields = [field.strip() for field in line.split(",", 1)]
+                            if len(fields) != 2:
+                                continue
+                            try:
+                                observed_pid = int(fields[0])
+                                memory = int(re.sub(r"\s*MiB\s*$", "", fields[1]))
+                            except ValueError:
+                                continue
+                            if observed_pid == process.pid:
+                                observed_child = True
+                                used_memory = max(used_memory, memory)
                 peak_nvml_mib = max(peak_nvml_mib, used_memory)
                 gpu_memory_sample_count += int(observed_child)
                 if sampling_error is not None and sampling_error not in infrastructure_issues:
@@ -1561,51 +1247,221 @@ def run_job(job, output_dir):
                 returncode = process.poll()
                 if returncode is not None:
                     break
-                time.sleep(0.1)
+                time.sleep(1.0)
             if gpu_memory_sample_count == 0 or peak_nvml_mib <= 0:
                 infrastructure_issues.append(
                     "GPU monitor never observed positive memory for the child PID"
                 )
     wall_clock_seconds = max(0.0, time.monotonic() - started)
     log_text = run_log_path.read_text(errors="replace")
-    exit_status, failure_kind = _failure_from_log(
-        returncode,
-        log_text,
-        launch_error,
-    )
-    if launch_error is not None:
-        infrastructure_issues.append(f"subprocess launch failed: {launch_error}")
 
-    endpoint_summary_path = None
-    endpoint_raw_path = None
+    # Phase 2: classify the process exit before monitor-only failures.
+    exit_status = failure_kind = None
+    if launch_error is not None:
+        exit_status, failure_kind = "failed_infrastructure", "subprocess_launch"
+        infrastructure_issues.append(f"subprocess launch failed: {launch_error}")
+    elif returncode != 0:
+        lowered = log_text.lower()
+        if any(marker in lowered for marker in ("outofmemory", "out of memory", "cuda oom")):
+            exit_status, failure_kind = "invalid_scientific", "oom"
+        elif any(marker in lowered for marker in ("nan", "nonfinite", "non-finite", "infinite")):
+            exit_status, failure_kind = "invalid_scientific", "nonfinite"
+        elif "wrong sign" in lowered:
+            exit_status, failure_kind = "invalid_scientific", "wrong_sign"
+        elif any(marker in lowered for marker in ("gu rejection", "retain_budget_exceeded")):
+            exit_status, failure_kind = "invalid_scientific", "gu_rejection"
+        elif "zero step" in lowered or "zero_step" in lowered:
+            exit_status, failure_kind = "invalid_scientific", "zero_step"
+        elif any(
+            marker in lowered
+            for marker in (
+                "input/output error", "i/o error", "no space left on device",
+                "read-only file system", "stale file handle",
+            )
+        ):
+            exit_status, failure_kind = "failed_infrastructure", "host_io"
+        elif "cache" in lowered and any(
+            marker in lowered
+            for marker in ("absent", "missing", "corrupt", "mismatch", "failed", "error")
+        ):
+            exit_status, failure_kind = "failed_infrastructure", "cache"
+        else:
+            exit_status, failure_kind = "invalid_scientific", "subprocess_exit"
+
+    # Phase 3: require one exact live evaluator pair with finite numeric content.
+    endpoint_summary_path = endpoint_raw_path = None
     try:
-        summary_path, raw_path = _endpoint_paths(job, output)
-        _validate_endpoint(summary_path, "summary")
-        _validate_endpoint(raw_path, "raw")
+        prefix = ENDPOINT_PREFIXES[job["evaluator_kind"]]
+        checkpoint_pattern = re.compile(r"checkpoint-[0-9]+")
+        summaries = sorted(
+            path for path in output.rglob(f"{prefix}_SUMMARY.json")
+            if path.parent.name == "evals"
+            and checkpoint_pattern.fullmatch(path.parent.parent.name) is not None
+        )
+        raw_files = sorted(
+            path for path in output.rglob(f"{prefix}_EVAL.json")
+            if path.parent.name == "evals"
+            and checkpoint_pattern.fullmatch(path.parent.parent.name) is not None
+        )
+        if len(summaries) != 1 or len(raw_files) != 1:
+            raise ValueError(
+                f"endpoint pair count mismatch: summary={len(summaries)}, raw={len(raw_files)}"
+            )
+        summary_path, raw_path = summaries[0], raw_files[0]
+        if summary_path.parent != raw_path.parent:
+            raise ValueError("endpoint summary and raw evaluation are in different checkpoints")
+        for label, path in (("summary", summary_path), ("raw", raw_path)):
+            payload = json.loads(
+                path.read_text(),
+                parse_constant=lambda value: (_ for _ in ()).throw(
+                    ValueError(f"nonfinite JSON constant: {value}")
+                ),
+            )
+            if not isinstance(payload, dict) or not payload:
+                raise ValueError(f"{label} endpoint schema must be a nonempty object")
+            if not _finite_tree(payload):
+                raise ValueError(f"{label} endpoint contains nonfinite or unsupported values")
+            pending, contains_number = list(payload.values()), False
+            while pending:
+                value = pending.pop()
+                if isinstance(value, bool):
+                    continue
+                if isinstance(value, (int, float)):
+                    contains_number = True
+                    break
+                if isinstance(value, dict):
+                    pending.extend(value.values())
+                elif isinstance(value, list):
+                    pending.extend(value)
+            if not contains_number:
+                raise ValueError(f"{label} endpoint contains no numeric result")
         endpoint_summary_path = summary_path.relative_to(output).as_posix()
         endpoint_raw_path = raw_path.relative_to(output).as_posix()
-    except (KeyError, ValueError) as error:
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, ValueError) as error:
         issues.append(str(error))
 
+    # Phase 4: parse and validate the producer's exact GU JSONL schema.
     diagnostics = []
     try:
-        diagnostics = _parse_gu_diagnostics(diagnostics_path, job)
-    except (OSError, UnicodeError, ValueError) as error:
-        issues.append(str(error))
+        if not diagnostics_path.is_file():
+            raise ValueError("GU diagnostics file is missing")
+        lines = diagnostics_path.read_text().splitlines()
+        if not lines or any(not line.strip() for line in lines):
+            raise ValueError("GU diagnostics JSONL is empty or contains blank records")
+        for line_number, line in enumerate(lines, start=1):
+            record = json.loads(
+                line,
+                parse_constant=lambda value: (_ for _ in ()).throw(
+                    ValueError(f"nonfinite JSON constant: {value}")
+                ),
+            )
+            if not isinstance(record, dict) or set(record) != GU_DIAGNOSTIC_FIELDS:
+                raise ValueError(f"GU diagnostics record {line_number} has the wrong schema")
+            if not _finite_tree(record):
+                raise ValueError(f"GU diagnostics record {line_number} is nonfinite")
+            if any(
+                isinstance(record[name], bool) or not isinstance(record[name], int)
+                for name in INTEGER_DIAGNOSTIC_FIELDS
+            ):
+                raise ValueError(f"GU diagnostics record {line_number} has a non-integer field")
+            if any(
+                isinstance(record[name], bool) or not isinstance(record[name], (int, float))
+                for name in NUMERIC_DIAGNOSTIC_FIELDS
+            ):
+                raise ValueError(f"GU diagnostics record {line_number} has a nonnumeric field")
+            if record["constraint_count"] <= 0:
+                raise ValueError(f"GU diagnostics record {line_number} constraint_count must be positive")
+            active = record["active_constraints"]
+            if (
+                not isinstance(active, list)
+                or any(isinstance(index, bool) or not isinstance(index, int) for index in active)
+                or active != sorted(set(active))
+                or any(index < 0 or index >= record["constraint_count"] for index in active)
+            ):
+                raise ValueError(f"GU diagnostics record {line_number} active_constraints is malformed")
+            retain_losses = (record["retain_loss_before"], record["retain_loss_after"])
+            if retain_losses == (None, None):
+                if SHIPPED_GU_RETAIN_FILTER != "first_order":
+                    raise ValueError(f"GU diagnostics record {line_number} retain losses are missing")
+            elif any(
+                value is None
+                or isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                for value in retain_losses
+            ):
+                raise ValueError(f"GU diagnostics record {line_number} retain losses are malformed")
+            if record["step"] != line_number:
+                raise ValueError("GU diagnostics step ids are not sequential from one")
+            if record["objective"] != job["method"]:
+                raise ValueError("GU diagnostics objective does not match the job")
+            if record["selected_parameter_count"] <= 0:
+                raise ValueError("GU selected parameter count must be positive")
+            if not isinstance(record["zero_step"], bool):
+                raise ValueError("GU zero_step must be boolean")
+            if record["optimizer_state_semantics"] != "proposal_state_committed":
+                raise ValueError("GU optimizer state semantics mismatch")
+            if record["proposal_norm"] < 0 or record["corrected_norm"] < 0:
+                raise ValueError("GU diagnostic norm has the wrong sign")
+            if record["correction_ratio"] < 0 or record["applied_scale"] < 0:
+                raise ValueError("GU correction or applied scale has the wrong sign")
+            tolerance = record["projection_tolerance"]
+            if tolerance < 0:
+                raise ValueError("GU projection tolerance has the wrong sign")
+            if not 0 <= record["kkt_residual"] <= tolerance:
+                raise ValueError("GU KKT residual is outside projection tolerance")
+            if record["max_violation_after"] > tolerance:
+                raise ValueError("GU final projection violation exceeds tolerance")
+            diagnostics.append(record)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        issues.append(f"GU diagnostics invalid: {error}")
 
+    # Phase 5: count optimizer updates independently and summarize GU records.
     optimizer_update_count = 0
     final_global_step = None
     try:
-        optimizer_update_count, final_global_step = _optimizer_updates_from_log(
-            run_log_path
-        )
+        loss_records = []
+        for line in log_text.splitlines():
+            opening, closing = line.find("{"), line.rfind("}")
+            record = None
+            if opening >= 0 and closing >= opening:
+                candidate = line[opening : closing + 1]
+                try:
+                    value = json.loads(candidate)
+                except json.JSONDecodeError:
+                    try:
+                        value = ast.literal_eval(candidate)
+                    except (SyntaxError, ValueError):
+                        value = None
+                record = value if isinstance(value, dict) else None
+            if record is not None and "loss" in record:
+                if (
+                    not _finite_tree(record)
+                    or isinstance(record["loss"], bool)
+                    or not isinstance(record["loss"], (int, float))
+                ):
+                    raise ValueError("Trainer loss log is nonfinite or nonnumeric")
+                loss_records.append(record)
+            if record is not None and "global_step" in record:
+                step = record["global_step"]
+                if isinstance(step, bool) or not isinstance(step, int) or step < 0:
+                    raise ValueError("Trainer final global_step is invalid")
+                final_global_step = step
+            matches = re.findall(r"global_step\s*[=:]\s*([0-9]+)", line)
+            if matches:
+                final_global_step = int(matches[-1])
+        optimizer_update_count = len(loss_records)
+        if optimizer_update_count == 0:
+            raise ValueError("Trainer optimizer update loss logs are missing")
+        if final_global_step is not None and final_global_step != optimizer_update_count:
+            raise ValueError("Trainer final global_step and optimizer update loss-log count mismatch")
     except (OSError, UnicodeError, ValueError) as error:
         issues.append(str(error))
 
     projection_count = len(diagnostics)
     if projection_count != optimizer_update_count:
         issues.append(
-            "GU projection and optimizer update count mismatch: "
+            f"GU projection and optimizer update count mismatch: "
             f"{projection_count} != {optimizer_update_count}"
         )
     zero_step_count = sum(record["zero_step"] for record in diagnostics)
@@ -1625,32 +1481,73 @@ def run_job(job, output_dir):
         and record["applied_scale"] > 0
         for record in diagnostics
     )
-    if diagnostics and (
-        not selected_parameter_changed or zero_step_count == projection_count
-    ):
+    if diagnostics and (not selected_parameter_changed or zero_step_count == projection_count):
         issues.append("selected parameters are unchanged because every GU step is zero")
-
-    scale_counts = Counter(record["applied_scale"] for record in diagnostics)
-    applied_scale_distribution = {
-        str(scale): count for scale, count in sorted(scale_counts.items())
-    }
+    scales = Counter(record["applied_scale"] for record in diagnostics)
+    applied_scale_distribution = {str(scale): count for scale, count in sorted(scales.items())}
     ratios = [record["correction_ratio"] for record in diagnostics]
-    correction_ratio = {
-        "min": min(ratios),
-        "max": max(ratios),
-        "mean": sum(ratios) / len(ratios),
-    } if ratios else None
+    correction_ratio = (
+        {"min": min(ratios), "max": max(ratios), "mean": sum(ratios) / len(ratios)}
+        if ratios
+        else None
+    )
     max_violation_after = max(
-        (record["max_violation_after"] for record in diagnostics),
-        default=None,
+        (record["max_violation_after"] for record in diagnostics), default=None
     )
 
-    forbidden_artifacts = _forbidden_artifacts(job, output)
+    # Phase 6: audit every file and nonempty directory against an allowlist.
+    prefix = ENDPOINT_PREFIXES[job["evaluator_kind"]]
+    checkpoint_pattern = re.compile(r"checkpoint-[0-9]+")
+    root_files = {
+        "command.json", "run.log", f'{job["method"]}.log',
+        "gu_diagnostics.jsonl", "JOB_RESULT.json",
+    }
+    hydra_files = {
+        ".hydra/config.yaml", ".hydra/hydra.yaml", ".hydra/overrides.yaml",
+    }
+    endpoint_files = {f"{prefix}_EVAL.json", f"{prefix}_SUMMARY.json"}
+    forbidden = set()
+    for path in output.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(output)
+        parts, relative_name = relative.parts, relative.as_posix()
+        allowed = (
+            len(parts) == 1 and parts[0] in root_files
+        ) or relative_name in hydra_files or (
+            len(parts) == 3
+            and checkpoint_pattern.fullmatch(parts[0]) is not None
+            and parts[1] == "evals"
+            and parts[2] in endpoint_files
+        )
+        if not allowed:
+            forbidden.add(relative_name)
+    for path in output.rglob("*"):
+        if not path.is_dir() or not any(path.iterdir()):
+            continue
+        relative = path.relative_to(output)
+        parts = relative.parts
+        known = relative.as_posix() in {".hydra", "logs"} or (
+            len(parts) == 1 and checkpoint_pattern.fullmatch(parts[0]) is not None
+        ) or (
+            len(parts) == 2
+            and checkpoint_pattern.fullmatch(parts[0]) is not None
+            and parts[1] == "evals"
+        )
+        if not known:
+            forbidden.add(relative.as_posix() + "/")
+    forbidden_artifacts = sorted(forbidden)
     if forbidden_artifacts:
         issues.append("forbidden persistence artifacts are present")
 
+    # Phase 7: ensure the durable command sidecar was not altered by the child.
     try:
-        observed_command_record = _strict_json_file(command_path)
+        observed_command_record = json.loads(
+            command_path.read_text(),
+            parse_constant=lambda value: (_ for _ in ()).throw(
+                ValueError(f"nonfinite JSON constant: {value}")
+            ),
+        )
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
         issues.append(f"command identity record is invalid: {error}")
         observed_command_record = None
@@ -1684,7 +1581,13 @@ def run_job(job, output_dir):
         "failure_kind": failure_kind,
         "returncode": returncode,
         "command_path": command_path.relative_to(output).as_posix(),
-        "command_identity": _command_identity(expected_command_record),
+        "command_identity": hashlib.sha256(
+            json.dumps(
+                expected_command_record,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest(),
         "environment_overrides": expected_command_record["environment_overrides"],
         "provenance": deepcopy(job["provenance"]),
         "run_log_path": run_log_path.relative_to(output).as_posix(),

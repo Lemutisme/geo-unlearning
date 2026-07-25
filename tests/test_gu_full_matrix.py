@@ -1417,7 +1417,7 @@ def install_job_subprocess_stub(
         extra_files = {}
     if extra_dirs is None:
         extra_dirs = []
-    captured = {"nvidia_commands": []}
+    captured = {"nvidia_commands": [], "sleep_seconds": []}
 
     class StubPopen:
         pid = 4242
@@ -1470,7 +1470,10 @@ def install_job_subprocess_stub(
 
     def stub_run(argv, **kwargs):
         captured["nvidia_commands"].append((argv, kwargs))
-        returncode, stdout, stderr = next(nvml_samples, (0, "", ""))
+        outcome = next(nvml_samples, (0, "", ""))
+        if isinstance(outcome, BaseException):
+            raise outcome
+        returncode, stdout, stderr = outcome
         return SimpleNamespace(
             returncode=returncode,
             stdout=stdout,
@@ -1490,7 +1493,7 @@ def install_job_subprocess_stub(
         SimpleNamespace(
             monotonic=lambda: next(clock_ticks, 12.0),
             perf_counter=lambda: next(clock_ticks, 12.0),
-            sleep=lambda _seconds: None,
+            sleep=lambda seconds: captured["sleep_seconds"].append(seconds),
         ),
         raising=False,
     )
@@ -1545,6 +1548,10 @@ def test_completed_job_requires_exact_gu_endpoint_and_resource_evidence(
         "--query-compute-apps=pid,used_memory",
         "--format=csv,noheader",
     ]
+    monitor_kwargs = captured["nvidia_commands"][0][1]
+    assert math.isfinite(monitor_kwargs["timeout"])
+    assert monitor_kwargs["timeout"] > 0
+    assert captured["sleep_seconds"] == [1.0]
     command_record = json.loads((output_dir / "command.json").read_text())
     assert command_record["argv"] == registry.build_command(job, output_dir)
     assert command_record["environment_overrides"] == registry.environment_overrides(job)
@@ -1761,6 +1768,39 @@ def test_run_job_rejects_malformed_active_constraint_lists(
 
     assert result["status"] == "invalid_scientific"
     assert "active_constraints" in " ".join(result["issues"])
+
+
+@pytest.mark.parametrize(
+    "record_overrides",
+    [
+        {"constraint_count": 0, "active_constraints": []},
+        {"kkt_residual": -1.0e-8},
+        {"kkt_residual": 2.0e-6},
+    ],
+)
+def test_run_job_rejects_impossible_producer_invariants(
+    tmp_path,
+    monkeypatch,
+    record_overrides,
+):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    records = [
+        job_diagnostic(job, 1),
+        job_diagnostic(job, 2, **record_overrides),
+    ]
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        diagnostics=records,
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "invalid_scientific"
 
 
 @pytest.mark.parametrize(
@@ -2096,6 +2136,50 @@ def test_scientific_failure_precedes_gpu_monitor_failure(tmp_path, monkeypatch):
     assert result["status"] == "invalid_scientific"
     assert result["failure_kind"] == "oom"
     assert "nvml" in " ".join(result["issues"]).lower()
+
+
+def test_gpu_monitor_timeout_is_infrastructure_failure(tmp_path, monkeypatch):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    timeout = subprocess.TimeoutExpired(cmd="nvidia-smi", timeout=5.0)
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        nvml_results=[timeout, timeout],
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "failed_infrastructure"
+    assert result["failure_kind"] == "resource_monitor"
+    assert "timed out" in " ".join(result["issues"]).lower()
+
+
+def test_scientific_failure_precedes_gpu_monitor_timeout(tmp_path, monkeypatch):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    timeout = subprocess.TimeoutExpired(cmd="nvidia-smi", timeout=5.0)
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        returncode=1,
+        log_text="torch.cuda.OutOfMemoryError: CUDA out of memory\n",
+        diagnostics=False,
+        endpoint_count=0,
+        nvml_results=[timeout, timeout],
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "invalid_scientific"
+    assert result["failure_kind"] == "oom"
+    assert "timed out" in " ".join(result["issues"]).lower()
 
 
 @pytest.mark.parametrize(
