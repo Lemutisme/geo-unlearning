@@ -1,8 +1,10 @@
 """Registry for the GU full-matrix experiment jobs."""
 
 import argparse
+import hashlib
 import json
 import os
+import re
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -13,6 +15,11 @@ PROTOCOL = "gu_full_matrix_20260724"
 STAGE = "stage1"
 SHARED_ROOT = Path("/workspace/re/GU/geo-unlearning")
 WMDP_EVALUATION_CACHE = "/dev/shm/ungu-hf-datasets-wmdp"
+WMDP_OFFLINE_ENVIRONMENT = {
+    "HF_DATASETS_CACHE": WMDP_EVALUATION_CACHE,
+    "HF_DATASETS_OFFLINE": "1",
+    "HF_HUB_OFFLINE": "1",
+}
 
 METHODS = (
     "GradAscent",
@@ -358,6 +365,15 @@ RMU_OVERRIDES = {
         "trainer.args.logging_steps=1",
     ),
 }
+WMDP_RMU_OVERRIDES = (
+    "data/datasets@data.retain=WMDP_wikitext_retain",
+    "~data.retain.WMDP_retain",
+    "data.forget.WMDP_forget.args.max_length=768",
+    "model.model_args.attn_implementation=sdpa",
+    "+model.model_args.use_cache=false",
+    "+model.model_args.output_attentions=false",
+    "eval.lm_eval.simple_evaluate_args.batch_size=8",
+)
 
 
 def _make_job(method, benchmark, seed, stage):
@@ -505,29 +521,169 @@ def build_command(job, output_dir):
         family = _benchmark_family(job)
         recipe = job["benchmark"] if family == "muse" else family
         command.extend(RMU_OVERRIDES[recipe])
+        if job["benchmark"] == "wmdp_cyber":
+            command.extend(WMDP_RMU_OVERRIDES)
     return command
+
+
+def environment_overrides(job):
+    """Return the environment values enforced beyond the caller environment."""
+    if job["benchmark"] == "wmdp_cyber":
+        return dict(WMDP_OFFLINE_ENVIRONMENT)
+    return {}
 
 
 def build_environment(job):
     """Return the inherited process environment with benchmark enforcement."""
     environment = dict(os.environ)
-    if job["benchmark"] == "wmdp_cyber":
-        environment.update(
-            {
-                "HF_DATASETS_OFFLINE": "1",
-                "HF_HUB_OFFLINE": "1",
-                "HF_DATASETS_CACHE": WMDP_EVALUATION_CACHE,
-            }
-        )
+    environment.update(environment_overrides(job))
     return environment
+
+
+def source_requirements(job):
+    """Return the immutable source evidence required before launching a job."""
+    provenance = job["provenance"]
+    requirements = {
+        "model": deepcopy(provenance["model"]),
+        "tokenizer": deepcopy(provenance["tokenizer"]),
+    }
+    family = _benchmark_family(job)
+    if family == "tofu":
+        retain_log = (
+            SHARED_ROOT
+            / "saves/eval"
+            / f'tofu_Llama-3.1-8B-Instruct_{job["retain_split"]}'
+            / "TOFU_EVAL.json"
+        )
+        requirements["retain_log"] = {
+            "path": str(retain_log),
+            "sha256": RETAIN_LOG_HASHES[job["benchmark"]],
+        }
+    elif family == "muse":
+        retain_log = (
+            SHARED_ROOT
+            / "saves/eval"
+            / f'muse_Llama-2-7b-hf_{job["split"]}_retrain'
+            / "MUSE_EVAL.json"
+        )
+        requirements["retain_log"] = {
+            "path": str(retain_log),
+            "sha256": RETAIN_LOG_HASHES[job["benchmark"]],
+        }
+    else:
+        evaluation_datasets = provenance["evaluation_datasets"]
+        requirements["corpora"] = {
+            "forget": deepcopy(provenance["forget_corpus"]),
+            "retain": deepcopy(provenance["retain_corpus"]),
+        }
+        requirements["evaluation_cache"] = {
+            "root": WMDP_EVALUATION_CACHE,
+            "builders": {
+                "wmdp_cyber": {
+                    "config_root": str(
+                        Path(WMDP_EVALUATION_CACHE)
+                        / "cais___wmdp/wmdp-cyber/0.0.0"
+                    ),
+                    "builder_id": evaluation_datasets["wmdp_cyber"][
+                        "cache_builder_sha"
+                    ],
+                    "required_config_count": 1,
+                },
+                "mmlu": {
+                    "config_root": str(
+                        Path(WMDP_EVALUATION_CACHE) / "hails___mmlu_no_train"
+                    ),
+                    "builder_id": evaluation_datasets["mmlu"]["cache_builder_sha"],
+                    "required_config_count": 57,
+                },
+            },
+        }
+        if job["method"] == "RMU":
+            requirements["retain_dataset"] = {
+                "artifact": "wikitext",
+                "subset": "wikitext-2-raw-v1",
+                "revision": "b08601e04326c79dfdd32d625aee71d232d685c3",
+                "cache_dir": str(
+                    Path(WMDP_EVALUATION_CACHE)
+                    / "wikitext/wikitext-2-raw-v1/0.0.0"
+                    / "b08601e04326c79dfdd32d625aee71d232d685c3"
+                ),
+            }
+    return requirements
+
+
+def _file_sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def validate_sources(job):
+    """Validate source evidence without creating or modifying job output."""
+    requirements = source_requirements(job)
+    registered_provenance = BENCHMARKS[job["benchmark"]]["provenance"]
+    for label in ("model", "tokenizer"):
+        source = requirements[label]
+        if not source.get("artifact"):
+            raise ValueError(f"{label} artifact is missing")
+        if re.fullmatch(r"[0-9a-f]{40}", source.get("revision", "")) is None:
+            raise ValueError(f"{label} revision must be a pinned 40-hex commit")
+        if source != registered_provenance[label]:
+            raise ValueError(f"{label} revision does not match the registry")
+    if job["model"]["pretrained_model_name_or_path"] != requirements["model"][
+        "artifact"
+    ]:
+        raise ValueError("model artifact does not match the registered job")
+
+    retain_log = requirements.get("retain_log")
+    if retain_log is not None:
+        path = Path(retain_log["path"])
+        if not path.is_file() or _file_sha256(path) != retain_log["sha256"]:
+            raise ValueError(f"retain log source mismatch: {path}")
+
+    for corpus in requirements.get("corpora", {}).values():
+        path = Path(corpus["path"])
+        if (
+            not path.is_file()
+            or path.stat().st_size != corpus["size_bytes"]
+            or _file_sha256(path) != corpus["sha256"]
+        ):
+            raise ValueError(f"corpus source mismatch: {path}")
+
+    builders = requirements.get("evaluation_cache", {}).get("builders", {})
+    for name, builder in builders.items():
+        config_root = Path(builder["config_root"])
+        if name == "mmlu":
+            directories = tuple(
+                config_root.glob(f"*/0.0.0/{builder['builder_id']}")
+            )
+        else:
+            directories = (config_root / builder["builder_id"],)
+        if len(directories) != builder["required_config_count"] or not all(
+            path.is_dir() for path in directories
+        ):
+            raise ValueError(f"evaluation cache builder mismatch: {name}")
+    retain_dataset = requirements.get("retain_dataset")
+    if retain_dataset is not None and not Path(retain_dataset["cache_dir"]).is_dir():
+        raise ValueError("retain dataset cache mismatch: wikitext")
+    return requirements
 
 
 def _manifest_dry_run(seed):
     manifest = build_manifest(seed=seed)
     jobs = []
+    validated = set()
     for job in manifest["jobs"]:
+        validation_key = (job["benchmark"], job["method"] == "RMU")
+        if validation_key not in validated:
+            validate_sources(job)
+            validated.add(validation_key)
         rendered = deepcopy(job)
-        rendered["command"] = build_command(job, job["output_dir"])
+        rendered["argv"] = build_command(job, job["output_dir"])
+        rendered["environment"] = environment_overrides(job)
+        rendered["source_requirements"] = source_requirements(job)
         jobs.append(rendered)
     manifest["jobs"] = jobs
     return manifest

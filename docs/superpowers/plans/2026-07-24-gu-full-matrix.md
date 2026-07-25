@@ -167,9 +167,11 @@ selected objective trainer's native hyperparameters intact. Commands add only:
 Use `+` only for keys absent after Hydra composition. Compose all 60 commands in
 tests with Hydra and require no unresolved values.
 
-RMU uses `trainer=RMU` and the completed branch's benchmark-specific module,
-steering, and trainable-scope values, translated to the shipped RMU config keys.
-The common GU regex remains the benchmark regex from the design.
+RMU uses `trainer=RMU` with branch-compatible benchmark recipe values translated
+to shipped RMU config keys. Branch-only RepresentationRMU machinery is not
+claimed: WMDP uses shipped deterministic-random sampling, while TOFU retains the
+approved common GU scope through its explicit module-31 translation. The common
+GU regex remains the benchmark regex from the design.
 
 - [ ] **Step 4: Verify GREEN**
 

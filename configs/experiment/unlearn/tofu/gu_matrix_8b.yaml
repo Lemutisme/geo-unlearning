@@ -22,8 +22,6 @@ model:
   model_args:
     pretrained_model_name_or_path: open-unlearning/tofu_Llama-3.1-8B-Instruct_full
     revision: 1a5c5b1a557f8c99bdadecd5168ebd03f640b00e
-    use_cache: false
-    output_attentions: false
   tokenizer_args:
     pretrained_model_name_or_path: open-unlearning/tofu_Llama-3.1-8B-Instruct_full
     revision: 1a5c5b1a557f8c99bdadecd5168ebd03f640b00e

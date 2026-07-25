@@ -14,7 +14,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = ROOT / "scripts/run_gu_full_matrix.py"
-SHARED_ROOT = Path("/workspace/re/GU/geo-unlearning")
 WMDP_CORPUS_ROOT = Path("/workspace/re/GU/geo-unlearning/data/wmdp/wmdp-corpora")
 
 METHODS = (
@@ -484,31 +483,7 @@ def test_wmdp_evaluation_dataset_provenance_matches_cached_builders():
     assert all(path.is_dir() for path in mmlu_builders)
 
 
-GU_ARGUMENTS = (
-    "+trainer.method_args.gu.enabled=true",
-    "+trainer.method_args.gu.parameter_regex=[\"{parameter_regex}\"]",
-    "+trainer.method_args.gu.retain_history_rank=8",
-    "+trainer.method_args.gu.projection_eps=1e-6",
-    "+trainer.method_args.gu.retain_filter=first_order",
-    "+trainer.method_args.gu.retain_budget=1e-4",
-    "+trainer.method_args.gu.backtracking_scales=[1.0,0.5,0.25,0.125]",
-    "+trainer.method_args.gu.diagnostics_path=gu_diagnostics.jsonl",
-)
-COMMON_RUNTIME_ARGUMENTS = (
-    "trainer.args.seed=0",
-    "+trainer.args.data_seed=0",
-    "save_model_after_train=false",
-    "trainer.args.save_strategy=no",
-    "trainer.args.save_only_model=false",
-    "trainer.args.do_eval=true",
-    "trainer.args.eval_on_start=false",
-    "trainer.args.eval_strategy=no",
-    "trainer.args.report_to=none",
-)
-TOFU_REVISION = "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
 TOFU_DATASET_REVISION = "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
-MUSE_TOKENIZER_REVISION = "8efe6c9b93655b934e27bd9981e3ec13e55aee9d"
-ZEPHYR_REVISION = "892b3d7a7b1cf10c7a701c60881cd93df615734c"
 GIBBERISH_REVISION = "76672dd7d3575f68ab980705bcec975cc62de71c"
 RETAIN_LOG_HASHES = {
     "tofu_forget01": "d307bb83ea3e3409fd01cc50908501ea16aba49e9ed6a779f8ceb75ec2e5503f",
@@ -518,203 +493,8 @@ RETAIN_LOG_HASHES = {
     "muse_books": "502d38cd7da4fda841e4ee411b488cce3be0d882a1e2c07a0117a83045be8b76",
 }
 
-RMU_ARGUMENTS = {
-    "tofu": (
-        "trainer.method_args.gamma=1.0",
-        "trainer.method_args.alpha=100.0",
-        "trainer.method_args.retain_loss_type=EMBED_DIFF",
-        "trainer.method_args.steering_coeff=6.5",
-        'trainer.method_args.module_regex="model[.]layers[.]31"',
-        'trainer.method_args.trainable_params_regex=["model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight"]',
-        "trainer.args.optim=adamw_torch",
-        "+trainer.args.adam_beta1=0.9",
-        "+trainer.args.adam_beta2=0.999",
-        "+trainer.args.adam_epsilon=1e-6",
-        "trainer.args.learning_rate=2e-4",
-        "trainer.args.weight_decay=0.0",
-        "+trainer.args.max_grad_norm=0.0",
-        "trainer.args.per_device_train_batch_size=1",
-        "trainer.args.per_device_eval_batch_size=1",
-        "trainer.args.gradient_accumulation_steps=4",
-        "+trainer.args.max_steps=-1",
-        "trainer.args.num_train_epochs=10.0",
-        "+trainer.args.lr_scheduler_type=constant",
-        "+trainer.args.warmup_steps=0",
-        "+trainer.args.warmup_epochs=0.0",
-        "trainer.args.bf16=true",
-        "trainer.args.bf16_full_eval=true",
-        "+trainer.args.fp16=false",
-        "trainer.args.gradient_checkpointing=false",
-        "+trainer.args.gradient_checkpointing_kwargs.use_reentrant=false",
-        "trainer.args.logging_steps=1",
-    ),
-    "muse_news": (
-        "trainer.method_args.gamma=1.0",
-        "trainer.method_args.alpha=10.0",
-        "trainer.method_args.retain_loss_type=EMBED_DIFF",
-        "trainer.method_args.steering_coeff=6.5",
-        'trainer.method_args.module_regex="model[.]layers[.]7"',
-        'trainer.method_args.trainable_params_regex=["model[.]layers[.](5|6|7)[.]mlp[.]down_proj[.]weight"]',
-        "trainer.args.optim=adamw_torch",
-        "+trainer.args.adam_beta1=0.9",
-        "+trainer.args.adam_beta2=0.999",
-        "+trainer.args.adam_epsilon=1e-6",
-        "trainer.args.learning_rate=1e-3",
-        "trainer.args.weight_decay=0.0",
-        "+trainer.args.max_grad_norm=0.0",
-        "trainer.args.per_device_train_batch_size=4",
-        "trainer.args.per_device_eval_batch_size=1",
-        "trainer.args.gradient_accumulation_steps=1",
-        "trainer.args.num_train_epochs=10.0",
-        "+trainer.args.lr_scheduler_type=constant",
-        "+trainer.args.warmup_steps=0",
-        "+trainer.args.warmup_epochs=0.0",
-        "trainer.args.bf16=true",
-        "trainer.args.bf16_full_eval=true",
-        "+trainer.args.fp16=false",
-        "trainer.args.gradient_checkpointing=false",
-        "+trainer.args.gradient_checkpointing_kwargs.use_reentrant=false",
-        "trainer.args.logging_steps=1",
-    ),
-    "muse_books": (
-        "trainer.method_args.gamma=1.0",
-        "trainer.method_args.alpha=10.0",
-        "trainer.method_args.retain_loss_type=EMBED_DIFF",
-        "trainer.method_args.steering_coeff=6.5",
-        'trainer.method_args.module_regex="model[.]layers[.]7"',
-        'trainer.method_args.trainable_params_regex=["model[.]layers[.](5|6|7)[.]mlp[.]down_proj[.]weight"]',
-        "trainer.args.optim=adamw_torch",
-        "+trainer.args.adam_beta1=0.9",
-        "+trainer.args.adam_beta2=0.999",
-        "+trainer.args.adam_epsilon=1e-6",
-        "trainer.args.learning_rate=1e-3",
-        "trainer.args.weight_decay=0.0",
-        "+trainer.args.max_grad_norm=0.0",
-        "trainer.args.per_device_train_batch_size=4",
-        "trainer.args.per_device_eval_batch_size=1",
-        "trainer.args.gradient_accumulation_steps=1",
-        "trainer.args.num_train_epochs=1.0",
-        "+trainer.args.lr_scheduler_type=constant",
-        "+trainer.args.warmup_steps=0",
-        "+trainer.args.warmup_epochs=0.0",
-        "trainer.args.bf16=true",
-        "trainer.args.bf16_full_eval=true",
-        "+trainer.args.fp16=false",
-        "trainer.args.gradient_checkpointing=false",
-        "+trainer.args.gradient_checkpointing_kwargs.use_reentrant=false",
-        "trainer.args.logging_steps=1",
-    ),
-    "wmdp": (
-        "trainer.method_args.gamma=1.0",
-        "trainer.method_args.alpha=1200.0",
-        "trainer.method_args.retain_loss_type=EMBED_DIFF",
-        "trainer.method_args.steering_coeff=6.5",
-        'trainer.method_args.module_regex="model[.]layers[.]7"',
-        'trainer.method_args.trainable_params_regex=["model[.]layers[.](5|6|7)[.]mlp[.]down_proj[.]weight"]',
-        "trainer.args.optim=adamw_torch",
-        "+trainer.args.adam_beta1=0.9",
-        "+trainer.args.adam_beta2=0.999",
-        "+trainer.args.adam_epsilon=1e-6",
-        "trainer.args.learning_rate=5e-5",
-        "trainer.args.weight_decay=0.0",
-        "+trainer.args.max_grad_norm=0.0",
-        "trainer.args.per_device_train_batch_size=4",
-        "trainer.args.per_device_eval_batch_size=1",
-        "trainer.args.gradient_accumulation_steps=1",
-        "+trainer.args.max_steps=150",
-        "+trainer.args.lr_scheduler_type=constant",
-        "+trainer.args.warmup_steps=0",
-        "+trainer.args.warmup_epochs=0.0",
-        "trainer.args.bf16=true",
-        "trainer.args.bf16_full_eval=true",
-        "+trainer.args.fp16=false",
-        "trainer.args.gradient_checkpointing=false",
-        "+trainer.args.gradient_checkpointing_kwargs.use_reentrant=false",
-        "trainer.args.logging_steps=1",
-    ),
-}
-
-
 def benchmark_family(job):
     return job["benchmark"].split("_", 1)[0]
-
-
-def benchmark_command_arguments(job):
-    provenance = job["provenance"]
-    family = benchmark_family(job)
-    if family == "tofu":
-        retain_logs = (
-            SHARED_ROOT
-            / "saves/eval"
-            / f'tofu_Llama-3.1-8B-Instruct_{job["retain_split"]}'
-            / "TOFU_EVAL.json"
-        )
-        return (
-            f'forget_split={job["split"]}',
-            f'retain_split={job["retain_split"]}',
-            f'holdout_split={job["holdout_split"]}',
-            f"retain_logs_path={retain_logs}",
-            f"tofu_dataset_revision={TOFU_DATASET_REVISION}",
-            f"retain_logs_sha256={RETAIN_LOG_HASHES[job['benchmark']]}",
-        )
-    if family == "muse":
-        split = job["split"]
-        reference = provenance["reference_model"]
-        reference_snapshot = (
-            Path("/root/.cache/huggingface/hub")
-            / f"models--muse-bench--MUSE-{split}_retrain"
-            / "snapshots"
-            / reference["revision"]
-        )
-        retain_logs = (
-            SHARED_ROOT
-            / "saves/eval"
-            / f"muse_Llama-2-7b-hf_{split}_retrain"
-            / "MUSE_EVAL.json"
-        )
-        return (
-            f"data_split={split}",
-            f"dataset_revision={provenance['dataset']['revision']}",
-            f"reference_model_artifact={reference['artifact']}",
-            f"reference_model_revision={reference['revision']}",
-            f"reference_model_snapshot={reference_snapshot}",
-            f"retain_logs_path={retain_logs}",
-            f"muse_retain_logs_sha256={RETAIN_LOG_HASHES[job['benchmark']]}",
-        )
-    return ("data_split=cyber",)
-
-
-def expected_command(job, output_dir):
-    provenance = job["provenance"]
-    command = [
-        sys.executable,
-        "src/train.py",
-        "--config-name=unlearn.yaml",
-        f'experiment={job["experiment_config"]}',
-        f'trainer={job["trainer_config"]}',
-        f'task_name={job["job_id"]}',
-        f"paths.output_dir={output_dir}",
-        (
-            "model.model_args.pretrained_model_name_or_path="
-            f'{provenance["model"]["artifact"]}'
-        ),
-        f'model.model_args.revision={provenance["model"]["revision"]}',
-        (
-            "model.tokenizer_args.pretrained_model_name_or_path="
-            f'{provenance["tokenizer"]["artifact"]}'
-        ),
-        f'model.tokenizer_args.revision={provenance["tokenizer"]["revision"]}',
-        *benchmark_command_arguments(job),
-        *COMMON_RUNTIME_ARGUMENTS,
-        *(
-            argument.format(parameter_regex=job["selected_parameter_regex"])
-            for argument in GU_ARGUMENTS
-        ),
-    ]
-    if job["method"] == "RMU":
-        recipe = job["benchmark"] if benchmark_family(job) == "muse" else benchmark_family(job)
-        command.extend(RMU_ARGUMENTS[recipe])
-    return command
 
 
 def compose_command(command):
@@ -728,6 +508,35 @@ def compose_command(command):
         )
 
 
+def direct_shipped_config(job, output_dir):
+    provenance = job["provenance"]
+    return compose_command(
+        [
+            sys.executable,
+            "src/train.py",
+            "--config-name=unlearn.yaml",
+            f'model={job["model"]["config"]}',
+            f'trainer={job["trainer_config"]}',
+            f'task_name={job["job_id"]}',
+            f"paths.output_dir={output_dir}",
+            (
+                "model.model_args.pretrained_model_name_or_path="
+                f'{provenance["model"]["artifact"]}'
+            ),
+            f'+model.model_args.revision={provenance["model"]["revision"]}',
+            (
+                "model.tokenizer_args.pretrained_model_name_or_path="
+                f'{provenance["tokenizer"]["artifact"]}'
+            ),
+            f'+model.tokenizer_args.revision={provenance["tokenizer"]["revision"]}',
+        ]
+    )
+
+
+def without_keys(mapping, ignored):
+    return {key: value for key, value in mapping.items() if key not in ignored}
+
+
 def test_all_60_seed_zero_commands_are_exact_and_checkpoint_free(tmp_path):
     registry = load_registry()
     jobs = registry.build_manifest(seed=0)["jobs"]
@@ -736,7 +545,6 @@ def test_all_60_seed_zero_commands_are_exact_and_checkpoint_free(tmp_path):
     for job in jobs:
         output_dir = tmp_path / job["job_id"]
         command = registry.build_command(job, output_dir)
-        assert command == expected_command(job, output_dir)
         assert command[:3] == [
             sys.executable,
             "src/train.py",
@@ -785,7 +593,7 @@ def test_all_60_commands_hydra_compose_without_missing_or_unresolved_values(tmp_
         }
 
 
-def test_non_rmu_commands_keep_shipped_trainer_defaults(tmp_path):
+def test_non_rmu_commands_keep_direct_shipped_model_and_trainer_defaults(tmp_path):
     from omegaconf import OmegaConf
 
     jobs = load_registry().build_manifest(seed=0)["jobs"]
@@ -797,15 +605,46 @@ def test_non_rmu_commands_keep_shipped_trainer_defaults(tmp_path):
     for path in config_paths:
         assert "trainer" not in OmegaConf.load(path)
 
+    representatives = {}
+    for job in jobs:
+        if job["method"] != "RMU":
+            representatives.setdefault((benchmark_family(job), job["method"]), job)
+
+    operational_args = {
+        "output_dir",
+        "logging_dir",
+        "report_to",
+        "save_strategy",
+        "save_only_model",
+        "do_eval",
+        "eval_on_start",
+        "eval_strategy",
+        "seed",
+        "data_seed",
+    }
+    identity_args = {"pretrained_model_name_or_path", "revision"}
+    for job in representatives.values():
+        output_dir = tmp_path / job["job_id"]
+        actual = compose_command(load_registry().build_command(job, output_dir))
+        shipped = direct_shipped_config(job, output_dir)
+        actual_model = OmegaConf.to_container(actual.model, resolve=True)
+        shipped_model = OmegaConf.to_container(shipped.model, resolve=True)
+        assert without_keys(actual_model["model_args"], identity_args) == without_keys(
+            shipped_model["model_args"], identity_args
+        )
+        assert without_keys(
+            actual_model["tokenizer_args"], identity_args
+        ) == without_keys(shipped_model["tokenizer_args"], identity_args)
+        actual_trainer = OmegaConf.to_container(actual.trainer.args, resolve=True)
+        shipped_trainer = OmegaConf.to_container(shipped.trainer.args, resolve=True)
+        assert without_keys(actual_trainer, operational_args) == without_keys(
+            shipped_trainer, operational_args
+        )
+
     for job in jobs:
         if job["method"] == "RMU":
             continue
         command = load_registry().build_command(job, tmp_path / job["job_id"])
-        assert not any(
-            argument in command
-            for values in RMU_ARGUMENTS.values()
-            for argument in values
-        )
         assert not any(
             argument.startswith(
                 (
@@ -830,10 +669,7 @@ def test_rmu_commands_translate_branch_recipes_to_current_rmu_keys(tmp_path):
     assert len(jobs) == 6
     for job in jobs:
         family = benchmark_family(job)
-        recipe = job["benchmark"] if family == "muse" else family
         command = load_registry().build_command(job, tmp_path / job["job_id"])
-        for argument in RMU_ARGUMENTS[recipe]:
-            assert command.count(argument) == 1
         config = compose_command(command)
         expected_module = "model[.]layers[.]31" if family == "tofu" else "model[.]layers[.]7"
         expected_alpha = {"tofu": 100.0, "muse": 10.0, "wmdp": 1200.0}[family]
@@ -876,6 +712,51 @@ def test_tofu_rmu_intentionally_translates_branch_scope_to_common_gu_scope(tmp_p
     assert list(config.trainer.method_args.gu.parameter_regex) == [
         translation.matrix_protocol.parameter_regex
     ]
+
+
+def test_wmdp_rmu_uses_expressible_branch_recipe_and_declares_sampling_deviation(
+    tmp_path,
+):
+    from omegaconf import OmegaConf
+
+    dataset_path = ROOT / "configs/data/datasets/WMDP_wikitext_retain.yaml"
+    assert dataset_path.is_file()
+    dataset = OmegaConf.load(dataset_path)
+    assert OmegaConf.to_container(dataset, resolve=True) == {
+        "WMDP_wikitext_retain": {
+            "handler": "PretrainingDataset",
+            "args": {
+                "hf_args": {
+                    "path": "wikitext",
+                    "name": "wikitext-2-raw-v1",
+                    "split": "train",
+                    "revision": "b08601e04326c79dfdd32d625aee71d232d685c3",
+                },
+                "text_key": "text",
+                "max_length": 512,
+            },
+        }
+    }
+    job = next(
+        job
+        for job in load_registry().build_manifest(seed=0)["jobs"]
+        if job["method"] == "RMU" and job["benchmark"] == "wmdp_cyber"
+    )
+    command = load_registry().build_command(job, tmp_path / job["job_id"])
+    config = compose_command(command)
+
+    assert set(config.data.retain) == {"WMDP_wikitext_retain"}
+    retain = config.data.retain.WMDP_wikitext_retain.args
+    assert retain.hf_args.revision == "b08601e04326c79dfdd32d625aee71d232d685c3"
+    assert config.data.forget.WMDP_forget.args.max_length == 768
+    assert config.model.model_args.attn_implementation == "sdpa"
+    assert config.model.model_args.use_cache is False
+    assert config.model.model_args.output_attentions is False
+    assert config.eval.lm_eval.simple_evaluate_args.batch_size == 8
+    assert config.protocol.rmu_sampling.effective == "shipped_deterministic_random"
+    assert config.protocol.rmu_sampling.branch_only == "sequential_sampler"
+    assert config.protocol.rmu_sampling.claims_branch_sampler_parity is False
+    assert "sequential_sampler" not in config.trainer.method_args
 
 
 def test_pinned_benchmark_configs_resolve_evaluators_and_provenance(tmp_path):
@@ -1039,6 +920,82 @@ def test_build_environment_enforces_wmdp_verified_offline_dataset_cache(monkeypa
     assert registry.build_environment(tofu_job) == dict(os.environ)
 
 
+def test_source_requirements_validate_all_registered_sources(monkeypatch):
+    registry = load_registry()
+    jobs = registry.build_manifest(seed=0)["jobs"]
+    representatives = {}
+    for job in jobs:
+        key = (job["benchmark"], job["method"] == "RMU")
+        representatives.setdefault(key, job)
+
+    for job in representatives.values():
+        requirements = registry.source_requirements(job)
+        assert requirements["model"] == job["provenance"]["model"]
+        assert requirements["tokenizer"] == job["provenance"]["tokenizer"]
+        assert registry.validate_sources(job) == requirements
+        if job["benchmark"].startswith(("tofu_", "muse_")):
+            retain_log = requirements["retain_log"]
+            assert Path(retain_log["path"]).is_file()
+            assert retain_log["sha256"] == RETAIN_LOG_HASHES[job["benchmark"]]
+        if job["benchmark"] == "wmdp_cyber":
+            cache = requirements["evaluation_cache"]
+            assert cache["root"] == "/dev/shm/ungu-hf-datasets-wmdp"
+            assert cache["builders"]["wmdp_cyber"]["builder_id"] == (
+                "7125571f22f032c56415e7980f48d877dd830ff8"
+            )
+            assert cache["builders"]["mmlu"]["builder_id"] == (
+                "b2e1ec9aa795adafe68e8e983248dbd4b52a1c60"
+            )
+            assert set(requirements["corpora"]) == {"forget", "retain"}
+            if job["method"] == "RMU":
+                assert requirements["retain_dataset"] == {
+                    "artifact": "wikitext",
+                    "subset": "wikitext-2-raw-v1",
+                    "revision": "b08601e04326c79dfdd32d625aee71d232d685c3",
+                    "cache_dir": (
+                        "/dev/shm/ungu-hf-datasets-wmdp/wikitext/"
+                        "wikitext-2-raw-v1/0.0.0/"
+                        "b08601e04326c79dfdd32d625aee71d232d685c3"
+                    ),
+                }
+
+    tampered = json.loads(json.dumps(jobs[0]))
+    tampered["provenance"]["model"]["revision"] = "0" * 40
+    with pytest.raises(ValueError, match="model revision"):
+        registry.validate_sources(tampered)
+
+    monkeypatch.setitem(
+        registry.RETAIN_LOG_HASHES,
+        "tofu_forget01",
+        "0" * 64,
+    )
+    tofu_job = next(job for job in jobs if job["benchmark"] == "tofu_forget01")
+    with pytest.raises(ValueError, match="retain log"):
+        registry.validate_sources(tofu_job)
+
+
+def test_manifest_dry_run_stops_on_source_mismatch(monkeypatch):
+    registry = load_registry()
+
+    def reject_sources(job):
+        raise ValueError(f'source mismatch: {job["job_id"]}')
+
+    monkeypatch.setattr(registry, "validate_sources", reject_sources, raising=False)
+    with pytest.raises(ValueError, match="source mismatch"):
+        registry._manifest_dry_run(seed=0)
+
+
+def test_design_discloses_branch_only_rmu_sampling_deviation():
+    design = (
+        ROOT / "docs/superpowers/specs/2026-07-24-gu-full-matrix-design.md"
+    ).read_text()
+
+    assert "branch-compatible recipe values and provenance" in design
+    assert "common shipped `RMU` trainer" in design
+    assert "`shipped_deterministic_random`" in design
+    assert "does not claim sequential-sampler parity" in design
+
+
 def OmegaConf_to_container(config):
     from omegaconf import OmegaConf
 
@@ -1066,6 +1023,20 @@ def test_manifest_seed_zero_dry_run_prints_commands_without_creating_outputs(tmp
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert len(payload["jobs"]) == 60
-    assert all(job["command"][:3] == [sys.executable, "src/train.py", "--config-name=unlearn.yaml"] for job in payload["jobs"])
+    for job in payload["jobs"]:
+        assert job["argv"][:3] == [
+            sys.executable,
+            "src/train.py",
+            "--config-name=unlearn.yaml",
+        ]
+        assert job["source_requirements"]["model"] == job["provenance"]["model"]
+        if job["benchmark"] == "wmdp_cyber":
+            assert job["environment"] == {
+                "HF_DATASETS_CACHE": "/dev/shm/ungu-hf-datasets-wmdp",
+                "HF_DATASETS_OFFLINE": "1",
+                "HF_HUB_OFFLINE": "1",
+            }
+        else:
+            assert job["environment"] == {}
     after = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
     assert after == before

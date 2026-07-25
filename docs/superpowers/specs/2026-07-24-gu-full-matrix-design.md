@@ -44,9 +44,13 @@ training duration, optimizer, precision, and performance configuration. There
 is no cross-method LR/step normalization and no endpoint-based hyperparameter
 selection.
 
-RMU reuses the completed RMU branch's benchmark recipes and provenance, but it
-uses the common `feat/GU` implementation. The experiment must not mix results
-from two different GU implementations.
+RMU reuses branch-compatible recipe values and provenance on the common shipped `RMU` trainer
+and the common `feat/GU` implementation. Branch-only machinery is
+not silently ported across implementations: WMDP uses
+`shipped_deterministic_random` sampling and does not claim sequential-sampler parity.
+TOFU intentionally translates the branch scope to module 31 and layers 29--31
+so the approved common GU scope receives gradients. The experiment must not mix
+results from two different GU implementations.
 
 ## Fixed GU Protocol
 

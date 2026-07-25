@@ -15,8 +15,6 @@ model:
   model_args:
     pretrained_model_name_or_path: HuggingFaceH4/zephyr-7b-beta
     revision: 892b3d7a7b1cf10c7a701c60881cd93df615734c
-    use_cache: false
-    output_attentions: false
   tokenizer_args:
     pretrained_model_name_or_path: HuggingFaceH4/zephyr-7b-beta
     revision: 892b3d7a7b1cf10c7a701c60881cd93df615734c
@@ -69,6 +67,10 @@ protocol:
       size_bytes: 62240540
       sha256: e3164a1402c381cb50b104fd06a91b5068ec650ee9b4bd2f119716ecded2add8
       upstream: cais/wmdp-corpora@daf89fa9b618b63a624228061a9cebacca88009c
+    utility_corpus:
+      artifact: wikitext
+      subset: wikitext-2-raw-v1
+      revision: b08601e04326c79dfdd32d625aee71d232d685c3
   evaluation_pin:
     pin_mechanism: verified_offline_cache
     datasets_cache: /dev/shm/ungu-hf-datasets-wmdp
@@ -82,5 +84,9 @@ protocol:
       artifact: hails/mmlu_no_train
       verified_source_revision: b2e1ec9aa795adafe68e8e983248dbd4b52a1c60
       cache_builder_sha: b2e1ec9aa795adafe68e8e983248dbd4b52a1c60
+  rmu_sampling:
+    effective: shipped_deterministic_random
+    branch_only: sequential_sampler
+    claims_branch_sampler_parity: false
 
 task_name: gu_matrix_wmdp_cyber

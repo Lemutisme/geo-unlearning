@@ -24,9 +24,6 @@ model:
   model_args:
     pretrained_model_name_or_path: muse-bench/MUSE-News_target
     revision: a2f39769e9a0b98ec1cdd12f65e9962502208935
-    attn_implementation: sdpa
-    use_cache: false
-    output_attentions: false
   tokenizer_args:
     pretrained_model_name_or_path: NousResearch/Llama-2-7b-hf
     revision: 8efe6c9b93655b934e27bd9981e3ec13e55aee9d
