@@ -14,12 +14,11 @@ SCHEMA_VERSION = 1
 PROTOCOL = "gu_full_matrix_20260724"
 STAGE = "stage1"
 SHARED_ROOT = Path("/workspace/re/GU/geo-unlearning")
-WMDP_EVALUATION_CACHE = "/dev/shm/ungu-hf-datasets-wmdp"
-WMDP_OFFLINE_ENVIRONMENT = {
-    "HF_DATASETS_CACHE": WMDP_EVALUATION_CACHE,
-    "HF_DATASETS_OFFLINE": "1",
-    "HF_HUB_CACHE": "/dev/shm/ungu-hf-hub-wmdp",
-    "HF_HUB_OFFLINE": "1",
+RUNTIME_ROOTS = {
+    "tofu": Path("/dev/shm/gu-matrix-tofu"),
+    "muse_news": Path("/dev/shm/gu-matrix-muse-news"),
+    "muse_books": Path("/dev/shm/gu-matrix-muse-books"),
+    "wmdp": Path("/dev/shm/gu-matrix-wmdp"),
 }
 
 METHODS = (
@@ -251,7 +250,6 @@ RETAIN_LOG_HASHES = {
     "muse_news": "11f8c9338f955a9fc1ce4148daa0fbd2867807c648a43f99dc240442d2135ec2",
     "muse_books": "502d38cd7da4fda841e4ee411b488cce3be0d882a1e2c07a0117a83045be8b76",
 }
-TOFU_DATASET_CACHE_ROOT = Path("/root/.cache/huggingface/datasets/locuslab___tofu")
 TOFU_DATASET_REVISION = "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
 TOFU_DATASET_MANIFESTS = {
     "forget01": "47544a749780b0f09e4eb009d96669e71e73f27c0da449a89db54ea9658b71ba",
@@ -272,7 +270,6 @@ TOFU_DATASET_MANIFESTS = {
 }
 MUSE_DATASET_CACHE = {
     "News": {
-        "root": Path("/dev/shm/ungu-hf-datasets-muse/muse-bench___muse-news"),
         "revision": "506bd5b150b92814d45e4404a82f120ab2d748bf",
         "manifests": {
             "raw": "e06cff3f2f6e6539bdc93bff1e9c02ce741a6f5a1336a0d377abae557082e1c4",
@@ -282,9 +279,6 @@ MUSE_DATASET_CACHE = {
         },
     },
     "Books": {
-        "root": Path(
-            "/root/.cache/huggingface/datasets/muse-bench___muse-books"
-        ),
         "revision": "051ba90319e920d410d87cfdbd61f25843c1b892",
         "manifests": {
             "raw": "971a0079974ee7ae32151e39c4e10ca9895e76ec7182245f0b5835513e993e9b",
@@ -296,82 +290,48 @@ MUSE_DATASET_CACHE = {
 }
 WMDP_DATASET_MANIFESTS = {
     "wmdp_cyber": "17a1eeaaa80c6baf887d993043a271f97ce4c59f39feb6e2d5e782d30e2f3a77",
-    "mmlu": "ccdd490e6042440417b380770294c4cab6d28977d522f8f68a6dd527f03ba40f",
+    "mmlu": "e0636c613ceaa7efb3ab181587f6bf7cf62e3c4d2ef2f32b3c4b528f93dc8228",
     "wikitext": "3b162501be71321b5c3a05ecab71bb452376295224b5060ce0108cb05a52d5ce",
 }
 HUB_SNAPSHOTS = {
     "tofu_target_tokenizer": {
         "source_name": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
         "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
-        "path": (
-            "/dev/shm/gu-hf/hub/models--open-unlearning--"
-            "tofu_Llama-3.1-8B-Instruct_full/snapshots/"
-            "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
-        ),
         "content_manifest_sha256": "f9879ff7688d9233da6ff1c060ad3d465aaaf026d0c9e20372add28dc2c44fd3",
     },
     "muse_news_target": {
         "source_name": "muse-bench/MUSE-News_target",
         "revision": "a2f39769e9a0b98ec1cdd12f65e9962502208935",
-        "path": (
-            "/dev/shm/ungu-hf-hub-muse/models--muse-bench--MUSE-News_target/"
-            "snapshots/a2f39769e9a0b98ec1cdd12f65e9962502208935"
-        ),
         "content_manifest_sha256": "7cb73ebda17432c1f48092f243eecdc7ce0165be644d4c506ba3dee86ae6011c",
     },
     "muse_books_target": {
         "source_name": "muse-bench/MUSE-Books_target",
         "revision": "c8dd3fb23a726762ec66d277933c7cff6767f3c2",
-        "path": (
-            "/root/.cache/huggingface/hub/models--muse-bench--MUSE-Books_target/"
-            "snapshots/c8dd3fb23a726762ec66d277933c7cff6767f3c2"
-        ),
-        "content_manifest_sha256": None,
+        "content_manifest_sha256": "752e2e94eb6b12f4f8e5514def431da122a25073a9b6db3da06b7801f8692795",
     },
     "muse_tokenizer": {
         "source_name": "NousResearch/Llama-2-7b-hf",
         "revision": "8efe6c9b93655b934e27bd9981e3ec13e55aee9d",
-        "path": (
-            "/dev/shm/ungu-hf-hub-muse/models--NousResearch--Llama-2-7b-hf/"
-            "snapshots/8efe6c9b93655b934e27bd9981e3ec13e55aee9d"
-        ),
         "content_manifest_sha256": "8f8ec553756a42d2fa5e3b630aba8cf49c8a8afa90664527d4d295c07c1000f2",
     },
     "muse_news_reference": {
         "source_name": "muse-bench/MUSE-News_retrain",
         "revision": "324ef49ee0a038078aba7d8de831edf57235c9b3",
-        "path": (
-            "/dev/shm/ungu-hf-hub-muse/models--muse-bench--MUSE-News_retrain/"
-            "snapshots/324ef49ee0a038078aba7d8de831edf57235c9b3"
-        ),
         "content_manifest_sha256": "f7638ac028811c84e246514b838eb7cd40e39c41fea3ea518e449252186c5868",
     },
     "muse_books_reference": {
         "source_name": "muse-bench/MUSE-Books_retrain",
         "revision": "1d67430e4e8bdf2a65823740e909792519175ac2",
-        "path": (
-            "/root/.cache/huggingface/hub/models--muse-bench--MUSE-Books_retrain/"
-            "snapshots/1d67430e4e8bdf2a65823740e909792519175ac2"
-        ),
         "content_manifest_sha256": "6ff6a81660877991ae44d4118441ad2815c95ff8bc2d54f2256728ba7a1ea434",
     },
     "gibberish_classifier": {
         "source_name": "madhurjindal/autonlp-Gibberish-Detector-492513457",
         "revision": "76672dd7d3575f68ab980705bcec975cc62de71c",
-        "path": (
-            "/dev/shm/ungu-hf-hub-muse/models--madhurjindal--"
-            "autonlp-Gibberish-Detector-492513457/snapshots/"
-            "76672dd7d3575f68ab980705bcec975cc62de71c"
-        ),
         "content_manifest_sha256": "3d0e600d1f642bd55c16195eb8238fbb86ad17dab0a49b08bc18f4dcdd05b87c",
     },
     "wmdp_model_tokenizer": {
         "source_name": "HuggingFaceH4/zephyr-7b-beta",
         "revision": "892b3d7a7b1cf10c7a701c60881cd93df615734c",
-        "path": (
-            "/dev/shm/ungu-hf-hub-wmdp/models--HuggingFaceH4--zephyr-7b-beta/"
-            "snapshots/892b3d7a7b1cf10c7a701c60881cd93df615734c"
-        ),
         "content_manifest_sha256": "64012eb3be1ba3915533f844707cb10b0ccde9fc503a6de6240ac5073907ae7b",
     },
 }
@@ -578,6 +538,12 @@ def _benchmark_family(job):
     return job["benchmark"].split("_", 1)[0]
 
 
+def runtime_root(job):
+    family = _benchmark_family(job)
+    key = job["benchmark"] if family == "muse" else family
+    return RUNTIME_ROOTS[key]
+
+
 def _benchmark_arguments(job):
     provenance = job["provenance"]
     family = _benchmark_family(job)
@@ -600,7 +566,8 @@ def _benchmark_arguments(job):
         split = job["split"]
         reference = provenance["reference_model"]
         reference_snapshot = (
-            Path("/root/.cache/huggingface/hub")
+            runtime_root(job)
+            / "hub"
             / f"models--muse-bench--MUSE-{split}_retrain"
             / "snapshots"
             / reference["revision"]
@@ -667,9 +634,13 @@ def build_command(job, output_dir):
 
 def environment_overrides(job):
     """Return the environment values enforced beyond the caller environment."""
-    if job["benchmark"] == "wmdp_cyber":
-        return dict(WMDP_OFFLINE_ENVIRONMENT)
-    return {}
+    root = runtime_root(job)
+    return {
+        "HF_DATASETS_CACHE": str(root / "datasets"),
+        "HF_DATASETS_OFFLINE": "1",
+        "HF_HUB_CACHE": str(root / "hub"),
+        "HF_HUB_OFFLINE": "1",
+    }
 
 
 def build_environment(job):
@@ -685,13 +656,21 @@ def _dataset_cache_requirement(source_name, path, content_manifest_sha256):
         "source_name": source_name,
         "path": str(path),
         "content_manifest_sha256": content_manifest_sha256,
-        "required_suffixes": [".arrow", ".json"],
+        "registered_suffixes": [".arrow", ".json"],
     }
 
 
-def _hub_snapshot_requirement(key):
+def _hub_snapshot_requirement(key, job):
     requirement = deepcopy(HUB_SNAPSHOTS[key])
     requirement["kind"] = "hub_snapshot"
+    owner, repository = requirement["source_name"].split("/", 1)
+    requirement["path"] = str(
+        runtime_root(job)
+        / "hub"
+        / f"models--{owner}--{repository}"
+        / "snapshots"
+        / requirement["revision"]
+    )
     return requirement
 
 
@@ -708,13 +687,17 @@ def _content_requirements(job):
             job["holdout_split"],
         )
         requirements = [
-            _hub_snapshot_requirement("tofu_target_tokenizer"),
-            _hub_snapshot_requirement("gibberish_classifier"),
+            _hub_snapshot_requirement("tofu_target_tokenizer", job),
+            _hub_snapshot_requirement("gibberish_classifier", job),
         ]
         requirements.extend(
             _dataset_cache_requirement(
                 f"locuslab/TOFU:{name}",
-                TOFU_DATASET_CACHE_ROOT / name / "0.0.0" / TOFU_DATASET_REVISION,
+                runtime_root(job)
+                / "datasets/locuslab___tofu"
+                / name
+                / "0.0.0"
+                / TOFU_DATASET_REVISION,
                 TOFU_DATASET_MANIFESTS[name],
             )
             for name in dataset_names
@@ -726,32 +709,38 @@ def _content_requirements(job):
         target_key = f"muse_{split.lower()}_target"
         reference_key = f"muse_{split.lower()}_reference"
         requirements = [
-            _hub_snapshot_requirement(target_key),
-            _hub_snapshot_requirement("muse_tokenizer"),
-            _hub_snapshot_requirement(reference_key),
-            _hub_snapshot_requirement("gibberish_classifier"),
+            _hub_snapshot_requirement(target_key, job),
+            _hub_snapshot_requirement("muse_tokenizer", job),
+            _hub_snapshot_requirement(reference_key, job),
+            _hub_snapshot_requirement("gibberish_classifier", job),
         ]
         requirements.extend(
             _dataset_cache_requirement(
                 f"muse-bench/MUSE-{split}:{name}",
-                cache["root"] / name / "0.0.0" / cache["revision"],
+                runtime_root(job)
+                / "datasets"
+                / f"muse-bench___muse-{split.lower()}"
+                / name
+                / "0.0.0"
+                / cache["revision"],
                 manifest,
             )
             for name, manifest in cache["manifests"].items()
         )
         return requirements
     requirements = [
-        _hub_snapshot_requirement("wmdp_model_tokenizer"),
+        _hub_snapshot_requirement("wmdp_model_tokenizer", job),
         _dataset_cache_requirement(
             "cais/wmdp:wmdp_cyber",
-            Path(WMDP_EVALUATION_CACHE)
+            runtime_root(job)
+            / "datasets"
             / "cais___wmdp/wmdp-cyber/0.0.0"
             / "7125571f22f032c56415e7980f48d877dd830ff8",
             WMDP_DATASET_MANIFESTS["wmdp_cyber"],
         ),
         _dataset_cache_requirement(
             "hails/mmlu_no_train",
-            Path(WMDP_EVALUATION_CACHE) / "hails___mmlu_no_train",
+            runtime_root(job) / "datasets/hails___mmlu_no_train",
             WMDP_DATASET_MANIFESTS["mmlu"],
         ),
     ]
@@ -759,7 +748,8 @@ def _content_requirements(job):
         requirements.append(
             _dataset_cache_requirement(
                 "wikitext:wikitext-2-raw-v1",
-                Path(WMDP_EVALUATION_CACHE)
+                runtime_root(job)
+                / "datasets"
                 / "wikitext/wikitext-2-raw-v1/0.0.0"
                 / "b08601e04326c79dfdd32d625aee71d232d685c3",
                 WMDP_DATASET_MANIFESTS["wikitext"],
@@ -801,16 +791,17 @@ def source_requirements(job):
         }
     else:
         evaluation_datasets = provenance["evaluation_datasets"]
+        datasets_root = runtime_root(job) / "datasets"
         requirements["corpora"] = {
             "forget": deepcopy(provenance["forget_corpus"]),
             "retain": deepcopy(provenance["retain_corpus"]),
         }
         requirements["evaluation_cache"] = {
-            "root": WMDP_EVALUATION_CACHE,
+            "root": str(datasets_root),
             "builders": {
                 "wmdp_cyber": {
                     "config_root": str(
-                        Path(WMDP_EVALUATION_CACHE)
+                        datasets_root
                         / "cais___wmdp/wmdp-cyber/0.0.0"
                     ),
                     "builder_id": evaluation_datasets["wmdp_cyber"][
@@ -820,7 +811,7 @@ def source_requirements(job):
                 },
                 "mmlu": {
                     "config_root": str(
-                        Path(WMDP_EVALUATION_CACHE) / "hails___mmlu_no_train"
+                        datasets_root / "hails___mmlu_no_train"
                     ),
                     "builder_id": evaluation_datasets["mmlu"]["cache_builder_sha"],
                     "required_config_count": 57,
@@ -833,7 +824,7 @@ def source_requirements(job):
                 "subset": "wikitext-2-raw-v1",
                 "revision": "b08601e04326c79dfdd32d625aee71d232d685c3",
                 "cache_dir": str(
-                    Path(WMDP_EVALUATION_CACHE)
+                    datasets_root
                     / "wikitext/wikitext-2-raw-v1/0.0.0"
                     / "b08601e04326c79dfdd32d625aee71d232d685c3"
                 ),
@@ -862,12 +853,16 @@ def _manifest_fingerprint(entries):
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
-def canonical_directory_fingerprint(path):
+def canonical_directory_fingerprint(path, registered_suffixes=None):
     """Fingerprint relative paths, sizes, and file SHA256 values canonically."""
     root = Path(path)
     entries = []
     for candidate in sorted(root.rglob("*")):
         if not candidate.is_file():
+            continue
+        if registered_suffixes is not None and candidate.suffix not in set(
+            registered_suffixes
+        ):
             continue
         entries.append(
             {
@@ -947,13 +942,13 @@ def validate_content_requirement(requirement, fingerprint_memo):
     if requirement["kind"] == "hub_snapshot":
         observed = _hub_snapshot_fingerprint(requirement)
     else:
-        suffixes = set(requirement.get("required_suffixes", ()))
+        suffixes = set(requirement.get("registered_suffixes", ()))
         observed_suffixes = {
             candidate.suffix for candidate in path.rglob("*") if candidate.is_file()
         }
         if not suffixes.issubset(observed_suffixes):
             raise ValueError(f"{source_name}: Arrow or metadata files are missing")
-        observed = canonical_directory_fingerprint(path)
+        observed = canonical_directory_fingerprint(path, suffixes)
     if observed != expected:
         raise ValueError(f"{source_name}: content manifest mismatch")
     fingerprint_memo[memo_key] = observed

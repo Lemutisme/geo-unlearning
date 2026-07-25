@@ -73,7 +73,7 @@ protocol:
       revision: b08601e04326c79dfdd32d625aee71d232d685c3
   evaluation_pin:
     pin_mechanism: verified_offline_cache
-    datasets_cache: /dev/shm/ungu-hf-datasets-wmdp
+    datasets_cache: /dev/shm/gu-matrix-wmdp/datasets
     network_access: disabled
   evaluation_datasets:
     wmdp_cyber:

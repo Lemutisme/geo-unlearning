@@ -15,7 +15,7 @@ retain_split: retain1
 dataset_revision: 506bd5b150b92814d45e4404a82f120ab2d748bf
 reference_model_artifact: muse-bench/MUSE-News_retrain
 reference_model_revision: 324ef49ee0a038078aba7d8de831edf57235c9b3
-reference_model_snapshot: /root/.cache/huggingface/hub/models--muse-bench--MUSE-News_retrain/snapshots/324ef49ee0a038078aba7d8de831edf57235c9b3
+reference_model_snapshot: /dev/shm/gu-matrix-muse-news/hub/models--muse-bench--MUSE-News_retrain/snapshots/324ef49ee0a038078aba7d8de831edf57235c9b3
 retain_logs_path: /workspace/re/GU/geo-unlearning/saves/eval/muse_Llama-2-7b-hf_News_retrain/MUSE_EVAL.json
 muse_retain_logs_sha256: 11f8c9338f955a9fc1ce4148daa0fbd2867807c648a43f99dc240442d2135ec2
 muse_gibberish_revision: 76672dd7d3575f68ab980705bcec975cc62de71c

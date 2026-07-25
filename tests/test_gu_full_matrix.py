@@ -1,7 +1,6 @@
 import hashlib
 import importlib.util
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -493,6 +492,12 @@ RETAIN_LOG_HASHES = {
     "muse_news": "11f8c9338f955a9fc1ce4148daa0fbd2867807c648a43f99dc240442d2135ec2",
     "muse_books": "502d38cd7da4fda841e4ee411b488cce3be0d882a1e2c07a0117a83045be8b76",
 }
+RUNTIME_ROOTS = {
+    "tofu": Path("/dev/shm/gu-matrix-tofu"),
+    "muse_news": Path("/dev/shm/gu-matrix-muse-news"),
+    "muse_books": Path("/dev/shm/gu-matrix-muse-books"),
+    "wmdp": Path("/dev/shm/gu-matrix-wmdp"),
+}
 
 def benchmark_family(job):
     return job["benchmark"].split("_", 1)[0]
@@ -813,7 +818,9 @@ def test_pinned_benchmark_configs_resolve_evaluators_and_provenance(tmp_path):
             assert config.data.retain.MUSE_retain.args.hf_args.revision == provenance["dataset"]["revision"]
             assert config.protocol.source_provenance.reference_model == provenance["reference_model"]
             assert config.eval.muse.metrics.mia_reference.reference_model_path == config.reference_model_snapshot
-            assert Path(config.reference_model_snapshot).is_dir()
+            assert Path(config.reference_model_snapshot).name == provenance[
+                "reference_model"
+            ]["revision"]
             assert Path(config.retain_logs_path).is_file()
             assert config.eval.muse.metrics.forget_gibberish.classifier_model_args.revision == GIBBERISH_REVISION
             assert config.eval.muse.metrics.forget_gibberish.classifier_tokenization_args.revision == GIBBERISH_REVISION
@@ -907,7 +914,7 @@ def test_wmdp_config_is_cyber_only_with_absolute_verified_corpora_and_eval_cache
         assert hashlib.sha256(path.read_bytes()).hexdigest() == metadata.sha256
     assert config.protocol.evaluation_pin.pin_mechanism == "verified_offline_cache"
     assert config.protocol.evaluation_pin.datasets_cache == (
-        "/dev/shm/ungu-hf-datasets-wmdp"
+        "/dev/shm/gu-matrix-wmdp/datasets"
     )
     assert config.protocol.evaluation_datasets.wmdp_cyber.cache_builder_sha == (
         "7125571f22f032c56415e7980f48d877dd830ff8"
@@ -930,26 +937,49 @@ def test_build_environment_enforces_wmdp_verified_offline_dataset_cache(monkeypa
         for job in registry.build_manifest(seed=0)["jobs"]
         if job["benchmark"] == "wmdp_cyber"
     )
-    tofu_job = next(
-        job
-        for job in registry.build_manifest(seed=0)["jobs"]
-        if job["benchmark"] == "tofu_forget01"
-    )
-
     environment = registry.build_environment(wmdp_job)
     assert environment["HF_DATASETS_OFFLINE"] == "1"
     assert environment["HF_HUB_OFFLINE"] == "1"
-    assert environment["HF_DATASETS_CACHE"] == "/dev/shm/ungu-hf-datasets-wmdp"
-    assert environment["HF_HUB_CACHE"] == "/dev/shm/ungu-hf-hub-wmdp"
+    assert environment["HF_DATASETS_CACHE"] == "/dev/shm/gu-matrix-wmdp/datasets"
+    assert environment["HF_HUB_CACHE"] == "/dev/shm/gu-matrix-wmdp/hub"
     assert environment["HF_HOME"] == "/registered/model-cache"
     assert environment["MATRIX_CALLER_VALUE"] == "preserved"
-    assert registry.build_environment(tofu_job) == dict(os.environ)
 
 
-def fixture_content_manifest(path):
+def test_every_job_binds_environment_requirements_and_reference_to_one_root():
+    registry = load_registry()
+    for job in registry.build_manifest(seed=0)["jobs"]:
+        family = benchmark_family(job)
+        key = job["benchmark"] if family == "muse" else family
+        root = RUNTIME_ROOTS[key]
+        environment = registry.environment_overrides(job)
+        assert environment == {
+            "HF_DATASETS_CACHE": str(root / "datasets"),
+            "HF_DATASETS_OFFLINE": "1",
+            "HF_HUB_CACHE": str(root / "hub"),
+            "HF_HUB_OFFLINE": "1",
+        }
+        for requirement in registry.source_requirements(job)["content_requirements"]:
+            expected_root = root / (
+                "hub" if requirement["kind"] == "hub_snapshot" else "datasets"
+            )
+            assert Path(requirement["path"]).is_relative_to(expected_root)
+        if family == "muse":
+            reference_argument = next(
+                argument
+                for argument in registry.build_command(job, job["output_dir"])
+                if argument.startswith("reference_model_snapshot=")
+            )
+            reference_path = Path(reference_argument.split("=", 1)[1])
+            assert reference_path.is_relative_to(root / "hub")
+
+
+def fixture_content_manifest(path, registered_suffixes=None):
     entries = []
     for candidate in sorted(path.rglob("*")):
         if not candidate.is_file():
+            continue
+        if registered_suffixes is not None and candidate.suffix not in registered_suffixes:
             continue
         contents = candidate.read_bytes()
         entries.append(
@@ -975,7 +1005,10 @@ def test_dataset_cache_manifest_detects_copied_arrow_and_metadata_mutation(tmp_p
         "kind": "dataset_cache",
         "source_name": "wmdp_cyber_eval_cache",
         "path": str(copied),
-        "content_manifest_sha256": fixture_content_manifest(copied),
+        "content_manifest_sha256": fixture_content_manifest(
+            copied, {".arrow", ".json"}
+        ),
+        "registered_suffixes": [".arrow", ".json"],
     }
     memo = {}
 
@@ -990,6 +1023,13 @@ def test_dataset_cache_manifest_detects_copied_arrow_and_metadata_mutation(tmp_p
     arrow_or_metadata.write_bytes(arrow_or_metadata.read_bytes() + b"tamper")
     with pytest.raises(ValueError, match="wmdp_cyber_eval_cache"):
         registry.validate_content_requirement(requirement, {})
+
+    shutil.rmtree(copied)
+    shutil.copytree(source, copied)
+    (copied / "incidental_builder.lock").write_text("ignored")
+    assert registry.validate_content_requirement(requirement, {}) == requirement[
+        "content_manifest_sha256"
+    ]
 
 
 def test_hub_snapshot_validation_checks_blob_hash_and_symlink_containment(tmp_path):
@@ -1033,19 +1073,23 @@ def test_content_fingerprint_memo_is_keyed_by_requirement_json(tmp_path, monkeyp
     cache = tmp_path / "cache"
     cache.mkdir()
     (cache / "dataset_info.json").write_text("{}")
+    (cache / "data.arrow").write_bytes(b"arrow")
     requirement = {
         "kind": "dataset_cache",
         "source_name": "shared_cache",
         "path": str(cache),
-        "content_manifest_sha256": fixture_content_manifest(cache),
+        "content_manifest_sha256": fixture_content_manifest(
+            cache, {".arrow", ".json"}
+        ),
+        "registered_suffixes": [".arrow", ".json"],
     }
     observed_calls = 0
     original = registry.canonical_directory_fingerprint
 
-    def counting_fingerprint(path):
+    def counting_fingerprint(path, registered_suffixes=None):
         nonlocal observed_calls
         observed_calls += 1
-        return original(path)
+        return original(path, registered_suffixes)
 
     monkeypatch.setattr(registry, "canonical_directory_fingerprint", counting_fingerprint)
     memo = {}
@@ -1075,17 +1119,14 @@ def test_source_requirements_register_content_manifests_and_missing_snapshot(mon
             assert requirement["source_name"]
             assert Path(requirement["path"]).is_absolute()
             expected = requirement["content_manifest_sha256"]
-            if Path(requirement["path"]).is_dir():
-                assert re.fullmatch(r"[0-9a-f]{64}", expected)
-            else:
-                assert expected is None
+            assert re.fullmatch(r"[0-9a-f]{64}", expected)
         if job["benchmark"].startswith(("tofu_", "muse_")):
             retain_log = requirements["retain_log"]
             assert Path(retain_log["path"]).is_file()
             assert retain_log["sha256"] == RETAIN_LOG_HASHES[job["benchmark"]]
         if job["benchmark"] == "wmdp_cyber":
             cache = requirements["evaluation_cache"]
-            assert cache["root"] == "/dev/shm/ungu-hf-datasets-wmdp"
+            assert cache["root"] == "/dev/shm/gu-matrix-wmdp/datasets"
             assert cache["builders"]["wmdp_cyber"]["builder_id"] == (
                 "7125571f22f032c56415e7980f48d877dd830ff8"
             )
@@ -1099,7 +1140,7 @@ def test_source_requirements_register_content_manifests_and_missing_snapshot(mon
                     "subset": "wikitext-2-raw-v1",
                     "revision": "b08601e04326c79dfdd32d625aee71d232d685c3",
                     "cache_dir": (
-                        "/dev/shm/ungu-hf-datasets-wmdp/wikitext/"
+                        "/dev/shm/gu-matrix-wmdp/datasets/wikitext/"
                         "wikitext-2-raw-v1/0.0.0/"
                         "b08601e04326c79dfdd32d625aee71d232d685c3"
                     ),
@@ -1200,14 +1241,12 @@ def test_manifest_seed_zero_dry_run_prints_commands_without_creating_outputs(tmp
         ]
         assert job["source_requirements"]["model"] == job["provenance"]["model"]
         assert job["fingerprints"] == {}
-        if job["benchmark"] == "wmdp_cyber":
-            assert job["environment"] == {
-                "HF_DATASETS_CACHE": "/dev/shm/ungu-hf-datasets-wmdp",
-                "HF_DATASETS_OFFLINE": "1",
-                "HF_HUB_CACHE": "/dev/shm/ungu-hf-hub-wmdp",
-                "HF_HUB_OFFLINE": "1",
-            }
-        else:
-            assert job["environment"] == {}
+        assert job["benchmark"] == "muse_books"
+        assert job["environment"] == {
+            "HF_DATASETS_CACHE": "/dev/shm/gu-matrix-muse-books/datasets",
+            "HF_DATASETS_OFFLINE": "1",
+            "HF_HUB_CACHE": "/dev/shm/gu-matrix-muse-books/hub",
+            "HF_HUB_OFFLINE": "1",
+        }
     after = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
     assert after == before
