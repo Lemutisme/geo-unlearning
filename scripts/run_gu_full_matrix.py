@@ -1,11 +1,17 @@
 """Registry for the GU full-matrix experiment jobs."""
 
 import argparse
+import ast
 import hashlib
 import json
+import math
 import os
 import re
+import shutil
+import subprocess
 import sys
+import time
+from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 
@@ -232,6 +238,7 @@ COMMON_RUNTIME_ARGUMENTS = (
     "trainer.args.eval_on_start=false",
     "trainer.args.eval_strategy=no",
     "trainer.args.report_to=none",
+    "trainer.args.logging_steps=1",
 )
 COMMON_GU_ARGUMENTS = (
     "+trainer.method_args.gu.enabled=true",
@@ -363,7 +370,6 @@ RMU_OVERRIDES = {
         "+trainer.args.fp16=false",
         "trainer.args.gradient_checkpointing=false",
         "+trainer.args.gradient_checkpointing_kwargs.use_reentrant=false",
-        "trainer.args.logging_steps=1",
     ),
     "muse_news": (
         "trainer.method_args.gamma=1.0",
@@ -391,7 +397,6 @@ RMU_OVERRIDES = {
         "+trainer.args.fp16=false",
         "trainer.args.gradient_checkpointing=false",
         "+trainer.args.gradient_checkpointing_kwargs.use_reentrant=false",
-        "trainer.args.logging_steps=1",
     ),
     "muse_books": (
         "trainer.method_args.gamma=1.0",
@@ -419,7 +424,6 @@ RMU_OVERRIDES = {
         "+trainer.args.fp16=false",
         "trainer.args.gradient_checkpointing=false",
         "+trainer.args.gradient_checkpointing_kwargs.use_reentrant=false",
-        "trainer.args.logging_steps=1",
     ),
     "wmdp": (
         "trainer.method_args.gamma=1.0",
@@ -447,7 +451,6 @@ RMU_OVERRIDES = {
         "+trainer.args.fp16=false",
         "trainer.args.gradient_checkpointing=false",
         "+trainer.args.gradient_checkpointing_kwargs.use_reentrant=false",
-        "trainer.args.logging_steps=1",
     ),
 }
 WMDP_RMU_OVERRIDES = (
@@ -459,6 +462,55 @@ WMDP_RMU_OVERRIDES = (
     "+model.model_args.output_attentions=false",
     "eval.lm_eval.simple_evaluate_args.batch_size=8",
 )
+
+GU_DIAGNOSTIC_FIELDS = {
+    "step",
+    "objective",
+    "selected_parameter_count",
+    "proposal_norm",
+    "corrected_norm",
+    "correction_ratio",
+    "constraint_count",
+    "active_constraints",
+    "max_violation_before",
+    "max_violation_after",
+    "kkt_residual",
+    "projection_tolerance",
+    "applied_scale",
+    "retain_loss_before",
+    "retain_loss_after",
+    "zero_step",
+    "zero_step_reason",
+    "optimizer_state_semantics",
+    "projection_seconds",
+    "filter_seconds",
+}
+NUMERIC_DIAGNOSTIC_FIELDS = GU_DIAGNOSTIC_FIELDS - {
+    "step",
+    "objective",
+    "selected_parameter_count",
+    "constraint_count",
+    "active_constraints",
+    "zero_step",
+    "zero_step_reason",
+    "optimizer_state_semantics",
+}
+INTEGER_DIAGNOSTIC_FIELDS = {
+    "step",
+    "selected_parameter_count",
+    "constraint_count",
+    "active_constraints",
+}
+ENDPOINT_PREFIXES = {
+    "tofu": "TOFU",
+    "muse": "MUSE",
+    "lm_eval": "LMEval",
+}
+NVML_QUERY_COMMAND = [
+    "nvidia-smi",
+    "--query-compute-apps=pid,used_memory",
+    "--format=csv,noheader",
+]
 RMU_MODEL_OVERRIDES = {
     "tofu": (
         "model.model_args.attn_implementation=flash_attention_2",
@@ -1037,6 +1089,528 @@ def validate_sources(job, fingerprint_memo=None):
             requirement, fingerprint_memo
         )
     return fingerprints
+
+
+def _json_bytes(payload):
+    return (json.dumps(payload, indent=2, sort_keys=True, allow_nan=False) + "\n").encode()
+
+
+def _atomic_write_json(path, payload):
+    """Durably replace one JSON record without exposing a partial file."""
+    destination = Path(path)
+    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+    contents = _json_bytes(payload)
+    try:
+        with temporary.open("wb") as output:
+            output.write(contents)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, destination)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _command_record(job, output_dir):
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "protocol": PROTOCOL,
+        "job_id": job["job_id"],
+        "method": job["method"],
+        "benchmark": job["benchmark"],
+        "seed": job["seed"],
+        "stage": job["stage"],
+        "argv": build_command(job, output_dir),
+        "environment_overrides": environment_overrides(job),
+        "provenance": deepcopy(job["provenance"]),
+    }
+
+
+def _command_identity(record):
+    payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _strict_json_file(path):
+    def reject_constant(value):
+        raise ValueError(f"nonfinite JSON constant: {value}")
+
+    return json.loads(Path(path).read_text(), parse_constant=reject_constant)
+
+
+def _finite_tree(value):
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return True
+    if isinstance(value, (int, float)):
+        return math.isfinite(value)
+    if isinstance(value, list):
+        return all(_finite_tree(item) for item in value)
+    if isinstance(value, dict):
+        return all(isinstance(key, str) and _finite_tree(item) for key, item in value.items())
+    return False
+
+
+def _contains_number(value):
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    if isinstance(value, list):
+        return any(_contains_number(item) for item in value)
+    if isinstance(value, dict):
+        return any(_contains_number(item) for item in value.values())
+    return False
+
+
+def _endpoint_paths(job, output_dir):
+    prefix = ENDPOINT_PREFIXES[job["evaluator_kind"]]
+    output = Path(output_dir)
+    checkpoint_pattern = re.compile(r"checkpoint-[0-9]+")
+
+    def is_live_endpoint(path):
+        return (
+            path.parent.name == "evals"
+            and checkpoint_pattern.fullmatch(path.parent.parent.name) is not None
+        )
+
+    summaries = sorted(
+        path
+        for path in output.rglob(f"{prefix}_SUMMARY.json")
+        if is_live_endpoint(path)
+    )
+    raw_files = sorted(
+        path for path in output.rglob(f"{prefix}_EVAL.json") if is_live_endpoint(path)
+    )
+    if len(summaries) != 1 or len(raw_files) != 1:
+        raise ValueError(
+            "endpoint pair count mismatch: "
+            f"summary={len(summaries)}, raw={len(raw_files)}"
+        )
+    if summaries[0].parent != raw_files[0].parent:
+        raise ValueError("endpoint summary and raw evaluation are in different checkpoints")
+    return summaries[0], raw_files[0]
+
+
+def _validate_endpoint(path, label):
+    try:
+        payload = _strict_json_file(path)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        raise ValueError(f"{label} endpoint JSON is invalid: {error}") from error
+    if not isinstance(payload, dict) or not payload:
+        raise ValueError(f"{label} endpoint schema must be a nonempty object")
+    if not _finite_tree(payload):
+        raise ValueError(f"{label} endpoint contains nonfinite or unsupported values")
+    if not _contains_number(payload):
+        raise ValueError(f"{label} endpoint contains no numeric result")
+    return payload
+
+
+def _parse_gu_diagnostics(path, job):
+    diagnostics_path = Path(path)
+    if not diagnostics_path.is_file():
+        raise ValueError("GU diagnostics file is missing")
+    lines = diagnostics_path.read_text().splitlines()
+    if not lines or any(not line.strip() for line in lines):
+        raise ValueError("GU diagnostics JSONL is empty or contains blank records")
+    records = []
+    for line_number, line in enumerate(lines, start=1):
+        try:
+            record = json.loads(
+                line,
+                parse_constant=lambda value: (_ for _ in ()).throw(
+                    ValueError(f"nonfinite JSON constant: {value}")
+                ),
+            )
+        except (json.JSONDecodeError, ValueError) as error:
+            raise ValueError(
+                f"GU diagnostics record {line_number} is invalid: {error}"
+            ) from error
+        if not isinstance(record, dict) or set(record) != GU_DIAGNOSTIC_FIELDS:
+            raise ValueError(f"GU diagnostics record {line_number} has the wrong schema")
+        if not _finite_tree(record):
+            raise ValueError(f"GU diagnostics record {line_number} is nonfinite")
+        for name in INTEGER_DIAGNOSTIC_FIELDS:
+            if isinstance(record[name], bool) or not isinstance(record[name], int):
+                raise ValueError(
+                    f"GU diagnostics record {line_number} field {name} is not an integer"
+                )
+        for name in NUMERIC_DIAGNOSTIC_FIELDS:
+            if isinstance(record[name], bool) or not isinstance(record[name], (int, float)):
+                raise ValueError(
+                    f"GU diagnostics record {line_number} field {name} is not numeric"
+                )
+        if record["step"] != line_number:
+            raise ValueError("GU diagnostics step ids are not sequential from one")
+        if record["objective"] != job["method"]:
+            raise ValueError("GU diagnostics objective does not match the job")
+        if record["selected_parameter_count"] <= 0:
+            raise ValueError("GU selected parameter count must be positive")
+        if not isinstance(record["zero_step"], bool):
+            raise ValueError("GU zero_step must be boolean")
+        if record["optimizer_state_semantics"] != "proposal_state_committed":
+            raise ValueError("GU optimizer state semantics mismatch")
+        if record["proposal_norm"] < 0 or record["corrected_norm"] < 0:
+            raise ValueError("GU diagnostic norm has the wrong sign")
+        if record["correction_ratio"] < 0 or record["applied_scale"] < 0:
+            raise ValueError("GU correction or applied scale has the wrong sign")
+        if record["projection_tolerance"] < 0:
+            raise ValueError("GU projection tolerance has the wrong sign")
+        if record["max_violation_after"] > record["projection_tolerance"]:
+            raise ValueError("GU final projection violation exceeds tolerance")
+        records.append(record)
+    return records
+
+
+def _mapping_in_log_line(line):
+    opening = line.find("{")
+    closing = line.rfind("}")
+    if opening < 0 or closing < opening:
+        return None
+    candidate = line[opening : closing + 1]
+    try:
+        value = json.loads(candidate)
+    except json.JSONDecodeError:
+        try:
+            value = ast.literal_eval(candidate)
+        except (SyntaxError, ValueError):
+            return None
+    return value if isinstance(value, dict) else None
+
+
+def _optimizer_updates_from_log(path):
+    log_path = Path(path)
+    if not log_path.is_file():
+        raise ValueError("run log is missing")
+    loss_records = []
+    final_global_step = None
+    for line in log_path.read_text(errors="replace").splitlines():
+        record = _mapping_in_log_line(line)
+        if record is not None:
+            if "loss" in record:
+                if not _finite_tree(record) or isinstance(record["loss"], bool):
+                    raise ValueError("Trainer loss log contains nonfinite values")
+                if not isinstance(record["loss"], (int, float)):
+                    raise ValueError("Trainer loss log has a nonnumeric loss")
+                loss_records.append(record)
+            if "global_step" in record:
+                step = record["global_step"]
+                if isinstance(step, bool) or not isinstance(step, int) or step < 0:
+                    raise ValueError("Trainer final global_step is invalid")
+                final_global_step = step
+        matches = re.findall(r"global_step\s*[=:]\s*([0-9]+)", line)
+        if matches:
+            final_global_step = int(matches[-1])
+    update_count = len(loss_records)
+    if update_count == 0:
+        raise ValueError("Trainer optimizer update loss logs are missing")
+    if final_global_step is not None and final_global_step != update_count:
+        raise ValueError(
+            "Trainer final global_step and optimizer update loss-log count mismatch"
+        )
+    return update_count, final_global_step
+
+
+def _forbidden_artifacts(output_dir):
+    output = Path(output_dir)
+    forbidden = set()
+    checkpoint_pattern = re.compile(r"checkpoint-[0-9]+")
+    state_prefixes = (
+        "optimizer",
+        "scheduler",
+        "scaler",
+        "rng",
+        "trainer_state",
+        "training_args",
+    )
+    allowed_checkpoint_suffixes = {".json", ".jsonl", ".log"}
+    for path in output.rglob("*"):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(output)
+        name = path.name.lower()
+        if (
+            name.endswith(".safetensors")
+            or name.startswith("pytorch_model")
+            or name.startswith(state_prefixes)
+        ):
+            forbidden.add(relative.as_posix())
+        parts = relative.parts
+        checkpoint_index = next(
+            (
+                index
+                for index, part in enumerate(parts)
+                if checkpoint_pattern.fullmatch(part) is not None
+            ),
+            None,
+        )
+        if checkpoint_index is None:
+            continue
+        tail = parts[checkpoint_index + 1 :]
+        is_eval = len(tail) >= 2 and tail[0] == "evals"
+        is_log = "log" in name and path.suffix.lower() in allowed_checkpoint_suffixes
+        if not ((is_eval or is_log) and path.suffix.lower() in allowed_checkpoint_suffixes):
+            forbidden.add(relative.as_posix())
+    return sorted(forbidden)
+
+
+def _sample_process_memory_mib(pid):
+    try:
+        sample = subprocess.run(
+            NVML_QUERY_COMMAND,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as error:
+        return 0, f"NVML sampling launch failed: {error}"
+    if sample.returncode != 0:
+        detail = (sample.stderr or "").strip()
+        return 0, f"NVML sampling failed with exit {sample.returncode}: {detail}"
+    peak = 0
+    for line in sample.stdout.splitlines():
+        fields = [field.strip() for field in line.split(",", 1)]
+        if len(fields) != 2:
+            continue
+        try:
+            observed_pid = int(fields[0])
+            used_memory = int(re.sub(r"\s*MiB\s*$", "", fields[1]))
+        except ValueError:
+            continue
+        if observed_pid == pid:
+            peak = max(peak, used_memory)
+    return peak, None
+
+
+def _registered_identity_issues(job):
+    issues = []
+    benchmark = job.get("benchmark")
+    method = job.get("method")
+    if benchmark not in BENCHMARKS or method not in STAGE_ONE_METHODS:
+        return ["job identity is not registered in the Stage-1 matrix"]
+    expected_id = f"{method}__{benchmark}__seed{job.get('seed')}"
+    if job.get("job_id") != expected_id:
+        issues.append("job identity does not match method, benchmark, and seed")
+    registered = BENCHMARKS[benchmark]
+    for key in (
+        "experiment_config",
+        "model",
+        "evaluator_kind",
+        "selected_parameter_regex",
+        "provenance",
+    ):
+        if job.get(key) != registered[key]:
+            issues.append(f"job provenance identity mismatch: {key}")
+    if job.get("trainer_config") != method:
+        issues.append("job trainer identity mismatch")
+    return issues
+
+
+def _failure_from_log(returncode, log_text, launch_error):
+    if launch_error is not None:
+        return "failed_infrastructure", "subprocess_launch"
+    if returncode == 0:
+        return None, None
+    lowered = log_text.lower()
+    if "outofmemory" in lowered or "out of memory" in lowered or "cuda oom" in lowered:
+        return "invalid_scientific", "oom"
+    if any(
+        marker in lowered
+        for marker in (
+            "input/output error",
+            "i/o error",
+            "no space left on device",
+            "read-only file system",
+            "stale file handle",
+        )
+    ):
+        return "failed_infrastructure", "host_io"
+    if "cache" in lowered and any(
+        marker in lowered
+        for marker in ("absent", "missing", "corrupt", "mismatch", "failed", "error")
+    ):
+        return "failed_infrastructure", "cache"
+    if any(marker in lowered for marker in ("nan", "nonfinite", "non-finite", "infinite")):
+        return "invalid_scientific", "nonfinite"
+    if "wrong sign" in lowered:
+        return "invalid_scientific", "wrong_sign"
+    if any(marker in lowered for marker in ("gu rejection", "retain_budget_exceeded")):
+        return "invalid_scientific", "gu_rejection"
+    if "zero step" in lowered or "zero_step" in lowered:
+        return "invalid_scientific", "zero_step"
+    return "invalid_scientific", "subprocess_exit"
+
+
+def run_job(job, output_dir):
+    """Run one unchanged matrix command and persist its complete evidence audit."""
+    output = Path(output_dir)
+    if output.exists():
+        if output.is_dir() and not output.is_symlink():
+            shutil.rmtree(output)
+        else:
+            output.unlink()
+    output.mkdir(parents=True)
+
+    command_path = output / "command.json"
+    run_log_path = output / "run.log"
+    diagnostics_path = output / "gu_diagnostics.jsonl"
+    result_path = output / "JOB_RESULT.json"
+    expected_command_record = _command_record(job, output)
+    _atomic_write_json(command_path, expected_command_record)
+
+    issues = _registered_identity_issues(job)
+    infrastructure_issues = []
+    peak_nvml_mib = 0
+    launch_error = None
+    returncode = None
+    started = time.monotonic()
+    with run_log_path.open("w", encoding="utf-8") as run_log:
+        try:
+            process = subprocess.Popen(
+                expected_command_record["argv"],
+                cwd=SHARED_ROOT,
+                env=build_environment(job),
+                stdout=run_log,
+                stderr=subprocess.STDOUT,
+            )
+        except OSError as error:
+            launch_error = str(error)
+            run_log.write(f"subprocess launch failed: {error}\n")
+        else:
+            while True:
+                used_memory, sampling_error = _sample_process_memory_mib(process.pid)
+                peak_nvml_mib = max(peak_nvml_mib, used_memory)
+                if sampling_error is not None and sampling_error not in infrastructure_issues:
+                    infrastructure_issues.append(sampling_error)
+                returncode = process.poll()
+                if returncode is not None:
+                    break
+                time.sleep(0.1)
+    wall_clock_seconds = max(0.0, time.monotonic() - started)
+    log_text = run_log_path.read_text(errors="replace")
+    exit_status, failure_kind = _failure_from_log(
+        returncode,
+        log_text,
+        launch_error,
+    )
+    if launch_error is not None:
+        infrastructure_issues.append(f"subprocess launch failed: {launch_error}")
+
+    endpoint_summary_path = None
+    endpoint_raw_path = None
+    try:
+        summary_path, raw_path = _endpoint_paths(job, output)
+        _validate_endpoint(summary_path, "summary")
+        _validate_endpoint(raw_path, "raw")
+        endpoint_summary_path = summary_path.relative_to(output).as_posix()
+        endpoint_raw_path = raw_path.relative_to(output).as_posix()
+    except (KeyError, ValueError) as error:
+        issues.append(str(error))
+
+    diagnostics = []
+    try:
+        diagnostics = _parse_gu_diagnostics(diagnostics_path, job)
+    except (OSError, UnicodeError, ValueError) as error:
+        issues.append(str(error))
+
+    optimizer_update_count = 0
+    final_global_step = None
+    try:
+        optimizer_update_count, final_global_step = _optimizer_updates_from_log(
+            run_log_path
+        )
+    except (OSError, UnicodeError, ValueError) as error:
+        issues.append(str(error))
+
+    projection_count = len(diagnostics)
+    if projection_count != optimizer_update_count:
+        issues.append(
+            "GU projection and optimizer update count mismatch: "
+            f"{projection_count} != {optimizer_update_count}"
+        )
+    zero_step_count = sum(record["zero_step"] for record in diagnostics)
+    selected_parameter_changed = any(
+        not record["zero_step"]
+        and record["corrected_norm"] > 0
+        and record["applied_scale"] > 0
+        for record in diagnostics
+    )
+    if diagnostics and (
+        not selected_parameter_changed or zero_step_count == projection_count
+    ):
+        issues.append("selected parameters are unchanged because every GU step is zero")
+
+    scale_counts = Counter(record["applied_scale"] for record in diagnostics)
+    applied_scale_distribution = {
+        str(scale): count for scale, count in sorted(scale_counts.items())
+    }
+    ratios = [record["correction_ratio"] for record in diagnostics]
+    correction_ratio = {
+        "min": min(ratios),
+        "max": max(ratios),
+        "mean": sum(ratios) / len(ratios),
+    } if ratios else None
+    max_violation_after = max(
+        (record["max_violation_after"] for record in diagnostics),
+        default=None,
+    )
+
+    forbidden_artifacts = _forbidden_artifacts(output)
+    if forbidden_artifacts:
+        issues.append("forbidden persistence artifacts are present")
+
+    try:
+        observed_command_record = _strict_json_file(command_path)
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        issues.append(f"command identity record is invalid: {error}")
+        observed_command_record = None
+    if observed_command_record != expected_command_record:
+        issues.append("command identity does not match the launched command and environment")
+
+    if exit_status == "failed_infrastructure" or infrastructure_issues:
+        status = "failed_infrastructure"
+        if failure_kind is None:
+            failure_kind = "resource_monitor"
+    elif exit_status == "invalid_scientific" or issues:
+        status = "invalid_scientific"
+        if failure_kind is None:
+            failure_kind = "evidence_validation"
+    else:
+        status = "completed"
+
+    result = {
+        "schema_version": SCHEMA_VERSION,
+        "protocol": PROTOCOL,
+        "job_id": job["job_id"],
+        "method": job["method"],
+        "benchmark": job["benchmark"],
+        "seed": job["seed"],
+        "stage": job["stage"],
+        "status": status,
+        "failure_kind": failure_kind,
+        "returncode": returncode,
+        "command_path": command_path.relative_to(output).as_posix(),
+        "command_identity": _command_identity(expected_command_record),
+        "environment_overrides": expected_command_record["environment_overrides"],
+        "provenance": deepcopy(job["provenance"]),
+        "run_log_path": run_log_path.relative_to(output).as_posix(),
+        "diagnostics_path": diagnostics_path.relative_to(output).as_posix(),
+        "endpoint_summary_path": endpoint_summary_path,
+        "endpoint_raw_path": endpoint_raw_path,
+        "wall_clock_seconds": wall_clock_seconds,
+        "peak_nvml_mib": peak_nvml_mib,
+        "optimizer_update_count": optimizer_update_count,
+        "final_global_step": final_global_step,
+        "projection_count": projection_count,
+        "zero_step_count": zero_step_count,
+        "applied_scale_distribution": applied_scale_distribution,
+        "correction_ratio": correction_ratio,
+        "max_violation_after": max_violation_after,
+        "selected_parameter_changed": selected_parameter_changed,
+        "forbidden_artifacts": forbidden_artifacts,
+        "issues": issues + infrastructure_issues,
+    }
+    _atomic_write_json(result_path, result)
+    return result
 
 
 def _manifest_dry_run(seed):

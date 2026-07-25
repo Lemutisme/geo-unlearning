@@ -1,6 +1,7 @@
 import hashlib
 import importlib.util
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -8,6 +9,7 @@ import sys
 from collections.abc import Mapping
 from collections import Counter
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 
 import pytest
 
@@ -563,6 +565,7 @@ def test_all_60_seed_zero_commands_are_exact_and_checkpoint_free(tmp_path):
         assert command.count("trainer.args.eval_on_start=false") == 1
         assert command.count("trainer.args.eval_strategy=no") == 1
         assert command.count("trainer.args.report_to=none") == 1
+        assert command.count("trainer.args.logging_steps=1") == 1
 
 
 def test_all_60_commands_hydra_compose_without_missing_or_unresolved_values(tmp_path):
@@ -625,6 +628,7 @@ def test_non_rmu_commands_keep_direct_shipped_model_and_trainer_defaults(tmp_pat
         "do_eval",
         "eval_on_start",
         "eval_strategy",
+        "logging_steps",
         "seed",
         "data_seed",
     }
@@ -1320,3 +1324,431 @@ def test_manifest_seed_zero_dry_run_prints_commands_without_creating_outputs(tmp
         }
     after = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
     assert after == before
+
+
+JOB_DIAGNOSTIC_FIELDS = {
+    "step",
+    "objective",
+    "selected_parameter_count",
+    "proposal_norm",
+    "corrected_norm",
+    "correction_ratio",
+    "constraint_count",
+    "active_constraints",
+    "max_violation_before",
+    "max_violation_after",
+    "kkt_residual",
+    "projection_tolerance",
+    "applied_scale",
+    "retain_loss_before",
+    "retain_loss_after",
+    "zero_step",
+    "zero_step_reason",
+    "optimizer_state_semantics",
+    "projection_seconds",
+    "filter_seconds",
+}
+
+
+def job_diagnostic(job, step, **overrides):
+    record = {
+        "step": step,
+        "objective": job["method"],
+        "selected_parameter_count": 3,
+        "proposal_norm": 2.0,
+        "corrected_norm": 1.0,
+        "correction_ratio": 0.5,
+        "constraint_count": 2,
+        "active_constraints": 1,
+        "max_violation_before": 0.2,
+        "max_violation_after": 5.0e-8,
+        "kkt_residual": 1.0e-8,
+        "projection_tolerance": 1.0e-6,
+        "applied_scale": 0.5,
+        "retain_loss_before": 1.0,
+        "retain_loss_after": 1.00001,
+        "zero_step": False,
+        "zero_step_reason": None,
+        "optimizer_state_semantics": "proposal_state_committed",
+        "projection_seconds": 0.01,
+        "filter_seconds": 0.02,
+    }
+    record.update(overrides)
+    assert set(record) == JOB_DIAGNOSTIC_FIELDS
+    return record
+
+
+def job_endpoint_prefix(job):
+    return {
+        "tofu": "TOFU",
+        "muse": "MUSE",
+        "lm_eval": "LMEval",
+    }[job["evaluator_kind"]]
+
+
+def install_job_subprocess_stub(
+    monkeypatch,
+    registry,
+    job,
+    output_dir,
+    *,
+    returncode=0,
+    log_text=None,
+    diagnostics=None,
+    endpoint_count=1,
+    forbidden_path=None,
+    tamper_command=False,
+):
+    if log_text is None:
+        log_text = "".join(
+            json.dumps(record) + "\n"
+            for record in (
+                {"loss": 2.0, "grad_norm": 1.0, "epoch": 0.1},
+                {"loss": 1.5, "grad_norm": 0.8, "epoch": 0.2},
+                {"train_runtime": 3.0, "train_loss": 1.75, "global_step": 2},
+            )
+        )
+    if diagnostics is None:
+        diagnostics = [job_diagnostic(job, 1), job_diagnostic(job, 2)]
+    captured = {"nvidia_commands": []}
+
+    class StubPopen:
+        pid = 4242
+
+        def __init__(self, argv, **kwargs):
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+            self._polls = 0
+            kwargs["stdout"].write(log_text)
+            kwargs["stdout"].flush()
+            if diagnostics is not False:
+                (output_dir / "gu_diagnostics.jsonl").write_text(
+                    "".join(json.dumps(record) + "\n" for record in diagnostics)
+                )
+            prefix = job_endpoint_prefix(job)
+            for index in range(endpoint_count):
+                eval_dir = output_dir / f"checkpoint-{index + 1}" / "evals"
+                eval_dir.mkdir(parents=True)
+                (eval_dir / f"{prefix}_SUMMARY.json").write_text(
+                    json.dumps({"metric": 0.25})
+                )
+                (eval_dir / f"{prefix}_EVAL.json").write_text(
+                    json.dumps({"metric": {"agg_value": 0.25}})
+                )
+            if forbidden_path is not None:
+                path = output_dir / forbidden_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"forbidden")
+            if tamper_command:
+                payload = json.loads((output_dir / "command.json").read_text())
+                payload["argv"].append("trainer.args.learning_rate=999")
+                (output_dir / "command.json").write_text(json.dumps(payload))
+
+        def poll(self):
+            self._polls += 1
+            return None if self._polls == 1 else returncode
+
+    nvml_samples = iter(("4242, 128 MiB\n", "4242, 384 MiB\n"))
+
+    def stub_run(argv, **kwargs):
+        captured["nvidia_commands"].append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout=next(nvml_samples, ""), stderr="")
+
+    clock_ticks = iter((10.0, 10.25, 11.0, 11.5, 12.0))
+    monkeypatch.setattr(
+        registry,
+        "subprocess",
+        SimpleNamespace(Popen=StubPopen, run=stub_run, STDOUT=subprocess.STDOUT),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        registry,
+        "time",
+        SimpleNamespace(
+            monotonic=lambda: next(clock_ticks, 12.0),
+            perf_counter=lambda: next(clock_ticks, 12.0),
+            sleep=lambda _seconds: None,
+        ),
+        raising=False,
+    )
+    return captured
+
+
+def first_matrix_job(registry, evaluator_kind="muse"):
+    return next(
+        job
+        for job in registry.build_manifest(seed=0)["jobs"]
+        if job["evaluator_kind"] == evaluator_kind
+    )
+
+
+def test_completed_job_requires_exact_gu_endpoint_and_resource_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    captured = install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "completed"
+    assert result["returncode"] == 0
+    assert result["projection_count"] == result["optimizer_update_count"] == 2
+    assert result["selected_parameter_changed"] is True
+    assert result["zero_step_count"] == 0
+    assert result["applied_scale_distribution"] == {"0.5": 2}
+    assert result["correction_ratio"] == {"min": 0.5, "max": 0.5, "mean": 0.5}
+    assert result["max_violation_after"] == pytest.approx(5.0e-8)
+    assert result["peak_nvml_mib"] == 384
+    assert result["wall_clock_seconds"] >= 0.0
+    assert result["forbidden_artifacts"] == []
+    assert result["endpoint_summary_path"].endswith("MUSE_SUMMARY.json")
+    assert result["endpoint_raw_path"].endswith("MUSE_EVAL.json")
+    assert captured["argv"] == registry.build_command(job, output_dir)
+    assert captured["kwargs"]["env"] == registry.build_environment(job)
+    assert captured["kwargs"]["stderr"] == subprocess.STDOUT
+    assert captured["nvidia_commands"]
+    assert captured["nvidia_commands"][0][0] == [
+        "nvidia-smi",
+        "--query-compute-apps=pid,used_memory",
+        "--format=csv,noheader",
+    ]
+    command_record = json.loads((output_dir / "command.json").read_text())
+    assert command_record["argv"] == registry.build_command(job, output_dir)
+    assert command_record["environment_overrides"] == registry.environment_overrides(job)
+    assert command_record["provenance"] == job["provenance"]
+    assert json.loads((output_dir / "JOB_RESULT.json").read_text()) == result
+
+
+def test_run_job_rejects_nonfinite_diagnostic(tmp_path, monkeypatch):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    records = [
+        job_diagnostic(job, 1),
+        job_diagnostic(job, 2, corrected_norm=math.nan),
+    ]
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        diagnostics=records,
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "invalid_scientific"
+    assert "nonfinite" in " ".join(result["issues"]).lower()
+
+
+@pytest.mark.parametrize("endpoint_count", [0, 2])
+def test_run_job_requires_exactly_one_endpoint_pair(
+    tmp_path,
+    monkeypatch,
+    endpoint_count,
+):
+    registry = load_registry()
+    job = first_matrix_job(registry, evaluator_kind="tofu")
+    output_dir = tmp_path / job["job_id"]
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        endpoint_count=endpoint_count,
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "invalid_scientific"
+    assert "endpoint" in " ".join(result["issues"]).lower()
+
+
+def test_run_job_rejects_projection_update_mismatch(tmp_path, monkeypatch):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        diagnostics=[job_diagnostic(job, 1)],
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "invalid_scientific"
+    assert result["projection_count"] == 1
+    assert result["optimizer_update_count"] == 2
+    assert "mismatch" in " ".join(result["issues"]).lower()
+
+
+def test_run_job_rejects_unchanged_selected_parameters(tmp_path, monkeypatch):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    records = [
+        job_diagnostic(
+            job,
+            step,
+            proposal_norm=0.0,
+            corrected_norm=0.0,
+            correction_ratio=0.0,
+            applied_scale=0.0,
+            zero_step=True,
+            zero_step_reason="zero_delta",
+        )
+        for step in (1, 2)
+    ]
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        diagnostics=records,
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "invalid_scientific"
+    assert result["selected_parameter_changed"] is False
+    assert result["zero_step_count"] == 2
+    assert "unchanged" in " ".join(result["issues"]).lower()
+
+
+@pytest.mark.parametrize(
+    "forbidden_path",
+    [
+        "model.safetensors",
+        "checkpoint-2/optimizer.pt",
+        "checkpoint-3/notes.txt",
+        "trainer_state.json",
+    ],
+)
+def test_run_job_rejects_forbidden_state_and_checkpoint_payloads(
+    tmp_path,
+    monkeypatch,
+    forbidden_path,
+):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        forbidden_path=forbidden_path,
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "invalid_scientific"
+    assert forbidden_path in result["forbidden_artifacts"]
+
+
+def test_run_job_classifies_oom_as_scientific_without_retry(tmp_path, monkeypatch):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    captured = install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        returncode=1,
+        log_text="torch.cuda.OutOfMemoryError: CUDA out of memory\n",
+        diagnostics=False,
+        endpoint_count=0,
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "invalid_scientific"
+    assert result["failure_kind"] == "oom"
+    assert captured["argv"] == registry.build_command(job, output_dir)
+
+
+@pytest.mark.parametrize(
+    ("message", "failure_kind"),
+    [
+        ("OSError: [Errno 5] Input/output error\n", "host_io"),
+        ("required cache directory is absent\n", "cache"),
+    ],
+)
+def test_run_job_classifies_host_io_and_cache_as_infrastructure(
+    tmp_path,
+    monkeypatch,
+    message,
+    failure_kind,
+):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        returncode=1,
+        log_text=message,
+        diagnostics=False,
+        endpoint_count=0,
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "failed_infrastructure"
+    assert result["failure_kind"] == failure_kind
+
+
+def test_run_job_rejects_command_record_identity_tampering(tmp_path, monkeypatch):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        tamper_command=True,
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "invalid_scientific"
+    assert "command identity" in " ".join(result["issues"]).lower()
+
+
+def test_run_job_writes_json_records_with_atomic_replace(tmp_path, monkeypatch):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    install_job_subprocess_stub(monkeypatch, registry, job, output_dir)
+    original_replace = registry.os.replace
+    replacements = []
+
+    def recording_replace(source, destination):
+        replacements.append((Path(source), Path(destination)))
+        assert Path(source).is_file()
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(registry.os, "replace", recording_replace)
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "completed"
+    assert {destination.name for _, destination in replacements} >= {
+        "command.json",
+        "JOB_RESULT.json",
+    }
+    assert not tuple(output_dir.glob(".*.tmp"))
