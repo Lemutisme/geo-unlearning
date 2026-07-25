@@ -1655,6 +1655,7 @@ def run_job(job, output_dir, *, parent_job=None, launched=None):
         "forbidden_artifacts": forbidden_artifacts,
         "issues": issues + infrastructure_issues,
     }
+    validate_job_result(result, job, output, expected_status=status)
     _atomic_write_json(result_path, result)
     return result
 
@@ -1716,14 +1717,21 @@ def create_queue_state(manifest, state_path):
             }
         )
         state["jobs"].append(job)
+    validate_queue_state(state)
     _atomic_write_json(destination, state)
     return state
 
 
-def validate_job_result(result, job, output_dir):
-    """Require durable result evidence for this exact job and command."""
+def validate_job_result(result, job, output_dir, *, expected_status=None):
+    """Require durable result evidence for this exact job and status."""
     if not isinstance(result, dict) or result.get("status") not in TERMINAL_STATUSES:
         raise ValueError("JOB_RESULT has no terminal status")
+    if expected_status is not None and result["status"] != expected_status:
+        raise ValueError(
+            f"JOB_RESULT status mismatch: {result['status']} != {expected_status}"
+        )
+    if not _finite_tree(result):
+        raise ValueError("JOB_RESULT evidence contains nonfinite or unsupported values")
     expected = {
         "schema_version": SCHEMA_VERSION,
         "protocol": PROTOCOL,
@@ -1739,7 +1747,214 @@ def validate_job_result(result, job, output_dir):
     mismatches = [field for field, value in expected.items() if result.get(field) != value]
     if mismatches:
         raise ValueError("JOB_RESULT identity mismatch: " + ",".join(mismatches))
+    if result["status"] != "completed":
+        if not isinstance(result.get("failure_kind"), str) or not result["failure_kind"]:
+            raise ValueError("queue attempt evidence has no failure_kind")
+        return result
+
+    required_fields = {
+        "schema_version", "protocol", "job_id", "method", "benchmark", "seed",
+        "stage", "status", "failure_kind", "returncode", "command_path",
+        "command_identity", "environment_overrides", "provenance", "run_log_path",
+        "diagnostics_path", "endpoint_summary_path", "endpoint_raw_path",
+        "wall_clock_seconds", "peak_nvml_mib", "peak_gpu_memory_mib",
+        "gpu_memory_sample_count", "optimizer_update_count", "final_global_step",
+        "projection_count", "zero_step_count", "applied_scale_distribution",
+        "correction_ratio", "max_violation_after", "selected_parameter_changed",
+        "forbidden_artifacts", "issues",
+    }
+    if set(result) != required_fields:
+        raise ValueError("completed evidence does not have the exact Task-3 schema")
+    path_fields = (
+        "command_path", "run_log_path", "diagnostics_path",
+        "endpoint_summary_path", "endpoint_raw_path",
+    )
+    counts = (
+        result["gpu_memory_sample_count"], result["optimizer_update_count"],
+        result["final_global_step"], result["projection_count"],
+    )
+    ratios = result["correction_ratio"]
+    scales = result["applied_scale_distribution"]
+    endpoint_prefix = ENDPOINT_PREFIXES[job["evaluator_kind"]]
+    completed_valid = (
+        result["failure_kind"] is None
+        and type(result["returncode"]) is int
+        and result["returncode"] == 0
+        and all(isinstance(result[field], str) and result[field] for field in path_fields)
+        and result["command_path"] == "command.json"
+        and result["run_log_path"] == "run.log"
+        and result["diagnostics_path"] == "gu_diagnostics.jsonl"
+        and result["endpoint_summary_path"].endswith(
+            f"/{endpoint_prefix}_SUMMARY.json"
+        )
+        and result["endpoint_raw_path"].endswith(f"/{endpoint_prefix}_EVAL.json")
+        and isinstance(result["wall_clock_seconds"], (int, float))
+        and not isinstance(result["wall_clock_seconds"], bool)
+        and result["wall_clock_seconds"] >= 0
+        and isinstance(result["peak_nvml_mib"], (int, float))
+        and not isinstance(result["peak_nvml_mib"], bool)
+        and result["peak_nvml_mib"] > 0
+        and result["peak_gpu_memory_mib"] == result["peak_nvml_mib"]
+        and all(type(value) is int and value > 0 for value in counts)
+        and result["projection_count"] == result["optimizer_update_count"]
+        and result["final_global_step"] == result["optimizer_update_count"]
+        and type(result["zero_step_count"]) is int
+        and result["zero_step_count"] == 0
+        and isinstance(scales, dict)
+        and bool(scales)
+        and all(
+            isinstance(key, str)
+            and math.isfinite(float(key))
+            and float(key) > 0
+            and type(value) is int
+            and value > 0
+            for key, value in scales.items()
+        )
+        and sum(scales.values()) == result["projection_count"]
+        and isinstance(ratios, dict)
+        and set(ratios) == {"min", "max", "mean"}
+        and all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and value >= 0
+            for value in ratios.values()
+        )
+        and ratios["min"] <= ratios["mean"] <= ratios["max"]
+        and isinstance(result["max_violation_after"], (int, float))
+        and not isinstance(result["max_violation_after"], bool)
+        and math.isfinite(result["max_violation_after"])
+        and result["max_violation_after"] >= 0
+        and result["selected_parameter_changed"] is True
+        and result["forbidden_artifacts"] == []
+        and result["issues"] == []
+    )
+    if not completed_valid:
+        raise ValueError("completed evidence violates the Task-3 result contract")
     return result
+
+
+def validate_queue_state(state):
+    """Validate exact registry order, derived identity, and every attempt audit."""
+    if not isinstance(state, dict):
+        raise ValueError("queue state must be a JSON object")
+    if state.get("schema_version") != SCHEMA_VERSION or state.get("protocol") != PROTOCOL:
+        raise ValueError("queue state schema or protocol mismatch")
+    output_root = state.get("output_root")
+    if not isinstance(output_root, str) or not Path(output_root).is_absolute():
+        raise ValueError("queue state output_root must be absolute")
+    jobs = state.get("jobs")
+    if not isinstance(jobs, list):
+        raise ValueError("queue state jobs must be a list")
+
+    registered = build_manifest(seed=0)["jobs"]
+    stage_one_ids = [job["job_id"] for job in registered]
+    observed_stage_one_ids = [
+        job.get("job_id") if isinstance(job, dict) else None for job in jobs[:60]
+    ]
+    if len(jobs) < 60 or observed_stage_one_ids != stage_one_ids:
+        raise ValueError("queue state does not contain the exact canonical Stage-1 registry")
+    stage_one = jobs[:60]
+    parents = {job["job_id"]: job for job in stage_one}
+    for job in stage_one:
+        validate_job_identity(job)
+
+    derived = jobs[60:]
+    if any(
+        not isinstance(job, dict)
+        or not isinstance(job.get("job_id"), str)
+        or job.get("seed") not in {1, 2}
+        for job in derived
+    ):
+        raise ValueError("queue state has an invalid derived identity or injected Stage-1 record")
+    identities = [
+        (job.get("job_id"), job.get("seed")) if isinstance(job, dict) else (None, None)
+        for job in jobs
+    ]
+    if len(set(identities)) != len(identities):
+        raise ValueError("queue state has a duplicate job identity")
+    expected_derived_order = sorted(
+        identities[60:], key=lambda identity: (identity[1], identity[0])
+    )
+    if identities[60:] != expected_derived_order:
+        raise ValueError("queue state derived jobs are not in canonical order")
+    for job in derived:
+        parent = parents.get(job.get("parent_seed_zero"))
+        if parent is None:
+            raise ValueError("queue state derived job has no exact Stage-1 parent")
+        validate_job_identity(job, parent_job=parent)
+
+    running_count = 0
+    root = Path(output_root)
+    for job in jobs:
+        status = job.get("status")
+        count = job.get("attempt_count")
+        history = job.get("attempt_history")
+        pid = job.get("pid")
+        if status not in TERMINAL_STATUSES | {"pending", "running"}:
+            raise ValueError(f"invalid queue status for {job['job_id']}")
+        if type(count) is not int or count < 0 or count > 2:
+            raise ValueError(f"invalid attempt_count for {job['job_id']}")
+        if not isinstance(history, list) or len(history) != count:
+            raise ValueError(f"attempt_count/history mismatch for {job['job_id']}")
+        if pid is not None and (type(pid) is not int or pid <= 0):
+            raise ValueError(f"invalid queue pid for {job['job_id']}")
+        if status == "pending" and (count != 0 or pid is not None):
+            raise ValueError(f"pending queue job has attempts or pid: {job['job_id']}")
+        if status in TERMINAL_STATUSES and (count == 0 or pid is not None):
+            raise ValueError(f"terminal queue job has invalid attempts or pid: {job['job_id']}")
+        if status == "running":
+            running_count += 1
+            if count == 0:
+                raise ValueError(f"running queue job has no attempt: {job['job_id']}")
+
+        command = _command_record(job, root / job["output_dir"])
+        identity = _command_identity(command)
+        for index, attempt in enumerate(history, start=1):
+            if not isinstance(attempt, dict) or attempt.get("attempt") != index:
+                raise ValueError(f"non-sequential attempt history for {job['job_id']}")
+            attempt_status = attempt.get("status")
+            attempt_pid = attempt.get("pid")
+            if attempt_status not in TERMINAL_STATUSES | {"running"}:
+                raise ValueError(f"invalid attempt status for {job['job_id']}")
+            if attempt_pid is not None and (type(attempt_pid) is not int or attempt_pid <= 0):
+                raise ValueError(f"invalid attempt pid for {job['job_id']}")
+            if attempt.get("argv") != command["argv"] or attempt.get(
+                "command_identity"
+            ) != identity:
+                raise ValueError(f"attempt command identity mismatch for {job['job_id']}")
+            if attempt_status == "running":
+                if "evidence" in attempt:
+                    raise ValueError(f"running attempt has terminal evidence: {job['job_id']}")
+            else:
+                if "evidence" not in attempt:
+                    raise ValueError(f"terminal attempt is missing evidence: {job['job_id']}")
+                validate_job_result(
+                    attempt["evidence"],
+                    job,
+                    root / job["output_dir"],
+                    expected_status=attempt_status,
+                )
+            if index < count and attempt_status != "failed_infrastructure":
+                raise ValueError(f"only infrastructure failure may precede retry: {job['job_id']}")
+
+        if count == 2 and history[0]["status"] != "failed_infrastructure":
+            raise ValueError(f"second attempt lacks infrastructure predecessor: {job['job_id']}")
+        if status in TERMINAL_STATUSES and history[-1]["status"] != status:
+            raise ValueError(f"queue status/evidence mismatch for {job['job_id']}")
+        if status == "failed_infrastructure" and count != 2:
+            raise ValueError(f"infrastructure failure became terminal before retry: {job['job_id']}")
+        if status == "running":
+            last_status = history[-1]["status"]
+            retry_ready = count == 1 and last_status == "failed_infrastructure" and pid is None
+            live_attempt = last_status == "running" and (
+                pid is None or history[-1]["pid"] == pid
+            )
+            if not (retry_ready or live_attempt):
+                raise ValueError(f"running queue job has inconsistent pid/history: {job['job_id']}")
+    if running_count > 1:
+        raise ValueError("queue state permits at most one running job")
+    return state
 
 
 def live_matrix_children(state, output_root):
@@ -1859,71 +2074,65 @@ def run_queue(manifest_path, state_path):
         state = create_queue_state(manifest, state_path)
     else:
         state = _read_json(state_path)
-    if state.get("schema_version") != SCHEMA_VERSION or state.get("protocol") != PROTOCOL:
-        raise ValueError("queue state schema or protocol mismatch")
-    output_root = Path(state.get("output_root", "")).resolve()
+    validate_queue_state(state)
+    output_root = Path(state["output_root"])
     expected_root = Path(manifest.get("output_root", manifest_path.parent)).resolve()
     if output_root != expected_root:
         raise ValueError("queue state output_root does not match manifest")
-    jobs = state.get("jobs")
-    if not isinstance(jobs, list):
-        raise ValueError("queue state jobs must be a list")
-    parents = {job["job_id"]: job for job in jobs if job.get("seed") == 0}
-    if set(parents) != {job["job_id"] for job in manifest["jobs"]}:
-        raise ValueError("queue state is missing registered Stage-1 jobs")
-    for job in jobs:
-        parent_id = job.get("parent_seed_zero")
-        validate_job_identity(job, parent_job=parents.get(parent_id) if parent_id else None)
-        if job.get("status") not in TERMINAL_STATUSES | {"pending", "running"}:
-            raise ValueError(f"invalid queue status for {job['job_id']}")
-        if not isinstance(job.get("attempt_count"), int) or not isinstance(
-            job.get("attempt_history"), list
-        ):
-            raise ValueError(f"invalid attempt audit for {job['job_id']}")
+    jobs = state["jobs"]
+    parents = {job["job_id"]: job for job in jobs[:60]}
     running = [job for job in jobs if job["status"] == "running"]
-    if len(running) > 1:
-        raise ValueError("queue state permits at most one running job")
 
     if running:
         job = running[0]
-        children = live_matrix_children(state, output_root)
-        if any(
-            child["pid"] == job.get("pid")
-            and child["job_id"] == job["job_id"]
-            and child.get("exact", True)
-            for child in children
-        ):
-            raise RuntimeError(
-                f"exact matrix child already running for {job['job_id']}"
+        while True:
+            children = live_matrix_children(state, output_root)
+            exact_child_live = any(
+                child["pid"] == job.get("pid")
+                and child["job_id"] == job["job_id"]
+                and child.get("exact", True)
+                for child in children
             )
+            if not exact_child_live:
+                break
+            time.sleep(1.0)
         output_dir = output_root / job["output_dir"]
-        result_path = output_dir / "JOB_RESULT.json"
-        result = None
-        if result_path.is_file():
+        history = job["attempt_history"]
+        if history[-1]["status"] == "running":
+            result_path = output_dir / "JOB_RESULT.json"
+            result = None
             try:
-                result = validate_job_result(_read_json(result_path), job, output_dir)
+                observed = _read_json(result_path)
+                result = validate_job_result(
+                    observed,
+                    job,
+                    output_dir,
+                    expected_status=observed.get("status")
+                    if isinstance(observed, dict)
+                    else None,
+                )
             except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
                 result = None
-        history = job["attempt_history"]
-        if not history:
-            history.append({"attempt": job["attempt_count"], "status": "running"})
-        if result is not None:
+            if result is None:
+                command = _command_record(job, output_dir)
+                result = {
+                    "schema_version": SCHEMA_VERSION,
+                    "protocol": PROTOCOL,
+                    "job_id": job["job_id"],
+                    "method": job["method"],
+                    "benchmark": job["benchmark"],
+                    "seed": job["seed"],
+                    "stage": job["stage"],
+                    "status": "failed_infrastructure",
+                    "failure_kind": "stale_running_without_valid_result",
+                    "command_identity": _command_identity(command),
+                    "environment_overrides": command["environment_overrides"],
+                    "provenance": deepcopy(job["provenance"]),
+                }
             history[-1].update(status=result["status"], evidence=result)
-            job.update(status=result["status"], pid=None)
-            _atomic_write_json(state_path, state)
-        else:
-            stale = {
-                "schema_version": SCHEMA_VERSION,
-                "protocol": PROTOCOL,
-                "job_id": job["job_id"],
-                "status": "failed_infrastructure",
-                "failure_kind": "stale_running_without_valid_result",
-                "pid": job.get("pid"),
-            }
-            history[-1].update(status="failed_infrastructure", evidence=stale)
             job["pid"] = None
-            if job["attempt_count"] >= 2:
-                job["status"] = "failed_infrastructure"
+            if result["status"] != "failed_infrastructure" or job["attempt_count"] >= 2:
+                job["status"] = result["status"]
             _atomic_write_json(state_path, state)
 
     for job in jobs:
@@ -1958,14 +2167,29 @@ def run_queue(manifest_path, state_path):
                     parent_job=parent,
                     launched=record_pid,
                 )
-                validate_job_result(result, job, output_dir)
+                validate_job_result(
+                    result,
+                    job,
+                    output_dir,
+                    expected_status=result.get("status")
+                    if isinstance(result, dict)
+                    else None,
+                )
             except Exception as error:
+                command_record = _command_record(job, output_dir)
                 result = {
                     "schema_version": SCHEMA_VERSION,
                     "protocol": PROTOCOL,
                     "job_id": job["job_id"],
+                    "method": job["method"],
+                    "benchmark": job["benchmark"],
+                    "seed": job["seed"],
+                    "stage": job["stage"],
                     "status": "failed_infrastructure",
                     "failure_kind": "queue_orchestration",
+                    "command_identity": _command_identity(command_record),
+                    "environment_overrides": command_record["environment_overrides"],
+                    "provenance": deepcopy(job["provenance"]),
                     "error": str(error),
                 }
             attempt.update(status=result["status"], evidence=result)
@@ -1979,17 +2203,16 @@ def run_queue(manifest_path, state_path):
             job["status"] = result["status"]
             _atomic_write_json(state_path, state)
             break
+    validate_queue_state(state)
     return state
 
 
 def expand_seeds(state_path):
     """Add seeds 1 and 2 for every valid completed seed-zero parent."""
     state_path = Path(state_path)
-    state = _read_json(state_path)
-    jobs = state.get("jobs")
-    if not isinstance(jobs, list):
-        raise ValueError("queue state jobs must be a list")
-    stage_one = [job for job in jobs if job.get("seed") == 0]
+    state = validate_queue_state(_read_json(state_path))
+    jobs = state["jobs"]
+    stage_one = jobs[:60]
     if any(job.get("status") not in TERMINAL_STATUSES for job in stage_one):
         raise ValueError("Stage 1 must be terminal before seed expansion")
     output_root = Path(state["output_root"])
@@ -2000,10 +2223,12 @@ def expand_seeds(state_path):
         if parent["status"] != "completed":
             continue
         result_path = output_root / parent["output_dir"] / "JOB_RESULT.json"
-        try:
-            validate_job_result(_read_json(result_path), parent, result_path.parent)
-        except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
-            continue
+        validate_job_result(
+            _read_json(result_path),
+            parent,
+            result_path.parent,
+            expected_status="completed",
+        )
         for seed in (1, 2):
             job_id = parent["job_id"].replace("seed0", f"seed{seed}")
             if job_id in by_id:
@@ -2029,15 +2254,18 @@ def expand_seeds(state_path):
             additions.append(derived)
             by_id[job_id] = derived
     if additions:
-        state["jobs"].extend(additions)
-        state["jobs"].sort(key=lambda job: (job["seed"], job["job_id"]))
+        state["jobs"] = stage_one + sorted(
+            jobs[60:] + additions,
+            key=lambda job: (job["seed"], job["job_id"]),
+        )
+        validate_queue_state(state)
         _atomic_write_json(state_path, state)
     return state
 
 
 def queue_status(state_path):
     """Return durable status counts plus any live registered child."""
-    state = _read_json(state_path)
+    state = validate_queue_state(_read_json(state_path))
     counts = Counter(job["status"] for job in state["jobs"])
     return {
         "counts": dict(sorted(counts.items())),
