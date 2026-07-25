@@ -502,6 +502,7 @@ RUNTIME_ROOTS = {
     "wmdp": Path("/dev/shm/gu-matrix-wmdp"),
 }
 
+
 def benchmark_family(job):
     return job["benchmark"].split("_", 1)[0]
 
@@ -682,7 +683,9 @@ def test_rmu_commands_translate_branch_recipes_to_current_rmu_keys(tmp_path):
         family = benchmark_family(job)
         command = load_registry().build_command(job, tmp_path / job["job_id"])
         config = compose_command(command)
-        expected_module = "model[.]layers[.]31" if family == "tofu" else "model[.]layers[.]7"
+        expected_module = (
+            "model[.]layers[.]31" if family == "tofu" else "model[.]layers[.]7"
+        )
         expected_alpha = {"tofu": 100.0, "muse": 10.0, "wmdp": 1200.0}[family]
         assert config.trainer.method_args.gamma == pytest.approx(1.0)
         assert config.trainer.method_args.alpha == pytest.approx(expected_alpha)
@@ -737,13 +740,9 @@ def test_tofu_and_muse_rmu_apply_branch_model_runtime_overrides_only(tmp_path):
         command = load_registry().build_command(job, tmp_path / job["job_id"])
         config = compose_command(command)
         expected_backend = (
-            "flash_attention_2"
-            if job["benchmark"].startswith("tofu_")
-            else "sdpa"
+            "flash_attention_2" if job["benchmark"].startswith("tofu_") else "sdpa"
         )
-        assert (
-            f"model.model_args.attn_implementation={expected_backend}" in command
-        )
+        assert f"model.model_args.attn_implementation={expected_backend}" in command
         assert config.model.model_args.attn_implementation == expected_backend
         assert config.model.model_args.use_cache is False
         assert config.model.model_args.output_attentions is False
@@ -806,29 +805,68 @@ def test_pinned_benchmark_configs_resolve_evaluators_and_provenance(tmp_path):
         )
         provenance = job["provenance"]
         assert config.model.model_args.revision == provenance["model"]["revision"]
-        assert config.model.tokenizer_args.revision == provenance["tokenizer"]["revision"]
-        assert config.protocol.source_provenance.model.artifact == provenance["model"]["artifact"]
-        assert config.protocol.source_provenance.model.revision == provenance["model"]["revision"]
+        assert (
+            config.model.tokenizer_args.revision == provenance["tokenizer"]["revision"]
+        )
+        assert (
+            config.protocol.source_provenance.model.artifact
+            == provenance["model"]["artifact"]
+        )
+        assert (
+            config.protocol.source_provenance.model.revision
+            == provenance["model"]["revision"]
+        )
         assert config.protocol.source_provenance.tokenizer == provenance["tokenizer"]
         if benchmark.startswith("tofu_"):
             assert set(config.eval) == {"tofu"}
-            assert config.data.forget.TOFU_QA_forget.args.hf_args.revision == TOFU_DATASET_REVISION
-            assert config.data.retain.TOFU_QA_retain.args.hf_args.revision == TOFU_DATASET_REVISION
-            assert config.eval.tofu.metrics.forget_Q_A_gibberish.classifier_model_args.revision == GIBBERISH_REVISION
-            assert config.eval.tofu.metrics.forget_Q_A_gibberish.classifier_tokenization_args.revision == GIBBERISH_REVISION
+            assert (
+                config.data.forget.TOFU_QA_forget.args.hf_args.revision
+                == TOFU_DATASET_REVISION
+            )
+            assert (
+                config.data.retain.TOFU_QA_retain.args.hf_args.revision
+                == TOFU_DATASET_REVISION
+            )
+            assert (
+                config.eval.tofu.metrics.forget_Q_A_gibberish.classifier_model_args.revision
+                == GIBBERISH_REVISION
+            )
+            assert (
+                config.eval.tofu.metrics.forget_Q_A_gibberish.classifier_tokenization_args.revision
+                == GIBBERISH_REVISION
+            )
             assert Path(config.retain_logs_path).is_file()
         elif benchmark.startswith("muse_"):
             assert set(config.eval) == {"muse"}
-            assert config.data.forget.MUSE_forget.args.hf_args.revision == provenance["dataset"]["revision"]
-            assert config.data.retain.MUSE_retain.args.hf_args.revision == provenance["dataset"]["revision"]
-            assert config.protocol.source_provenance.reference_model == provenance["reference_model"]
-            assert config.eval.muse.metrics.mia_reference.reference_model_path == config.reference_model_snapshot
-            assert Path(config.reference_model_snapshot).name == provenance[
-                "reference_model"
-            ]["revision"]
+            assert (
+                config.data.forget.MUSE_forget.args.hf_args.revision
+                == provenance["dataset"]["revision"]
+            )
+            assert (
+                config.data.retain.MUSE_retain.args.hf_args.revision
+                == provenance["dataset"]["revision"]
+            )
+            assert (
+                config.protocol.source_provenance.reference_model
+                == provenance["reference_model"]
+            )
+            assert (
+                config.eval.muse.metrics.mia_reference.reference_model_path
+                == config.reference_model_snapshot
+            )
+            assert (
+                Path(config.reference_model_snapshot).name
+                == provenance["reference_model"]["revision"]
+            )
             assert Path(config.retain_logs_path).is_file()
-            assert config.eval.muse.metrics.forget_gibberish.classifier_model_args.revision == GIBBERISH_REVISION
-            assert config.eval.muse.metrics.forget_gibberish.classifier_tokenization_args.revision == GIBBERISH_REVISION
+            assert (
+                config.eval.muse.metrics.forget_gibberish.classifier_model_args.revision
+                == GIBBERISH_REVISION
+            )
+            assert (
+                config.eval.muse.metrics.forget_gibberish.classifier_tokenization_args.revision
+                == GIBBERISH_REVISION
+            )
         else:
             assert set(config.eval) == {"lm_eval"}
             assert list(config.eval.lm_eval.tasks) == ["wmdp_cyber", "mmlu"]
@@ -876,7 +914,9 @@ def test_tofu_and_muse_pin_every_enabled_metric_hub_reference(tmp_path):
         assert_metric_hub_references_are_revision_pinned(config)
         retain_logs = Path(config.retain_logs_path)
         retain_hash = hashlib.sha256(retain_logs.read_bytes()).hexdigest()
-        evaluator = config.eval.tofu if benchmark.startswith("tofu_") else config.eval.muse
+        evaluator = (
+            config.eval.tofu if benchmark.startswith("tofu_") else config.eval.muse
+        )
         assert (
             evaluator.metrics.privleak.reference_logs.retain_model_logs.sha256
             == retain_hash
@@ -887,14 +927,18 @@ def test_tofu_and_muse_pin_every_enabled_metric_hub_reference(tmp_path):
             assert reference.reference_model_path == config.reference_model_snapshot
             assert reference.reference_model_revision == config.reference_model_revision
         gibberish_name = (
-            "forget_Q_A_gibberish" if benchmark.startswith("tofu_") else "forget_gibberish"
+            "forget_Q_A_gibberish"
+            if benchmark.startswith("tofu_")
+            else "forget_gibberish"
         )
         gibberish = evaluator.metrics[gibberish_name]
         assert gibberish.classifier_model_args.revision == GIBBERISH_REVISION
         assert gibberish.classifier_tokenization_args.revision == GIBBERISH_REVISION
 
 
-def test_wmdp_config_is_cyber_only_with_absolute_verified_corpora_and_eval_cache_metadata(tmp_path):
+def test_wmdp_config_is_cyber_only_with_absolute_verified_corpora_and_eval_cache_metadata(
+    tmp_path,
+):
     job = next(
         job
         for job in load_registry().build_manifest(seed=0)["jobs"]
@@ -1053,7 +1097,10 @@ def fixture_content_manifest(path, registered_suffixes=None):
     for candidate in sorted(path.rglob("*")):
         if not candidate.is_file():
             continue
-        if registered_suffixes is not None and candidate.suffix not in registered_suffixes:
+        if (
+            registered_suffixes is not None
+            and candidate.suffix not in registered_suffixes
+        ):
             continue
         contents = candidate.read_bytes()
         entries.append(
@@ -1086,9 +1133,10 @@ def test_dataset_cache_manifest_detects_copied_arrow_and_metadata_mutation(tmp_p
     }
     memo = {}
 
-    assert registry.validate_content_requirement(requirement, memo) == requirement[
-        "content_manifest_sha256"
-    ]
+    assert (
+        registry.validate_content_requirement(requirement, memo)
+        == requirement["content_manifest_sha256"]
+    )
     arrow_or_metadata = next(
         path
         for path in copied.rglob("*")
@@ -1101,9 +1149,10 @@ def test_dataset_cache_manifest_detects_copied_arrow_and_metadata_mutation(tmp_p
     shutil.rmtree(copied)
     shutil.copytree(source, copied)
     (copied / "incidental_builder.lock").write_text("ignored")
-    assert registry.validate_content_requirement(requirement, {}) == requirement[
-        "content_manifest_sha256"
-    ]
+    assert (
+        registry.validate_content_requirement(requirement, {})
+        == requirement["content_manifest_sha256"]
+    )
 
 
 def test_hub_snapshot_validation_checks_blob_hash_and_symlink_containment(tmp_path):
@@ -1126,9 +1175,10 @@ def test_hub_snapshot_validation_checks_blob_hash_and_symlink_containment(tmp_pa
         "content_manifest_sha256": fixture_content_manifest(snapshot),
     }
 
-    assert registry.validate_content_requirement(requirement, {}) == requirement[
-        "content_manifest_sha256"
-    ]
+    assert (
+        registry.validate_content_requirement(requirement, {})
+        == requirement["content_manifest_sha256"]
+    )
     blob.write_bytes(blob_contents + b"tamper")
     with pytest.raises(ValueError, match="example/tiny"):
         registry.validate_content_requirement(requirement, {})
@@ -1152,9 +1202,7 @@ def test_content_fingerprint_memo_is_keyed_by_requirement_json(tmp_path, monkeyp
         "kind": "dataset_cache",
         "source_name": "shared_cache",
         "path": str(cache),
-        "content_manifest_sha256": fixture_content_manifest(
-            cache, {".arrow", ".json"}
-        ),
+        "content_manifest_sha256": fixture_content_manifest(cache, {".arrow", ".json"}),
         "registered_suffixes": [".arrow", ".json"],
     }
     observed_calls = 0
@@ -1165,7 +1213,9 @@ def test_content_fingerprint_memo_is_keyed_by_requirement_json(tmp_path, monkeyp
         observed_calls += 1
         return original(path, registered_suffixes)
 
-    monkeypatch.setattr(registry, "canonical_directory_fingerprint", counting_fingerprint)
+    monkeypatch.setattr(
+        registry, "canonical_directory_fingerprint", counting_fingerprint
+    )
     memo = {}
     for _ in range(60):
         registry.validate_content_requirement(requirement, memo)
@@ -1174,7 +1224,9 @@ def test_content_fingerprint_memo_is_keyed_by_requirement_json(tmp_path, monkeyp
     assert len(memo) == 1
 
 
-def test_source_requirements_register_content_manifests_and_missing_snapshot(monkeypatch):
+def test_source_requirements_register_content_manifests_and_missing_snapshot(
+    monkeypatch,
+):
     registry = load_registry()
     jobs = registry.build_manifest(seed=0)["jobs"]
     representatives = {}
@@ -1559,7 +1611,9 @@ def test_completed_job_requires_exact_gu_endpoint_and_resource_evidence(
     assert captured["sleep_seconds"] == [1.0]
     command_record = json.loads((output_dir / "command.json").read_text())
     assert command_record["argv"] == registry.build_command(job, output_dir)
-    assert command_record["environment_overrides"] == registry.environment_overrides(job)
+    assert command_record["environment_overrides"] == registry.environment_overrides(
+        job
+    )
     assert command_record["provenance"] == job["provenance"]
     assert json.loads((output_dir / "JOB_RESULT.json").read_text()) == result
 
@@ -1693,8 +1747,9 @@ def test_run_job_executes_the_current_worktree_with_one_absolute_output(
     assert captured["argv"][1] == str(ROOT / "src/train.py")
     assert f"paths.output_dir={resolved_output}" in captured["argv"]
     assert captured["argv"] == registry.build_command(job, resolved_output)
-    assert json.loads((resolved_output / "command.json").read_text())["argv"] == (
-        captured["argv"]
+    assert (
+        json.loads((resolved_output / "command.json").read_text())["argv"]
+        == (captured["argv"])
     )
 
 
@@ -1975,9 +2030,10 @@ def test_run_job_rejects_any_mixed_zero_or_rejection_record(
 
     assert result["status"] == "invalid_scientific"
     assert result["selected_parameter_changed"] is True
-    assert "zero" in " ".join(result["issues"]).lower() or "reject" in " ".join(
-        result["issues"]
-    ).lower()
+    assert (
+        "zero" in " ".join(result["issues"]).lower()
+        or "reject" in " ".join(result["issues"]).lower()
+    )
 
 
 @pytest.mark.parametrize(
@@ -2066,8 +2122,7 @@ def test_run_job_accepts_only_its_exact_hydra_handler_log(tmp_path, monkeypatch)
     job = next(
         candidate
         for candidate in registry.build_manifest(seed=0)["jobs"]
-        if candidate["method"] == "SimNPO"
-        and candidate["evaluator_kind"] == "muse"
+        if candidate["method"] == "SimNPO" and candidate["evaluator_kind"] == "muse"
     )
     output_dir = tmp_path / job["job_id"]
     install_job_subprocess_stub(
@@ -2089,8 +2144,7 @@ def test_run_job_rejects_a_different_methods_hydra_log(tmp_path, monkeypatch):
     job = next(
         candidate
         for candidate in registry.build_manifest(seed=0)["jobs"]
-        if candidate["method"] == "SimNPO"
-        and candidate["evaluator_kind"] == "muse"
+        if candidate["method"] == "SimNPO" and candidate["evaluator_kind"] == "muse"
     )
     output_dir = tmp_path / job["job_id"]
     install_job_subprocess_stub(
@@ -2392,9 +2446,7 @@ def finish_queue_job(registry, job, output_root, status, failure_kind=None):
             "attempt": 1,
             "status": status,
             "pid": 4242,
-            "argv": registry.build_command(
-                job, Path(output_root) / job["output_dir"]
-            ),
+            "argv": registry.build_command(job, Path(output_root) / job["output_dir"]),
             "command_identity": result["command_identity"],
             "evidence": result,
         }
@@ -2410,9 +2462,7 @@ def mark_queue_job_running(registry, job, output_root, pid=4242):
             "attempt": 1,
             "status": "running",
             "pid": pid,
-            "argv": registry.build_command(
-                job, Path(output_root) / job["output_dir"]
-            ),
+            "argv": registry.build_command(job, Path(output_root) / job["output_dir"]),
             "command_identity": result["command_identity"],
         }
     ]
@@ -2878,12 +2928,15 @@ def test_completed_result_and_queue_accept_absent_global_step(tmp_path):
     result = queue_result(registry, job, tmp_path)
     result["final_global_step"] = None
 
-    assert registry.validate_job_result(
-        result,
-        job,
-        tmp_path / job["output_dir"],
-        expected_status="completed",
-    ) == result
+    assert (
+        registry.validate_job_result(
+            result,
+            job,
+            tmp_path / job["output_dir"],
+            expected_status="completed",
+        )
+        == result
+    )
 
     state_path = tmp_path / "queue_state.json"
     state = registry.create_queue_state(queue_manifest(registry, tmp_path), state_path)
@@ -3003,7 +3056,9 @@ def test_status_rejects_duplicate_stage_two_job_identity(tmp_path):
         registry.queue_status(state_path)
 
 
-@pytest.mark.parametrize("parent_status", ["invalid_scientific", "failed_infrastructure"])
+@pytest.mark.parametrize(
+    "parent_status", ["invalid_scientific", "failed_infrastructure"]
+)
 def test_status_and_expansion_reject_derived_job_from_invalid_parent(
     tmp_path,
     parent_status,
@@ -3088,9 +3143,7 @@ def test_completed_evidence_requires_safe_existing_endpoint_pair_and_tolerance(
     elif tamper == "violation":
         result["max_violation_after"] = 999.0
     elif tamper == "traversal":
-        result["endpoint_summary_path"] = (
-            f"../checkpoint-1/evals/{prefix}_SUMMARY.json"
-        )
+        result["endpoint_summary_path"] = f"../checkpoint-1/evals/{prefix}_SUMMARY.json"
     else:
         (output_dir / result["endpoint_raw_path"]).unlink()
 
@@ -3110,12 +3163,15 @@ def test_completed_evidence_accepts_negative_directional_violation(tmp_path):
     result = queue_result(registry, job, tmp_path)
     result["max_violation_after"] = -999.0
 
-    assert registry.validate_job_result(
-        result,
-        job,
-        output_dir,
-        expected_status="completed",
-    ) == result
+    assert (
+        registry.validate_job_result(
+            result,
+            job,
+            output_dir,
+            expected_status="completed",
+        )
+        == result
+    )
 
     result["max_violation_after"] = registry.GU_PROJECTION_TOLERANCE * 2
     with pytest.raises(ValueError, match="completed|projection"):
@@ -3207,9 +3263,7 @@ def test_queue_state_rejects_partial_global_replication(tmp_path):
             seed=seed,
             stage="stage2",
             status="pending",
-            output_dir=replicated_parent["output_dir"].replace(
-                "seed0", f"seed{seed}"
-            ),
+            output_dir=replicated_parent["output_dir"].replace("seed0", f"seed{seed}"),
             parent_seed_zero=replicated_parent["job_id"],
             attempt_count=0,
             attempt_history=[],
@@ -3248,7 +3302,9 @@ def test_seed_expansion_writes_both_replicates_in_one_atomic_replace(
     expanded_again = registry.expand_seeds(state_path)
 
     children = [
-        job for job in expanded["jobs"] if job.get("parent_seed_zero") == parent["job_id"]
+        job
+        for job in expanded["jobs"]
+        if job.get("parent_seed_zero") == parent["job_id"]
     ]
     assert {job["seed"] for job in children} == {1, 2}
     assert replacements == [state_path]
@@ -3295,15 +3351,18 @@ def test_global_dev0_lock_blocks_controllers_from_a_different_output_root(
             with pytest.raises(RuntimeError, match="controller.*active|lock"):
                 registry.smoke_manifest(manifest_path)
         else:
-            assert registry.main(
-                [
-                    "run-job",
-                    "--manifest",
-                    str(manifest_path),
-                    "--job-id",
-                    manifest["jobs"][0]["job_id"],
-                ]
-            ) != 0
+            assert (
+                registry.main(
+                    [
+                        "run-job",
+                        "--manifest",
+                        str(manifest_path),
+                        "--job-id",
+                        manifest["jobs"][0]["job_id"],
+                    ]
+                )
+                != 0
+            )
 
     assert admitted == []
     assert launched == []
@@ -3494,9 +3553,10 @@ def test_manifest_cli_writes_only_after_validation_and_run_job_rejects_unknown(
     registry = load_registry()
     output_root = tmp_path / "matrix"
 
-    assert registry.main(
-        ["manifest", "--seed", "0", "--output-root", str(output_root)]
-    ) == 0
+    assert (
+        registry.main(["manifest", "--seed", "0", "--output-root", str(output_root)])
+        == 0
+    )
     manifest_path = output_root / "manifest.json"
     assert manifest_path.is_file()
     assert json.loads(manifest_path.read_text())["output_root"] == str(
@@ -3509,9 +3569,12 @@ def test_manifest_cli_writes_only_after_validation_and_run_job_rejects_unknown(
         "run_job",
         lambda *args, **kwargs: launched.append((args, kwargs)),
     )
-    assert registry.main(
-        ["run-job", "--manifest", str(manifest_path), "--job-id", "unknown"]
-    ) != 0
+    assert (
+        registry.main(
+            ["run-job", "--manifest", str(manifest_path), "--job-id", "unknown"]
+        )
+        != 0
+    )
     assert launched == []
     assert not (output_root / "jobs" / "unknown").exists()
 
@@ -3565,3 +3628,418 @@ def test_preflight_and_smoke_call_real_validation_and_run_seams(
 )
 def test_cli_paths_return_nonzero_for_missing_inputs(argv):
     assert load_registry().main(argv) != 0
+
+
+ANALYZER = ROOT / "scripts/analyze_gu_full_matrix.py"
+
+
+def load_full_matrix_analyzer():
+    spec = importlib.util.spec_from_file_location("analyze_gu_full_matrix", ANALYZER)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def exact_evaluator_payload(job, seed):
+    offset = float(seed)
+    if job["evaluator_kind"] == "tofu":
+        summary = {
+            "exact_memorization": 0.91 + offset,
+            "extraction_strength": 2.0 + offset,
+            "forget_Q_A_Prob": 0.81 + offset,
+            "forget_Q_A_ROUGE": 0.71 + offset,
+            "mia_gradnorm": 0.61 + offset,
+            "mia_loss": 0.62 + offset,
+            "mia_min_k": 0.63 + offset,
+            "mia_min_k_plus_plus": 0.64 + offset,
+            "mia_zlib": 0.65 + offset,
+            "model_utility": 4.0 + offset,
+            "privleak": 3.0 + offset,
+            "retain_extraction_strength": 1.0 + offset,
+        }
+        raw = {
+            name: (
+                {"agg_value": value}
+                if name in {"privleak", "model_utility"}
+                else {
+                    "agg_value": value,
+                    "value_by_index": {"0": {"score": value}},
+                }
+            )
+            for name, value in summary.items()
+        }
+        return summary, raw
+    if job["evaluator_kind"] == "muse":
+        summary = {
+            "exact_memorization": 0.91 + offset,
+            "extraction_strength": 3.0 + offset,
+            "forget_knowmem_ROUGE": 2.0 + offset,
+            "forget_verbmem_ROUGE": 1.0 + offset,
+            "mia_gradnorm": 0.61 + offset,
+            "mia_loss": 0.62 + offset,
+            "mia_min_k": 0.63 + offset,
+            "mia_min_k_plus_plus": 0.64 + offset,
+            "mia_reference": 0.66 + offset,
+            "mia_zlib": 0.65 + offset,
+            "privleak": 4.0 + offset,
+            "retain_extraction_strength": 0.8 + offset,
+            "retain_knowmem_ROUGE": 5.0 + offset,
+        }
+        raw = {
+            name: (
+                {"agg_value": value}
+                if name == "privleak"
+                else {
+                    "agg_value": value,
+                    "value_by_index": {"0": {"score": value}},
+                }
+            )
+            for name, value in summary.items()
+        }
+        return summary, raw
+    wmdp = 1.0 + offset
+    mmlu = 2.0 + offset
+    summary = {
+        "mmlu/acc": mmlu,
+        "mmlu/acc_stderr": 0.01,
+        "wmdp_cyber/acc": wmdp,
+        "wmdp_cyber/acc_stderr": 0.02,
+    }
+    raw = {
+        "mmlu": {
+            "mmlu_abstract_algebra": [
+                {"doc_id": 0, "acc": mmlu - 0.5},
+                {"doc_id": 1, "acc": mmlu + 0.5},
+            ]
+        },
+        "wmdp_cyber": {
+            "wmdp_cyber": [
+                {"doc_id": 0, "acc": wmdp - 0.5},
+                {"doc_id": 1, "acc": wmdp + 0.5},
+            ]
+        },
+    }
+    return summary, raw
+
+
+def write_completed_analysis_job(registry, job, root):
+    result = finish_queue_job(registry, job, root, "completed")
+    output = root / job["output_dir"]
+    summary_path = output / result["endpoint_summary_path"]
+    raw_path = output / result["endpoint_raw_path"]
+    summary, raw = exact_evaluator_payload(job, job["seed"])
+    summary_path.write_text(json.dumps(summary))
+    raw_path.write_text(json.dumps(raw))
+    (output / "command.json").write_text(
+        json.dumps(registry._command_record(job, output))
+    )
+    (output / "run.log").write_text("completed\n")
+    (output / "gu_diagnostics.jsonl").write_text("{}\n")
+    (output / "JOB_RESULT.json").write_text(json.dumps(result))
+    return result
+
+
+def write_synthetic_analysis_matrix(
+    tmp_path,
+    *,
+    complete_benchmarks=(
+        "tofu_forget01",
+        "tofu_forget05",
+        "tofu_forget10",
+        "muse_news",
+        "muse_books",
+        "wmdp_cyber",
+    ),
+    replicate=True,
+):
+    registry = load_registry()
+    root = tmp_path / "matrix"
+    root.mkdir()
+    manifest = queue_manifest(registry, root)
+    (root / "manifest.json").write_text(json.dumps(manifest))
+    state_path = root / "queue_state.json"
+    state = registry.create_queue_state(manifest, state_path)
+    complete = {("GradAscent", benchmark) for benchmark in complete_benchmarks}
+    for job in state["jobs"]:
+        if (job["method"], job["benchmark"]) in complete:
+            write_completed_analysis_job(registry, job, root)
+        else:
+            finish_queue_job(
+                registry,
+                job,
+                root,
+                "invalid_scientific",
+                "evidence_validation",
+            )
+    state_path.write_text(json.dumps(state))
+    if replicate:
+        state = registry.expand_seeds(state_path)
+        for job in state["jobs"][60:]:
+            write_completed_analysis_job(registry, job, root)
+        state_path.write_text(json.dumps(state))
+    return root
+
+
+def test_analyzer_renders_exact_headers_all_schemas_resources_and_na(tmp_path):
+    analyzer = load_full_matrix_analyzer()
+    root = write_synthetic_analysis_matrix(tmp_path)
+
+    report = analyzer.analyze_matrix(root)
+    markdown = analyzer.render_tables(report)
+
+    tofu_header = (
+        "| Method | ES Re. ↑ | ES Un. ↓ | Priv. ↑ | MU ↑ | wall-clock | peak mem |"
+    )
+    muse_header = (
+        "| Method | VerbMem ↓ | KnowMem ↓ | Extraction ↓ | Privacy/MIA | "
+        "Retain utility ↑ | wall-clock | peak mem |"
+    )
+    wmdp_header = "| Method | WMDP-Cyber ↓ | MMLU ↑ | wall-clock | peak mem |"
+    assert markdown.count(tofu_header) == 3
+    assert markdown.count(muse_header) == 2
+    assert markdown.count(wmdp_header) == 1
+    assert "2.0000 ± 1.0000" in markdown
+    assert "1.0000 ± 0.0000 s" in markdown
+    assert "256.0000 ± 0.0000 NVML MiB" in markdown
+    assert markdown.count("missing_shipped_idk_artifact") >= 6
+    assert len(report["not_applicable"]) == 6
+    assert all(row["method"] == "DPO" for row in report["not_applicable"])
+    assert (
+        report["provenance_scope"]["benchmarks"]["wmdp_cyber"]
+        == (load_registry().BENCHMARKS["wmdp_cyber"]["provenance"])
+    )
+    assert "Bio" not in json.dumps(report)
+
+
+def test_analyzer_preserves_per_seed_values_and_uses_sample_std(tmp_path):
+    analyzer = load_full_matrix_analyzer()
+    root = write_synthetic_analysis_matrix(
+        tmp_path, complete_benchmarks=("tofu_forget01",)
+    )
+
+    report = analyzer.analyze_matrix(root)
+    complete = next(
+        row
+        for row in report["complete"]
+        if row["benchmark"] == "tofu_forget01" and row["method"] == "GradAscent"
+    )
+
+    assert [row["seed"] for row in complete["per_seed"]] == [0, 1, 2]
+    assert [
+        row["metrics"]["retain_extraction_strength"] for row in complete["per_seed"]
+    ] == [1.0, 2.0, 3.0]
+    assert complete["aggregate"]["retain_extraction_strength"] == {
+        "mean": 2.0,
+        "sample_std": 1.0,
+    }
+    assert complete["aggregate"]["wall_clock_seconds"] == {
+        "mean": 1.0,
+        "sample_std": 0.0,
+    }
+    assert complete["aggregate"]["peak_nvml_mib"] == {
+        "mean": 256,
+        "sample_std": 0.0,
+    }
+    assert complete["per_seed"][0]["job_result_path"].endswith("/JOB_RESULT.json")
+    assert complete["per_seed"][0]["endpoint_raw_path"].endswith("/TOFU_EVAL.json")
+
+
+@pytest.mark.parametrize(
+    ("benchmark", "summary_key"),
+    [
+        ("tofu_forget01", "model_utility"),
+        ("muse_news", "forget_verbmem_ROUGE"),
+        ("wmdp_cyber", "wmdp_cyber/acc"),
+    ],
+)
+def test_analyzer_rejects_summary_raw_disagreement(tmp_path, benchmark, summary_key):
+    analyzer = load_full_matrix_analyzer()
+    root = write_synthetic_analysis_matrix(tmp_path, complete_benchmarks=(benchmark,))
+    summary_path = next(
+        (root / "jobs").rglob(
+            {
+                "tofu_forget01": "TOFU_SUMMARY.json",
+                "muse_news": "MUSE_SUMMARY.json",
+                "wmdp_cyber": "LMEval_SUMMARY.json",
+            }[benchmark]
+        )
+    )
+    summary = json.loads(summary_path.read_text())
+    summary[summary_key] += 0.25
+    summary_path.write_text(json.dumps(summary))
+
+    with pytest.raises(ValueError, match="summary/raw disagreement"):
+        analyzer.analyze_matrix(root)
+
+
+@pytest.mark.parametrize("tamper", ["duplicate_job", "missing_seed"])
+def test_analyzer_rejects_duplicate_jobs_and_missing_seed(tmp_path, tamper):
+    analyzer = load_full_matrix_analyzer()
+    root = write_synthetic_analysis_matrix(
+        tmp_path, complete_benchmarks=("tofu_forget01",)
+    )
+    state_path = root / "queue_state.json"
+    state = json.loads(state_path.read_text())
+    if tamper == "duplicate_job":
+        state["jobs"].append(json.loads(json.dumps(state["jobs"][-1])))
+    else:
+        state["jobs"][-1].pop("seed")
+    state_path.write_text(json.dumps(state))
+
+    with pytest.raises(ValueError, match="duplicate|seed|identity"):
+        analyzer.analyze_matrix(root)
+
+
+def test_analyzer_lists_invalid_and_incomplete_without_averaging(tmp_path):
+    analyzer = load_full_matrix_analyzer()
+    root = write_synthetic_analysis_matrix(
+        tmp_path,
+        complete_benchmarks=("tofu_forget01",),
+        replicate=False,
+    )
+
+    report = analyzer.analyze_matrix(root)
+    incomplete = [
+        row
+        for row in report["incomplete"]
+        if row["benchmark"] == "tofu_forget01" and row["method"] == "GradAscent"
+    ]
+
+    assert report["complete"] == []
+    assert incomplete == [
+        {
+            "benchmark": "tofu_forget01",
+            "method": "GradAscent",
+            "seed": 1,
+            "status": "missing",
+            "reason": "missing_required_replication",
+        },
+        {
+            "benchmark": "tofu_forget01",
+            "method": "GradAscent",
+            "seed": 2,
+            "status": "missing",
+            "reason": "missing_required_replication",
+        },
+    ]
+    assert any(
+        row["seed"] == 0
+        and row["status"] == "invalid_scientific"
+        and row["reason"] == "evidence_validation"
+        for row in report["invalid"]
+    )
+    assert analyzer.main(["--root", str(root), "--require-complete"]) != 0
+    assert analyzer.main(["--root", str(root)]) == 0
+
+
+@pytest.mark.parametrize("sidecar", ["JOB_RESULT.json", "command.json"])
+def test_analyzer_rejects_missing_or_corrupt_completed_sidecars(tmp_path, sidecar):
+    analyzer = load_full_matrix_analyzer()
+    root = write_synthetic_analysis_matrix(
+        tmp_path, complete_benchmarks=("muse_books",)
+    )
+    sidecar_path = next((root / "jobs").rglob(sidecar))
+    if sidecar == "JOB_RESULT.json":
+        sidecar_path.unlink()
+    else:
+        sidecar_path.write_text("not-json")
+
+    with pytest.raises((OSError, ValueError, json.JSONDecodeError)):
+        analyzer.analyze_matrix(root)
+
+
+def test_analyzer_rejects_endpoint_and_provenance_tampering(tmp_path):
+    analyzer = load_full_matrix_analyzer()
+    root = write_synthetic_analysis_matrix(tmp_path, complete_benchmarks=("muse_news",))
+    state_path = root / "queue_state.json"
+    state = json.loads(state_path.read_text())
+    completed = next(job for job in state["jobs"] if job["status"] == "completed")
+    completed["attempt_history"][-1]["evidence"]["provenance"]["model"]["revision"] = (
+        "0" * 40
+    )
+    state_path.write_text(json.dumps(state))
+
+    with pytest.raises(ValueError, match="provenance|identity"):
+        analyzer.analyze_matrix(root)
+
+
+def test_analyzer_rejects_forbidden_wmdp_task_fields(tmp_path):
+    analyzer = load_full_matrix_analyzer()
+    root = write_synthetic_analysis_matrix(
+        tmp_path, complete_benchmarks=("wmdp_cyber",)
+    )
+    summary_path = next((root / "jobs").rglob("LMEval_SUMMARY.json"))
+    summary = json.loads(summary_path.read_text())
+    summary["wmdp_bio/acc"] = 0.5
+    summary_path.write_text(json.dumps(summary))
+
+    with pytest.raises(ValueError, match="forbidden WMDP task"):
+        analyzer.analyze_matrix(root)
+
+
+def test_analyzer_rejects_malformed_lmeval_task_samples(tmp_path):
+    analyzer = load_full_matrix_analyzer()
+    root = write_synthetic_analysis_matrix(
+        tmp_path, complete_benchmarks=("wmdp_cyber",)
+    )
+    raw_path = next((root / "jobs").rglob("LMEval_EVAL.json"))
+    raw = json.loads(raw_path.read_text())
+    raw["mmlu"]["mmlu_malformed"] = {"acc": 1.0}
+    raw_path.write_text(json.dumps(raw))
+
+    with pytest.raises(ValueError, match="LMEval task schema"):
+        analyzer.analyze_matrix(root)
+
+
+def test_analyzer_rejects_nonnumeric_lmeval_summary_fields(tmp_path):
+    analyzer = load_full_matrix_analyzer()
+    root = write_synthetic_analysis_matrix(
+        tmp_path, complete_benchmarks=("wmdp_cyber",)
+    )
+    summary_path = next((root / "jobs").rglob("LMEval_SUMMARY.json"))
+    summary = json.loads(summary_path.read_text())
+    summary["mmlu/acc_stderr"] = "not-numeric"
+    summary_path.write_text(json.dumps(summary))
+
+    with pytest.raises(ValueError, match="LMEval summary schema"):
+        analyzer.analyze_matrix(root)
+
+
+def test_analyzer_writes_three_deterministic_atomic_outputs(tmp_path, monkeypatch):
+    analyzer = load_full_matrix_analyzer()
+    root = write_synthetic_analysis_matrix(
+        tmp_path, complete_benchmarks=("wmdp_cyber",)
+    )
+    report = analyzer.analyze_matrix(root)
+    original_replace = analyzer.os.replace
+    replacements = []
+
+    def recording_replace(source, destination):
+        replacements.append(Path(destination).name)
+        return original_replace(source, destination)
+
+    monkeypatch.setattr(analyzer.os, "replace", recording_replace)
+    analyzer.write_outputs(report, root)
+    first = {
+        name: (root / name).read_bytes()
+        for name in (
+            "GU_FULL_RAW.json",
+            "GU_FULL_TABLES.md",
+            "GU_FULL_REPORT.md",
+        )
+    }
+    analyzer.write_outputs(report, root)
+
+    assert (
+        replacements
+        == [
+            "GU_FULL_RAW.json",
+            "GU_FULL_TABLES.md",
+            "GU_FULL_REPORT.md",
+        ]
+        * 2
+    )
+    assert first == {name: (root / name).read_bytes() for name in first}
+    assert json.loads(first["GU_FULL_RAW.json"])["complete"]
+    assert not tuple(root.glob(".*.tmp"))
