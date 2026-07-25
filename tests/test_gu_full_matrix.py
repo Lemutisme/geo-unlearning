@@ -3125,6 +3125,36 @@ def test_queue_state_rejects_singleton_replication_seed(tmp_path, seed):
         registry.queue_status(state_path)
 
 
+def test_queue_state_rejects_partial_global_replication(tmp_path):
+    registry = load_registry()
+    state_path = tmp_path / "queue_state.json"
+    state = registry.create_queue_state(queue_manifest(registry, tmp_path), state_path)
+    leave_only_pending(state, 0, registry, tmp_path)
+    replicated_parent, omitted_parent = state["jobs"][:2]
+    finish_queue_job(registry, replicated_parent, tmp_path, "completed")
+    finish_queue_job(registry, omitted_parent, tmp_path, "completed")
+    for seed in (1, 2):
+        derived = json.loads(json.dumps(replicated_parent))
+        derived.update(
+            job_id=replicated_parent["job_id"].replace("seed0", f"seed{seed}"),
+            seed=seed,
+            stage="stage2",
+            status="pending",
+            output_dir=replicated_parent["output_dir"].replace(
+                "seed0", f"seed{seed}"
+            ),
+            parent_seed_zero=replicated_parent["job_id"],
+            attempt_count=0,
+            attempt_history=[],
+            pid=None,
+        )
+        state["jobs"].append(derived)
+    state_path.write_text(json.dumps(state))
+
+    with pytest.raises(ValueError, match="global|every completed|atomic"):
+        registry.queue_status(state_path)
+
+
 def test_seed_expansion_writes_both_replicates_in_one_atomic_replace(
     tmp_path,
     monkeypatch,

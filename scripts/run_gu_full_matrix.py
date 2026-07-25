@@ -1948,13 +1948,16 @@ def validate_queue_state(state):
         parent_id: {job["seed"] for job in derived if job["parent_seed_zero"] == parent_id}
         for parent_id in parents
     }
+    replication_started = bool(derived)
     for parent_id, seeds in derived_seeds.items():
-        if parents[parent_id].get("status") == "completed" and seeds not in (
-            set(),
-            {1, 2},
-        ):
+        expected_seeds = (
+            {1, 2}
+            if replication_started and parents[parent_id].get("status") == "completed"
+            else set()
+        )
+        if seeds != expected_seeds:
             raise ValueError(
-                f"completed parent replication must contain both seeds: {parent_id}"
+                f"global atomic replication mismatch for parent: {parent_id}"
             )
 
     running_count = 0
