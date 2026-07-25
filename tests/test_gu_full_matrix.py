@@ -3678,6 +3678,7 @@ def exact_evaluator_payload(job, seed):
             "extraction_strength": 2.0 + offset,
             "forget_Q_A_Prob": 0.81 + offset,
             "forget_Q_A_ROUGE": 0.71 + offset,
+            "forget_Q_A_gibberish": 0.72 + offset,
             "mia_gradnorm": 0.61 + offset,
             "mia_loss": 0.62 + offset,
             "mia_min_k": 0.63 + offset,
@@ -3707,6 +3708,7 @@ def exact_evaluator_payload(job, seed):
             "extraction_strength": 3.0 + offset,
             "forget_knowmem_ROUGE": 2.0 + offset,
             "forget_verbmem_ROUGE": 1.0 + offset,
+            "forget_gibberish": 0.72 + offset,
             "mia_gradnorm": 0.61 + offset,
             "mia_loss": 0.62 + offset,
             "mia_min_k": 0.63 + offset,
@@ -4119,6 +4121,75 @@ def test_analyzer_recomputes_lmeval_acc_stderr(tmp_path):
     summary_path = next((root / "jobs").rglob("LMEval_SUMMARY.json"))
     summary = json.loads(summary_path.read_text())
     summary["mmlu/acc_stderr"] += 0.125
+    summary_path.write_text(json.dumps(summary))
+
+    with pytest.raises(ValueError, match="summary/raw disagreement"):
+        analyzer.analyze_matrix(root)
+
+
+@pytest.mark.parametrize(
+    ("benchmark", "evaluator_kind"),
+    [("tofu_forget01", "tofu"), ("muse_news", "muse")],
+)
+def test_analyzer_schema_constants_match_composed_gu_matrix_metrics(
+    tmp_path, benchmark, evaluator_kind
+):
+    analyzer = load_full_matrix_analyzer()
+    registry = load_registry()
+    job = next(
+        job
+        for job in registry.build_manifest()["jobs"]
+        if job["benchmark"] == benchmark
+    )
+    config = compose_command(registry.build_command(job, tmp_path / job["job_id"]))
+    configured = set(config.eval[evaluator_kind].metrics)
+    expected = (
+        analyzer.TOFU_SUMMARY_FIELDS
+        if evaluator_kind == "tofu"
+        else analyzer.MUSE_ENDPOINT_FIELDS
+    )
+
+    assert configured == expected
+
+
+@pytest.mark.parametrize(
+    ("benchmark", "metric"),
+    [
+        ("tofu_forget01", "forget_Q_A_gibberish"),
+        ("muse_news", "forget_gibberish"),
+    ],
+)
+def test_analyzer_requires_configured_gibberish_metric(tmp_path, benchmark, metric):
+    analyzer = load_full_matrix_analyzer()
+    root = write_synthetic_analysis_matrix(tmp_path, complete_benchmarks=(benchmark,))
+    prefix = "TOFU" if benchmark.startswith("tofu_") else "MUSE"
+    for summary_path in (root / "jobs").rglob(f"{prefix}_SUMMARY.json"):
+        raw_path = summary_path.with_name(f"{prefix}_EVAL.json")
+        summary = json.loads(summary_path.read_text())
+        raw = json.loads(raw_path.read_text())
+        summary.pop(metric)
+        raw.pop(metric)
+        summary_path.write_text(json.dumps(summary))
+        raw_path.write_text(json.dumps(raw))
+
+    with pytest.raises(ValueError, match="endpoint schema"):
+        analyzer.analyze_matrix(root)
+
+
+@pytest.mark.parametrize(
+    ("benchmark", "metric"),
+    [
+        ("tofu_forget01", "forget_Q_A_gibberish"),
+        ("muse_news", "forget_gibberish"),
+    ],
+)
+def test_analyzer_reconciles_configured_gibberish_metric(tmp_path, benchmark, metric):
+    analyzer = load_full_matrix_analyzer()
+    root = write_synthetic_analysis_matrix(tmp_path, complete_benchmarks=(benchmark,))
+    prefix = "TOFU" if benchmark.startswith("tofu_") else "MUSE"
+    summary_path = next((root / "jobs").rglob(f"{prefix}_SUMMARY.json"))
+    summary = json.loads(summary_path.read_text())
+    summary[metric] += 0.25
     summary_path.write_text(json.dumps(summary))
 
     with pytest.raises(ValueError, match="summary/raw disagreement"):
