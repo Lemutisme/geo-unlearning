@@ -183,6 +183,8 @@ eval:
             args:
               hf_args:
                 revision: ${dataset_revision}
+              few_shot_dataset_hf_args:
+                revision: ${dataset_revision}
 
 protocol:
   benchmark: muse

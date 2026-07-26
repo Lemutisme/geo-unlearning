@@ -4236,10 +4236,12 @@ def test_analyzer_schema_constants_match_composed_gu_matrix_metrics(
         for metric in config.eval[evaluator_kind].metrics.values()
     )
     if evaluator_kind == "muse":
-        retain_args = config.eval.muse.metrics.retain_extraction_strength.datasets[
+        retain_dataset = config.eval.muse.metrics.retain_extraction_strength.datasets[
             "MUSE_retain_knowmem"
-        ].args
-        assert "few_shot_dataset_hf_args" not in retain_args
+        ]
+        assert retain_dataset.handler == "QADataset"
+        assert retain_dataset.args.hf_args.split == "retain_qa"
+        assert retain_dataset.args.few_shot_dataset_hf_args.split == "retain_qa_icl"
 
 
 @pytest.mark.parametrize(

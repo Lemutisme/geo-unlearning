@@ -15,15 +15,16 @@ batch_size: 8
 # 数据集特定配置
 datasets:
   MUSE_retain_knowmem:
-    handler: CompletionDataset # 使用与forget set相同的handler
+    handler: QADataset
     args:
       hf_args:
-        # 动态引用MUSE评估配置中的data_split变量（例如 'News' 或 'Books'）
         path: muse-bench/MUSE-${eval.muse.data_split}
         name: "knowmem"
-        # 将数据集分割指向 'retain'
-        split: "retain"
-      prefix_key: "prompt"
-      text_key: "gt"
-      max_length: 2048
-      insert_space: True
+        split: "retain_qa"
+      few_shot_dataset_hf_args:
+        path: muse-bench/MUSE-${eval.muse.data_split}
+        name: "knowmem"
+        split: "retain_qa_icl"
+      question_key: "question"
+      answer_key: "answer"
+      max_length: 512
