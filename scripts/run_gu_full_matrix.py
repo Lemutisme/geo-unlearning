@@ -471,6 +471,10 @@ WMDP_RMU_OVERRIDES = (
     "+model.model_args.output_attentions=false",
     "eval.lm_eval.simple_evaluate_args.batch_size=8",
 )
+WMDP_GENERAL_OVERRIDES = (
+    "trainer.args.gradient_accumulation_steps=16",
+    "+trainer.args.max_steps=80",
+)
 
 GU_DIAGNOSTIC_FIELDS = {
     "step",
@@ -719,6 +723,8 @@ def build_command(job, output_dir):
             command.extend(RMU_MODEL_OVERRIDES[family])
         if job["benchmark"] == "wmdp_cyber":
             command.extend(WMDP_RMU_OVERRIDES)
+    elif job["benchmark"] == "wmdp_cyber":
+        command.extend(WMDP_GENERAL_OVERRIDES)
     return command
 
 
@@ -1312,6 +1318,11 @@ def run_job(job, output_dir, *, parent_job=None, launched=None):
                     "GPU monitor never observed positive memory for the child PID"
                 )
     wall_clock_seconds = max(0.0, time.monotonic() - started)
+    monitor_evidence_valid = gpu_memory_sample_count > 0 and peak_nvml_mib > 0
+    if monitor_evidence_valid and infrastructure_issues:
+        with run_log_path.open("a", encoding="utf-8") as run_log:
+            for warning in infrastructure_issues:
+                run_log.write(f"GU runner monitor warning: {warning}\n")
     log_text = run_log_path.read_text(errors="replace")
 
     # Phase 2: classify the process exit before monitor-only failures.
@@ -1630,7 +1641,7 @@ def run_job(job, output_dir, *, parent_job=None, launched=None):
         status = "invalid_scientific"
         if failure_kind is None:
             failure_kind = "evidence_validation"
-    elif infrastructure_issues:
+    elif infrastructure_issues and not monitor_evidence_valid:
         status = "failed_infrastructure"
         if failure_kind is None:
             failure_kind = "resource_monitor"
@@ -1660,6 +1671,7 @@ def run_job(job, output_dir, *, parent_job=None, launched=None):
         "peak_nvml_mib": peak_nvml_mib,
         "peak_gpu_memory_mib": peak_nvml_mib,
         "gpu_memory_sample_count": gpu_memory_sample_count,
+        "gpu_monitor_warning_count": len(infrastructure_issues),
         "optimizer_update_count": optimizer_update_count,
         "final_global_step": final_global_step,
         "projection_count": projection_count,
@@ -1669,7 +1681,7 @@ def run_job(job, output_dir, *, parent_job=None, launched=None):
         "max_violation_after": max_violation_after,
         "selected_parameter_changed": selected_parameter_changed,
         "forbidden_artifacts": forbidden_artifacts,
-        "issues": issues + infrastructure_issues,
+        "issues": issues + (infrastructure_issues if status != "completed" else []),
     }
     validate_job_result(result, job, output, expected_status=status)
     _atomic_write_json(result_path, result)
@@ -1774,7 +1786,8 @@ def validate_job_result(result, job, output_dir, *, expected_status=None):
         "command_identity", "environment_overrides", "provenance", "run_log_path",
         "diagnostics_path", "endpoint_summary_path", "endpoint_raw_path",
         "wall_clock_seconds", "peak_nvml_mib", "peak_gpu_memory_mib",
-        "gpu_memory_sample_count", "optimizer_update_count", "final_global_step",
+        "gpu_memory_sample_count", "gpu_monitor_warning_count",
+        "optimizer_update_count", "final_global_step",
         "projection_count", "zero_step_count", "applied_scale_distribution",
         "correction_ratio", "max_violation_after", "selected_parameter_changed",
         "forbidden_artifacts", "issues",
@@ -1866,6 +1879,8 @@ def validate_job_result(result, job, output_dir, *, expected_status=None):
         and result["peak_nvml_mib"] > 0
         and result["peak_gpu_memory_mib"] == result["peak_nvml_mib"]
         and all(type(value) is int and value > 0 for value in counts)
+        and type(result["gpu_monitor_warning_count"]) is int
+        and result["gpu_monitor_warning_count"] >= 0
         and result["projection_count"] == result["optimizer_update_count"]
         and (
             result["final_global_step"] is None

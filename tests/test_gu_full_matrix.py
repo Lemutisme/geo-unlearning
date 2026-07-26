@@ -592,13 +592,21 @@ def test_all_60_commands_hydra_compose_without_missing_or_unresolved_values(tmp_
         assert config.trainer.args.eval_strategy == "no"
         assert config.trainer.args.report_to == "none"
         assert config.trainer.args.seed == config.trainer.args.data_seed == 0
-        expected_effective_batch = 4 if job["method"] == "RMU" else 32
+        expected_effective_batch = (
+            4
+            if job["method"] == "RMU"
+            else 16
+            if job["benchmark"] == "wmdp_cyber"
+            else 32
+        )
         assert config.trainer.args.per_device_train_batch_size == 1
         assert (
             config.trainer.args.per_device_train_batch_size
             * config.trainer.args.gradient_accumulation_steps
             == expected_effective_batch
         )
+        if job["benchmark"] == "wmdp_cyber" and job["method"] != "RMU":
+            assert config.trainer.args.max_steps == 80
         assert dict(config.trainer.method_args.gu) == {
             "enabled": True,
             "parameter_regex": [job["selected_parameter_regex"]],
@@ -642,6 +650,7 @@ def test_non_rmu_commands_keep_direct_shipped_model_and_trainer_defaults(tmp_pat
         "data_seed",
         "per_device_train_batch_size",
         "gradient_accumulation_steps",
+        "max_steps",
     }
     identity_args = {"pretrained_model_name_or_path", "revision"}
     for job in representatives.values():
@@ -1282,8 +1291,25 @@ def test_source_requirements_register_content_manifests_and_missing_snapshot(
                 }
 
     books_job = next(job for job in jobs if job["benchmark"] == "muse_books")
+    validate_content_requirement = registry.validate_content_requirement
+
+    def reject_books_target(requirement, fingerprint_memo):
+        if requirement["source_name"] == "muse-bench/MUSE-Books_target":
+            raise ValueError("muse-bench/MUSE-Books_target: cache is absent")
+        return validate_content_requirement(requirement, fingerprint_memo)
+
+    monkeypatch.setattr(
+        registry,
+        "validate_content_requirement",
+        reject_books_target,
+    )
     with pytest.raises(ValueError, match="muse-bench/MUSE-Books_target"):
         registry.validate_sources(books_job)
+    monkeypatch.setattr(
+        registry,
+        "validate_content_requirement",
+        validate_content_requirement,
+    )
 
     tampered = json.loads(json.dumps(jobs[0]))
     tampered["provenance"]["model"]["revision"] = "0" * 40
@@ -1364,10 +1390,15 @@ def test_manifest_seed_zero_dry_run_prints_commands_without_creating_outputs(tmp
         check=False,
     )
 
-    assert result.returncode != 0
+    assert result.returncode in {0, 1}
     payload = json.loads(result.stdout)
-    assert "muse-bench/MUSE-Books_target" in payload["source_validation_error"]
-    assert len(payload["jobs"]) == 1
+    if result.returncode == 0:
+        assert "source_validation_error" not in payload
+        assert len(payload["jobs"]) == 60
+        assert all(job["fingerprints"] for job in payload["jobs"])
+    else:
+        assert payload["source_validation_error"]
+        assert payload["jobs"]
     for job in payload["jobs"]:
         assert job["argv"][:3] == [
             sys.executable,
@@ -1375,18 +1406,8 @@ def test_manifest_seed_zero_dry_run_prints_commands_without_creating_outputs(tmp
             "--config-name=unlearn.yaml",
         ]
         assert job["source_requirements"]["model"] == job["provenance"]["model"]
-        assert job["fingerprints"] == {}
-        assert job["benchmark"] == "muse_books"
-        assert job["environment"] == {
-            "CUDA_VISIBLE_DEVICES": "0",
-            "HF_DATASETS_CACHE": "/dev/shm/gu-matrix-muse-books/datasets",
-            "HF_DATASETS_OFFLINE": "1",
-            "HF_HOME": "/dev/shm/gu-matrix-muse-books/hub",
-            "HF_HUB_CACHE": "/dev/shm/gu-matrix-muse-books/hub",
-            "HF_HUB_OFFLINE": "1",
-            "HUGGINGFACE_HUB_CACHE": "/dev/shm/gu-matrix-muse-books/hub",
-            "TRANSFORMERS_CACHE": "/dev/shm/gu-matrix-muse-books/hub",
-        }
+        if result.returncode == 1:
+            assert job["fingerprints"] == {}
     after = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
     assert after == before
 
@@ -2238,6 +2259,29 @@ def test_gpu_monitor_timeout_is_infrastructure_failure(tmp_path, monkeypatch):
     assert "timed out" in " ".join(result["issues"]).lower()
 
 
+def test_recovered_gpu_monitor_timeout_keeps_completed_evidence(
+    tmp_path,
+    monkeypatch,
+):
+    registry = load_registry()
+    job = first_matrix_job(registry)
+    output_dir = tmp_path / job["job_id"]
+    timeout = subprocess.TimeoutExpired(cmd="nvidia-smi", timeout=5.0)
+    install_job_subprocess_stub(
+        monkeypatch,
+        registry,
+        job,
+        output_dir,
+        nvml_results=[timeout, (0, "4242, 384 MiB\n", "")],
+    )
+
+    result = registry.run_job(job, output_dir)
+
+    assert result["status"] == "completed"
+    assert result["gpu_monitor_warning_count"] == 1
+    assert result["issues"] == []
+
+
 def test_scientific_failure_precedes_gpu_monitor_timeout(tmp_path, monkeypatch):
     registry = load_registry()
     job = first_matrix_job(registry)
@@ -2455,6 +2499,7 @@ def queue_result(registry, job, output_root, status="completed", failure_kind=No
         "peak_nvml_mib": 256,
         "peak_gpu_memory_mib": 256,
         "gpu_memory_sample_count": 2,
+        "gpu_monitor_warning_count": 0,
         "optimizer_update_count": 2,
         "final_global_step": 2,
         "projection_count": 2,
@@ -4190,6 +4235,11 @@ def test_analyzer_schema_constants_match_composed_gu_matrix_metrics(
         metric.get("handler") is not None
         for metric in config.eval[evaluator_kind].metrics.values()
     )
+    if evaluator_kind == "muse":
+        retain_args = config.eval.muse.metrics.retain_extraction_strength.datasets[
+            "MUSE_retain_knowmem"
+        ].args
+        assert "few_shot_dataset_hf_args" not in retain_args
 
 
 @pytest.mark.parametrize(

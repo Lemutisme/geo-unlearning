@@ -3,8 +3,6 @@
 
 # 默认配置继承
 defaults:
-  # 继承用于评估的retain数据集配置
-  - ../../data/datasets@datasets: MUSE_retain_knowmem
   # 继承通用的数据整理器（collator）配置
   - ../../collator@collators: DataCollatorForSupervisedDatasetwithIndex
 

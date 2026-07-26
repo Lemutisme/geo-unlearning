@@ -2042,7 +2042,7 @@ def test_finite_step_without_feasible_scale_commits_zero_step_history(tmp_path):
     assert trainer.gu_projection_calls == 1
 
 
-def test_gu_reports_bf16_quantized_zero_applied_delta(tmp_path):
+def test_gu_fp32_master_preserves_small_safe_applied_delta(tmp_path):
     model = TinyCausalLM()
     model.protected.to(dtype=torch.bfloat16)
     trainer = make_trainer(model, tmp_path, gu=gu_config())
@@ -2054,15 +2054,15 @@ def test_gu_reports_bf16_quantized_zero_applied_delta(tmp_path):
     trainer._gu_optimizer_step_pre_hook(trainer.optimizer, (), {})
     snapshot = parameter.detach().clone()
     with torch.no_grad():
-        parameter.add_(torch.full_like(parameter, 1.0e-8))
-    assert torch.equal(parameter, snapshot)
+        parameter.add_(torch.full_like(parameter, -1.0e-5))
+    assert not torch.equal(parameter, snapshot)
 
     trainer._gu_optimizer_step_post_hook(trainer.optimizer, (), {})
 
-    assert torch.equal(parameter, snapshot)
+    assert not torch.equal(parameter, snapshot)
     assert trainer.gu_last_diagnostics["applied_scale"] == 1.0
-    assert trainer.gu_last_diagnostics["zero_step"] is True
-    assert trainer.gu_last_diagnostics["zero_step_reason"] == "zero_delta"
+    assert trainer.gu_last_diagnostics["zero_step"] is False
+    assert trainer.gu_last_diagnostics["zero_step_reason"] is None
     assert trainer._gu_constraint_history[0] is pending
 
 

@@ -1,6 +1,7 @@
 # @package _global_
 
 defaults:
+  - /eval/muse_metrics@eval.muse.metrics.retain_extraction_strength: retain_extraction_strength
   - override /model: Llama-2-7b-hf
   - override /trainer: GradAscent
   - override /data: unlearn
@@ -181,8 +182,6 @@ eval:
           MUSE_retain_knowmem:
             args:
               hf_args:
-                revision: ${dataset_revision}
-              few_shot_dataset_hf_args:
                 revision: ${dataset_revision}
 
 protocol:
