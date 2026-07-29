@@ -80,6 +80,18 @@ def build_command(job, output_dir):
     ]
 
 
+def build_smoke_command(job, output_dir):
+    command = [
+        argument
+        for argument in build_command(job, output_dir)
+        if not argument.startswith("trainer.args.max_steps=")
+        and not argument.startswith("+trainer.args.max_steps=")
+        and argument != "trainer.args.do_eval=true"
+    ]
+    command.extend(("+trainer.args.max_steps=1", "trainer.args.do_eval=false"))
+    return command
+
+
 def validate_job(job):
     if not isinstance(job, dict) or not isinstance(job.get("job_id"), str):
         raise ValueError("baseline job has no valid job_id")
@@ -102,7 +114,7 @@ def child_environment(job, physical_gpu):
     return environment
 
 
-def _command_record(job, output_dir, physical_gpu):
+def _command_record(job, output_dir, physical_gpu, smoke=False):
     return {
         "schema_version": SCHEMA_VERSION,
         "protocol": PROTOCOL,
@@ -111,7 +123,11 @@ def _command_record(job, output_dir, physical_gpu):
         "benchmark": job["benchmark"],
         "seed": job["seed"],
         "arm": "baseline",
-        "argv": build_command(job, output_dir),
+        "argv": (
+            build_smoke_command(job, output_dir)
+            if smoke
+            else build_command(job, output_dir)
+        ),
         "environment_overrides": child_environment(job, physical_gpu),
         "provenance": deepcopy(job["provenance"]),
     }
@@ -122,7 +138,7 @@ def _command_identity(record):
     return hashlib.sha256(encoded).hexdigest()
 
 
-def run_job(job, output_dir, physical_gpu, launched=None):
+def run_job(job, output_dir, physical_gpu, launched=None, smoke=False):
     validate_job(job)
     output = Path(output_dir).resolve()
     if output.exists():
@@ -134,7 +150,7 @@ def run_job(job, output_dir, physical_gpu, launched=None):
     command_path = output / "command.json"
     run_log_path = output / "run.log"
     result_path = output / "BASELINE_JOB_RESULT.json"
-    command_record = _command_record(job, output, physical_gpu)
+    command_record = _command_record(job, output, physical_gpu, smoke=smoke)
     gu._atomic_write_json(command_path, command_record)
 
     monitor_warnings = []
@@ -220,20 +236,22 @@ def run_job(job, output_dir, physical_gpu, launched=None):
 
     prefix = gu.ENDPOINT_PREFIXES[job["evaluator_kind"]]
     checkpoint_pattern = re.compile(r"checkpoint-[0-9]+")
-    summaries = sorted(
+    summaries = [] if smoke else sorted(
         path
         for path in output.rglob(f"{prefix}_SUMMARY.json")
         if path.parent.name == "evals"
         and checkpoint_pattern.fullmatch(path.parent.parent.name)
     )
-    raw_files = sorted(
+    raw_files = [] if smoke else sorted(
         path
         for path in output.rglob(f"{prefix}_EVAL.json")
         if path.parent.name == "evals"
         and checkpoint_pattern.fullmatch(path.parent.parent.name)
     )
     endpoint_summary_path = endpoint_raw_path = None
-    if len(summaries) != 1 or len(raw_files) != 1 or (
+    if smoke:
+        pass
+    elif len(summaries) != 1 or len(raw_files) != 1 or (
         summaries and raw_files and summaries[0].parent != raw_files[0].parent
     ):
         issues.append(
@@ -722,6 +740,41 @@ def write_comparison(report, baseline_root):
         os.replace(temporary, destination)
 
 
+def run_smoke(manifest_path, physical_gpu, families):
+    requested = tuple(families)
+    if not requested or any(family not in {"tofu", "muse", "wmdp"} for family in requested):
+        raise ValueError("smoke families must be tofu, muse, or wmdp")
+    manifest_path = Path(manifest_path)
+    manifest = json.loads(manifest_path.read_text())
+    root = Path(manifest["output_root"]).resolve()
+    selected = []
+    for family in requested:
+        selected.append(
+            next(
+                job
+                for job in manifest["jobs"]
+                if job["benchmark"].split("_", 1)[0] == family
+            )
+        )
+
+    lock = Path(f"/tmp/baseline_reference_gpu{physical_gpu}.lock").open("w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        lock.close()
+        raise RuntimeError(f"GPU{physical_gpu} baseline worker is already active") from error
+    try:
+        results = []
+        for job in selected:
+            admit_gpu(physical_gpu)
+            output = root / "smoke" / f"gpu{physical_gpu}" / job["job_id"]
+            results.append(run_job(job, output, physical_gpu, smoke=True))
+        return results
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -738,6 +791,10 @@ def main(argv=None):
     compare_parser = commands.add_parser("compare")
     compare_parser.add_argument("--baseline-root", type=Path, required=True)
     compare_parser.add_argument("--gu-root", type=Path, required=True)
+    smoke_parser = commands.add_parser("smoke")
+    smoke_parser.add_argument("--manifest", type=Path, required=True)
+    smoke_parser.add_argument("--gpu", type=int, choices=(0, 1), required=True)
+    smoke_parser.add_argument("--benchmarks", required=True)
     args = parser.parse_args(argv)
 
     try:
@@ -768,6 +825,14 @@ def main(argv=None):
             write_comparison(report, args.baseline_root)
             print(args.baseline_root.resolve() / "BASELINE_GU_TABLES.md")
             return 0
+        if args.command == "smoke":
+            results = run_smoke(
+                args.manifest,
+                args.gpu,
+                tuple(item for item in args.benchmarks.split(",") if item),
+            )
+            print(json.dumps(results, indent=2, sort_keys=True))
+            return int(any(result["status"] != "completed" for result in results))
         manifest = json.loads(args.manifest.read_text())
         fingerprints = {}
         memo = {}

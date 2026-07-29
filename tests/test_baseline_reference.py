@@ -423,3 +423,74 @@ def test_compare_cli_routes_both_roots(tmp_path, monkeypatch):
         "payload": report,
         "output": baseline_root,
     }
+
+
+def test_smoke_command_is_one_step_no_eval_no_save_and_no_gu(tmp_path):
+    baseline = load_baseline()
+    for benchmark in ("tofu_forget01", "muse_news", "wmdp_cyber"):
+        job = next(
+            job
+            for job in baseline.build_manifest()["jobs"]
+            if job["benchmark"] == benchmark
+        )
+        command = baseline.build_smoke_command(job, tmp_path / job["job_id"])
+        config = compose_command(command)
+
+        assert config.trainer.args.max_steps == 1
+        assert config.trainer.args.do_eval is False
+        assert config.save_model_after_train is False
+        assert "gu" not in config.trainer.get("method_args", {})
+        assert not any("trainer.method_args.gu" in arg for arg in command)
+
+
+def test_smoke_run_requires_update_but_not_endpoint(tmp_path, monkeypatch):
+    baseline = load_baseline()
+    job = baseline.build_manifest()["jobs"][0]
+    output_dir = tmp_path / job["job_id"]
+    install_baseline_child(
+        monkeypatch,
+        baseline,
+        job,
+        output_dir,
+        write_endpoint=False,
+    )
+
+    result = baseline.run_job(job, output_dir, physical_gpu=0, smoke=True)
+
+    assert result["status"] == "completed"
+    assert result["optimizer_update_count"] == 2
+    assert result["endpoint_summary_path"] is None
+    assert result["endpoint_raw_path"] is None
+
+
+def test_smoke_cli_routes_gpu_and_benchmark_families(tmp_path, monkeypatch):
+    baseline = load_baseline()
+    manifest_path, _ = write_baseline_manifest(tmp_path, baseline)
+    observed = {}
+
+    def run_smoke(path, physical_gpu, families):
+        observed.update(
+            path=Path(path), physical_gpu=physical_gpu, families=tuple(families)
+        )
+        return [{"status": "completed"}]
+
+    monkeypatch.setattr(baseline, "run_smoke", run_smoke, raising=False)
+
+    code = baseline.main(
+        [
+            "smoke",
+            "--manifest",
+            str(manifest_path),
+            "--gpu",
+            "1",
+            "--benchmarks",
+            "muse,wmdp",
+        ]
+    )
+
+    assert code == 0
+    assert observed == {
+        "path": manifest_path,
+        "physical_gpu": 1,
+        "families": ("muse", "wmdp"),
+    }
