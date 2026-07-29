@@ -1,7 +1,10 @@
 import importlib.util
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from hydra import compose, initialize_config_dir
 
 
@@ -33,6 +36,65 @@ def compose_command(command):
             config_name="unlearn.yaml",
             overrides=command[config_index + 1 :],
         )
+
+
+def install_baseline_child(
+    monkeypatch,
+    baseline,
+    job,
+    output_dir,
+    *,
+    returncode=0,
+    write_endpoint=True,
+    write_updates=True,
+    forbidden_path=None,
+    observe_gpu=True,
+):
+    captured = {}
+    prefix = {"tofu": "TOFU", "muse": "MUSE", "lm_eval": "LMEval"}[
+        job["evaluator_kind"]
+    ]
+
+    class StubPopen:
+        pid = 4242
+
+        def __init__(self, argv, **kwargs):
+            captured["argv"] = argv
+            captured["kwargs"] = kwargs
+            self.polls = 0
+            if write_updates:
+                kwargs["stdout"].write(
+                    "{'loss': 1.25, 'epoch': 0.5}\n"
+                    "{'loss': 0.75, 'epoch': 1.0}\n"
+                )
+                kwargs["stdout"].flush()
+            if write_endpoint:
+                endpoint = output_dir / "checkpoint-2" / "evals"
+                endpoint.mkdir(parents=True, exist_ok=True)
+                (endpoint / f"{prefix}_SUMMARY.json").write_text(
+                    json.dumps({"metric": 0.5})
+                )
+                (endpoint / f"{prefix}_EVAL.json").write_text(
+                    json.dumps({"metric": {"agg_value": 0.5}})
+                )
+            (output_dir / f'{job["method"]}.log').write_text("hydra\n")
+            if forbidden_path is not None:
+                path = output_dir / forbidden_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("forbidden\n")
+
+        def poll(self):
+            self.polls += 1
+            return None if self.polls == 1 else returncode
+
+    def sample_gpu(*_args, **_kwargs):
+        stdout = "4242, 384 MiB\n" if observe_gpu else ""
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(baseline.subprocess, "Popen", StubPopen)
+    monkeypatch.setattr(baseline.subprocess, "run", sample_gpu)
+    monkeypatch.setattr(baseline.time, "sleep", lambda _seconds: None)
+    return captured
 
 
 def test_seed_zero_baseline_manifest_matches_gu_registry():
@@ -74,3 +136,70 @@ def test_baseline_commands_are_live_no_save_and_have_no_gu(tmp_path):
         assert "trainer.args.save_only_model=false" in command
         assert "trainer.args.do_eval=true" in command
         assert "trainer.args.eval_strategy=no" in command
+
+
+def test_completed_baseline_requires_endpoint_update_memory_and_no_artifacts(
+    tmp_path,
+    monkeypatch,
+):
+    baseline = load_baseline()
+    job = baseline.build_manifest()["jobs"][0]
+    output_dir = tmp_path / job["job_id"]
+    captured = install_baseline_child(
+        monkeypatch,
+        baseline,
+        job,
+        output_dir,
+    )
+
+    result = baseline.run_job(job, output_dir, physical_gpu=1)
+
+    assert result["status"] == "completed"
+    assert result["optimizer_update_count"] == 2
+    assert result["peak_nvml_mib"] == 384
+    assert result["endpoint_summary_path"].endswith("_SUMMARY.json")
+    assert result["endpoint_raw_path"].endswith("_EVAL.json")
+    assert result["forbidden_artifacts"] == []
+    assert result["issues"] == []
+    assert captured["kwargs"]["env"]["CUDA_VISIBLE_DEVICES"] == "1"
+    assert not (output_dir / "gu_diagnostics.jsonl").exists()
+    assert json.loads((output_dir / "BASELINE_JOB_RESULT.json").read_text()) == result
+
+
+@pytest.mark.parametrize(
+    ("corruption", "expected"),
+    [
+        ("missing_endpoint", "endpoint"),
+        ("zero_updates", "optimizer update"),
+        ("no_gpu_sample", "GPU"),
+        ("checkpoint_config", "forbidden"),
+        ("nonzero_exit", "subprocess"),
+    ],
+)
+def test_baseline_rejects_invalid_evidence(
+    tmp_path,
+    monkeypatch,
+    corruption,
+    expected,
+):
+    baseline = load_baseline()
+    job = baseline.build_manifest()["jobs"][0]
+    output_dir = tmp_path / job["job_id"]
+    install_baseline_child(
+        monkeypatch,
+        baseline,
+        job,
+        output_dir,
+        returncode=1 if corruption == "nonzero_exit" else 0,
+        write_endpoint=corruption != "missing_endpoint",
+        write_updates=corruption != "zero_updates",
+        forbidden_path=(
+            "checkpoint-2/config.json" if corruption == "checkpoint_config" else None
+        ),
+        observe_gpu=corruption != "no_gpu_sample",
+    )
+
+    result = baseline.run_job(job, output_dir, physical_gpu=0)
+
+    assert result["status"] != "completed"
+    assert expected.lower() in json.dumps(result).lower()
