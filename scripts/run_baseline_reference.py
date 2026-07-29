@@ -16,7 +16,10 @@ from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 
-from scripts import run_gu_full_matrix as gu
+try:
+    from scripts import run_gu_full_matrix as gu
+except ModuleNotFoundError:
+    import run_gu_full_matrix as gu
 
 
 SCHEMA_VERSION = 1

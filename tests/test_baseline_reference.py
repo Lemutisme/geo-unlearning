@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -494,3 +495,24 @@ def test_smoke_cli_routes_gpu_and_benchmark_families(tmp_path, monkeypatch):
         "physical_gpu": 1,
         "families": ("muse", "wmdp"),
     }
+
+
+def test_script_cli_manifest_runs_outside_repository(tmp_path):
+    output_root = tmp_path / "baseline"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(BASELINE),
+            "manifest",
+            "--output-root",
+            str(output_root),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (output_root / "manifest.json").is_file()
