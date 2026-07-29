@@ -344,3 +344,82 @@ def test_eval_all_is_checkpoint_free_dual_worker_launcher():
     assert "src/eval.py" not in text
     assert "accelerate launch" not in text
     assert "saves/unlearn" not in text
+
+
+def test_improvement_sign_is_positive_when_gu_is_better():
+    baseline = load_baseline()
+
+    assert baseline.improvement(
+        "model_utility", baseline_value=0.60, gu_value=0.65
+    ) == pytest.approx(0.05)
+    assert baseline.improvement(
+        "extraction_strength", baseline_value=0.70, gu_value=0.40
+    ) == pytest.approx(0.30)
+
+
+def test_render_comparison_contains_all_six_seed_zero_tables():
+    baseline = load_baseline()
+    report = {
+        "scope": "seed0 reference; no variance estimate",
+        "benchmarks": {
+            benchmark: [
+                {
+                    "method": "CEU",
+                    "metric": "model_utility",
+                    "baseline": 0.60,
+                    "gu": 0.65,
+                    "improvement": 0.05,
+                }
+            ]
+            for benchmark in (
+                "tofu_forget01",
+                "tofu_forget05",
+                "tofu_forget10",
+                "muse_news",
+                "muse_books",
+                "wmdp_cyber",
+            )
+        },
+    }
+
+    markdown = baseline.render_comparison(report)
+
+    assert markdown.count("| Method | Metric | Baseline | GU | Δ improvement |") == 6
+    assert "seed0 reference; no variance estimate" in markdown
+
+
+def test_compare_cli_routes_both_roots(tmp_path, monkeypatch):
+    baseline = load_baseline()
+    baseline_root = tmp_path / "baseline"
+    gu_root = tmp_path / "gu"
+    observed = {}
+    report = {"scope": "seed0 reference", "benchmarks": {}}
+
+    def compare(left, right):
+        observed.update(left=Path(left), right=Path(right))
+        return report
+
+    monkeypatch.setattr(baseline, "compare", compare)
+    monkeypatch.setattr(
+        baseline,
+        "write_comparison",
+        lambda payload, root: observed.update(payload=payload, output=Path(root)),
+    )
+
+    code = baseline.main(
+        [
+            "compare",
+            "--baseline-root",
+            str(baseline_root),
+            "--gu-root",
+            str(gu_root),
+        ]
+    )
+
+    assert code == 0
+    assert observed == {
+        "left": baseline_root,
+        "right": gu_root,
+        "payload": report,
+        "output": baseline_root,
+    }

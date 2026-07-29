@@ -23,6 +23,29 @@ SCHEMA_VERSION = 1
 PROTOCOL = "baseline_reference_20260729"
 GU_ARGUMENT_PREFIX = "+trainer.method_args.gu."
 TERMINAL = {"completed", "invalid_scientific", "failed_infrastructure"}
+METRIC_FIELDS = {
+    "tofu": (
+        "retain_extraction_strength",
+        "extraction_strength",
+        "privleak",
+        "model_utility",
+    ),
+    "muse": (
+        "forget_verbmem_ROUGE",
+        "forget_knowmem_ROUGE",
+        "extraction_strength",
+        "privleak",
+        "retain_knowmem_ROUGE",
+    ),
+    "lm_eval": ("wmdp_cyber/acc", "mmlu/acc"),
+}
+HIGHER_IS_BETTER = {
+    "retain_extraction_strength",
+    "privleak",
+    "model_utility",
+    "retain_knowmem_ROUGE",
+    "mmlu/acc",
+}
 NVML_COMMAND = [
     "nvidia-smi",
     "--query-compute-apps=pid,used_memory",
@@ -488,6 +511,217 @@ def run_worker(manifest_path, worker, physical_gpu):
         lock.close()
 
 
+def improvement(field, baseline_value, gu_value):
+    values = (baseline_value, gu_value)
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        for value in values
+    ):
+        raise ValueError(f"comparison metric {field} must be finite")
+    if field in HIGHER_IS_BETTER:
+        return gu_value - baseline_value
+    return baseline_value - gu_value
+
+
+def compare(baseline_root, gu_root):
+    baseline_root = Path(baseline_root).resolve()
+    gu_root = Path(gu_root).resolve()
+    manifest = json.loads((baseline_root / "manifest.json").read_text())
+    baseline_jobs = {}
+    baseline_gpus = {}
+    for worker in (0, 1):
+        state = json.loads(
+            (baseline_root / f"worker{worker}_state.json").read_text()
+        )
+        if state.get("physical_gpu") != worker:
+            raise ValueError("baseline worker/GPU identity mismatch")
+        for job in state["jobs"]:
+            if job["job_id"] in baseline_jobs:
+                raise ValueError("duplicate baseline job identity")
+            if job["status"] != "completed":
+                raise ValueError(f'incomplete baseline job: {job["job_id"]}')
+            baseline_jobs[job["job_id"]] = job
+            baseline_gpus[job["job_id"]] = worker
+    if set(baseline_jobs) != {job["job_id"] for job in manifest["jobs"]}:
+        raise ValueError("baseline state does not contain all registered jobs")
+
+    gu_state = json.loads((gu_root / "queue_state.json").read_text())
+    gu_jobs = {
+        job["job_id"]: job
+        for job in gu_state["jobs"]
+        if job["seed"] == 0
+    }
+    if len(gu_jobs) != 60 or any(
+        job["status"] != "completed" for job in gu_jobs.values()
+    ):
+        raise ValueError("GU seed0 matrix is not complete")
+
+    report = {
+        "scope": "seed0 reference; no variance estimate",
+        "baseline_root": str(baseline_root),
+        "gu_root": str(gu_root),
+        "benchmarks": {benchmark: [] for benchmark in gu.BENCHMARKS},
+    }
+    for registered in manifest["jobs"]:
+        job_id = registered["job_id"]
+        baseline_job = baseline_jobs[job_id]
+        gu_job = gu_jobs[job_id]
+        validate_job(baseline_job)
+        gu.validate_job_identity(gu_job)
+        baseline_output = baseline_root / baseline_job["output_dir"]
+        gu_output = gu_root / gu_job["output_dir"]
+        baseline_result = json.loads(
+            (baseline_output / "BASELINE_JOB_RESULT.json").read_text()
+        )
+        gu_result = json.loads((gu_output / "JOB_RESULT.json").read_text())
+        expected_baseline_identity = _command_identity(
+            _command_record(
+                baseline_job,
+                baseline_output,
+                baseline_gpus[job_id],
+            )
+        )
+        if (
+            baseline_result.get("status") != "completed"
+            or baseline_result.get("command_identity") != expected_baseline_identity
+            or baseline_result.get("provenance") != baseline_job["provenance"]
+        ):
+            raise ValueError(f"invalid baseline evidence: {job_id}")
+        gu.validate_job_result(
+            gu_result,
+            gu_job,
+            gu_output,
+            expected_status="completed",
+        )
+        if baseline_result["provenance"] != gu_result["provenance"]:
+            raise ValueError(f"baseline/GU provenance mismatch: {job_id}")
+
+        arm_metrics = {}
+        for arm, output, result in (
+            ("baseline", baseline_output, baseline_result),
+            ("gu", gu_output, gu_result),
+        ):
+            summary = json.loads(
+                (output / result["endpoint_summary_path"]).read_text()
+            )
+            raw = json.loads((output / result["endpoint_raw_path"]).read_text())
+            fields = METRIC_FIELDS[registered["evaluator_kind"]]
+            metrics = {}
+            if registered["evaluator_kind"] in {"tofu", "muse"}:
+                for field in fields:
+                    raw_metric = raw.get(field)
+                    raw_value = (
+                        raw_metric.get("agg_value")
+                        if isinstance(raw_metric, dict)
+                        else None
+                    )
+                    if summary.get(field) != raw_value:
+                        raise ValueError(
+                            f"{arm} summary/raw mismatch: {job_id}/{field}"
+                        )
+                    improvement(field, raw_value, raw_value)
+                    metrics[field] = raw_value
+            else:
+                for field, task in (
+                    ("wmdp_cyber/acc", "wmdp_cyber"),
+                    ("mmlu/acc", "mmlu"),
+                ):
+                    if not isinstance(raw.get(task), dict):
+                        raise ValueError(f"wrong WMDP raw task: {task}")
+                    values = [
+                        sample.get("acc")
+                        for samples in raw[task].values()
+                        for sample in samples
+                    ]
+                    if not values:
+                        raise ValueError(f"empty WMDP raw task: {task}")
+                    mean = math.fsum(values) / len(values)
+                    if not math.isclose(summary.get(field), mean, abs_tol=1e-12):
+                        raise ValueError(f"{arm} summary/raw mismatch: {field}")
+                    improvement(field, mean, mean)
+                    metrics[field] = mean
+            arm_metrics[arm] = metrics
+
+        rows = report["benchmarks"][registered["benchmark"]]
+        for field in METRIC_FIELDS[registered["evaluator_kind"]]:
+            baseline_value = arm_metrics["baseline"][field]
+            gu_value = arm_metrics["gu"][field]
+            rows.append(
+                {
+                    "method": registered["method"],
+                    "metric": field,
+                    "baseline": baseline_value,
+                    "gu": gu_value,
+                    "improvement": improvement(field, baseline_value, gu_value),
+                    "baseline_path": str(
+                        baseline_output / baseline_result["endpoint_summary_path"]
+                    ),
+                    "gu_path": str(gu_output / gu_result["endpoint_summary_path"]),
+                }
+            )
+        for field in ("wall_clock_seconds", "peak_nvml_mib"):
+            baseline_value = baseline_result[field]
+            gu_value = gu_result[field]
+            rows.append(
+                {
+                    "method": registered["method"],
+                    "metric": field,
+                    "baseline": baseline_value,
+                    "gu": gu_value,
+                    "improvement": baseline_value - gu_value,
+                    "baseline_path": str(
+                        baseline_output / "BASELINE_JOB_RESULT.json"
+                    ),
+                    "gu_path": str(gu_output / "JOB_RESULT.json"),
+                }
+            )
+    return report
+
+
+def render_comparison(report):
+    lines = [
+        "# Baseline vs GU Seed-0 Reference",
+        "",
+        report["scope"],
+    ]
+    for benchmark, rows in report["benchmarks"].items():
+        lines.extend(
+            [
+                "",
+                f"## {benchmark}",
+                "",
+                "| Method | Metric | Baseline | GU | Δ improvement |",
+                "|---|---|---:|---:|---:|",
+            ]
+        )
+        for row in rows:
+            lines.append(
+                f'| {row["method"]} | {row["metric"]} | '
+                f'{row["baseline"]:.6g} | {row["gu"]:.6g} | '
+                f'{row["improvement"]:+.6g} |'
+            )
+    return "\n".join(lines) + "\n"
+
+
+def write_comparison(report, baseline_root):
+    root = Path(baseline_root).resolve()
+    gu._atomic_write_json(root / "BASELINE_GU_RAW.json", report)
+    outputs = {
+        "BASELINE_GU_TABLES.md": render_comparison(report),
+        "BASELINE_GU_REPORT.md": (
+            "# Baseline vs GU Report\n\n"
+            "Seed-0 reference only; no variance or significance estimate.\n"
+        ),
+    }
+    for name, contents in outputs.items():
+        destination = root / name
+        temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+        temporary.write_text(contents)
+        os.replace(temporary, destination)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -501,6 +735,9 @@ def main(argv=None):
     worker_parser.add_argument("--gpu", type=int, choices=(0, 1), required=True)
     status_parser = commands.add_parser("status")
     status_parser.add_argument("--root", type=Path, required=True)
+    compare_parser = commands.add_parser("compare")
+    compare_parser.add_argument("--baseline-root", type=Path, required=True)
+    compare_parser.add_argument("--gu-root", type=Path, required=True)
     args = parser.parse_args(argv)
 
     try:
@@ -525,6 +762,11 @@ def main(argv=None):
                     state = json.loads(path.read_text())
                     counts.update(job["status"] for job in state["jobs"])
             print(json.dumps(dict(counts), sort_keys=True))
+            return 0
+        if args.command == "compare":
+            report = compare(args.baseline_root, args.gu_root)
+            write_comparison(report, args.baseline_root)
+            print(args.baseline_root.resolve() / "BASELINE_GU_TABLES.md")
             return 0
         manifest = json.loads(args.manifest.read_text())
         fingerprints = {}
