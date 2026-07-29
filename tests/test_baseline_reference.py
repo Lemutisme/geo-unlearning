@@ -203,3 +203,132 @@ def test_baseline_rejects_invalid_evidence(
 
     assert result["status"] != "completed"
     assert expected.lower() in json.dumps(result).lower()
+
+
+def write_baseline_manifest(tmp_path, baseline):
+    manifest = baseline.build_manifest()
+    manifest["output_root"] = str(tmp_path)
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest))
+    return path, manifest
+
+
+def worker_result(baseline, job, output_dir, gpu, status):
+    command = baseline._command_record(job, output_dir, gpu)
+    return {
+        "job_id": job["job_id"],
+        "status": status,
+        "failure_kind": (
+            "host_io"
+            if status == "failed_infrastructure"
+            else "subprocess_exit"
+            if status == "invalid_scientific"
+            else None
+        ),
+        "command_identity": baseline._command_identity(command),
+    }
+
+
+def test_two_worker_partitions_are_disjoint_and_complete():
+    baseline = load_baseline()
+    jobs = baseline.build_manifest()["jobs"]
+
+    left = baseline.partition(jobs, worker=0, workers=2)
+    right = baseline.partition(jobs, worker=1, workers=2)
+
+    assert len(left) == len(right) == 30
+    assert {job["job_id"] for job in left}.isdisjoint(
+        job["job_id"] for job in right
+    )
+    assert {job["job_id"] for job in left + right} == {
+        job["job_id"] for job in jobs
+    }
+
+
+def test_worker_retries_only_one_identical_infrastructure_failure(
+    tmp_path,
+    monkeypatch,
+):
+    baseline = load_baseline()
+    manifest_path, manifest = write_baseline_manifest(tmp_path, baseline)
+    job = manifest["jobs"][0]
+    monkeypatch.setattr(baseline, "partition", lambda *_args, **_kwargs: [job])
+    monkeypatch.setattr(baseline, "admit_gpu", lambda _gpu: 0)
+    statuses = iter(["failed_infrastructure", "completed"])
+
+    def run_job(candidate, output_dir, physical_gpu, launched=None):
+        if launched is not None:
+            launched(4242)
+        return worker_result(
+            baseline,
+            candidate,
+            output_dir,
+            physical_gpu,
+            next(statuses),
+        )
+
+    monkeypatch.setattr(baseline, "run_job", run_job)
+
+    state = baseline.run_worker(manifest_path, worker=0, physical_gpu=0)
+
+    actual = state["jobs"][0]
+    assert actual["status"] == "completed"
+    assert actual["attempt_count"] == 2
+    assert actual["attempt_history"][0]["command_identity"] == (
+        actual["attempt_history"][1]["command_identity"]
+    )
+
+
+def test_worker_never_retries_scientific_failure(tmp_path, monkeypatch):
+    baseline = load_baseline()
+    manifest_path, manifest = write_baseline_manifest(tmp_path, baseline)
+    job = manifest["jobs"][0]
+    monkeypatch.setattr(baseline, "partition", lambda *_args, **_kwargs: [job])
+    monkeypatch.setattr(baseline, "admit_gpu", lambda _gpu: 0)
+    launches = 0
+
+    def run_job(candidate, output_dir, physical_gpu, launched=None):
+        nonlocal launches
+        launches += 1
+        return worker_result(
+            baseline,
+            candidate,
+            output_dir,
+            physical_gpu,
+            "invalid_scientific",
+        )
+
+    monkeypatch.setattr(baseline, "run_job", run_job)
+
+    state = baseline.run_worker(manifest_path, worker=0, physical_gpu=0)
+
+    assert launches == 1
+    assert state["jobs"][0]["status"] == "invalid_scientific"
+    assert state["jobs"][0]["attempt_count"] == 1
+
+
+def test_worker_cli_routes_gpu_and_partition(tmp_path, monkeypatch):
+    baseline = load_baseline()
+    manifest_path, _ = write_baseline_manifest(tmp_path, baseline)
+    observed = {}
+
+    def run_worker(path, worker, physical_gpu):
+        observed.update(path=Path(path), worker=worker, physical_gpu=physical_gpu)
+        return {"jobs": []}
+
+    monkeypatch.setattr(baseline, "run_worker", run_worker)
+
+    code = baseline.main(
+        [
+            "worker",
+            "--manifest",
+            str(manifest_path),
+            "--worker",
+            "1",
+            "--gpu",
+            "1",
+        ]
+    )
+
+    assert code == 0
+    assert observed == {"path": manifest_path, "worker": 1, "physical_gpu": 1}

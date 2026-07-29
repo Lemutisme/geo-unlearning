@@ -3,6 +3,7 @@
 
 import argparse
 import ast
+import fcntl
 import hashlib
 import json
 import math
@@ -11,6 +12,7 @@ import re
 import shutil
 import subprocess
 import time
+from collections import Counter
 from copy import deepcopy
 from pathlib import Path
 
@@ -97,7 +99,7 @@ def _command_identity(record):
     return hashlib.sha256(encoded).hexdigest()
 
 
-def run_job(job, output_dir, physical_gpu):
+def run_job(job, output_dir, physical_gpu, launched=None):
     validate_job(job)
     output = Path(output_dir).resolve()
     if output.exists():
@@ -127,6 +129,8 @@ def run_job(job, output_dir, physical_gpu):
                 stdout=run_log,
                 stderr=subprocess.STDOUT,
             )
+            if launched is not None:
+                launched(process.pid)
         except OSError as error:
             launch_error = str(error)
             run_log.write(f"subprocess launch failed: {error}\n")
@@ -308,6 +312,182 @@ def run_job(job, output_dir, physical_gpu):
     return result
 
 
+def partition(jobs, worker, workers=2):
+    if type(worker) is not int or worker not in range(workers):
+        raise ValueError("worker must be 0 or 1")
+    return [job for index, job in enumerate(jobs) if index % workers == worker]
+
+
+def admit_gpu(physical_gpu):
+    if physical_gpu not in {0, 1}:
+        raise ValueError("physical_gpu must be 0 or 1")
+    sample = subprocess.run(
+        [
+            "nvidia-smi",
+            "--query-gpu=index,memory.used",
+            "--format=csv,noheader,nounits",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=5.0,
+    )
+    if sample.returncode != 0:
+        raise RuntimeError(f"GPU admission failed: {sample.stderr}")
+    values = []
+    for line in sample.stdout.splitlines():
+        fields = [field.strip() for field in line.split(",", 1)]
+        if len(fields) == 2 and fields[0] == str(physical_gpu):
+            try:
+                values.append(int(fields[1]))
+            except ValueError:
+                continue
+    if len(values) != 1:
+        raise RuntimeError("GPU admission did not return one physical device")
+    if values[0] >= 500:
+        raise RuntimeError(f"GPU{physical_gpu} is using {values[0]} MiB")
+    return values[0]
+
+
+def run_worker(manifest_path, worker, physical_gpu):
+    manifest_path = Path(manifest_path)
+    manifest = json.loads(manifest_path.read_text())
+    root = Path(manifest["output_root"]).resolve()
+    jobs = partition(manifest["jobs"], worker=worker, workers=2)
+    state_path = root / f"worker{worker}_state.json"
+    if state_path.exists():
+        state = json.loads(state_path.read_text())
+    else:
+        state = {
+            "schema_version": SCHEMA_VERSION,
+            "protocol": PROTOCOL,
+            "worker": worker,
+            "physical_gpu": physical_gpu,
+            "jobs": [],
+        }
+        for registered in jobs:
+            job = deepcopy(registered)
+            job.update(
+                status="pending",
+                attempt_count=0,
+                attempt_history=[],
+                pid=None,
+            )
+            state["jobs"].append(job)
+        gu._atomic_write_json(state_path, state)
+
+    lock_path = Path(f"/tmp/baseline_reference_gpu{physical_gpu}.lock")
+    lock = lock_path.open("w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        lock.close()
+        raise RuntimeError(f"GPU{physical_gpu} baseline worker is already active") from error
+
+    try:
+        running = [job for job in state["jobs"] if job["status"] == "running"]
+        if len(running) > 1:
+            raise ValueError("worker state has multiple running jobs")
+        if running:
+            job = running[0]
+            pid = job.get("pid")
+            if isinstance(pid, int):
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    pass
+                else:
+                    raise RuntimeError(f"baseline child {pid} is still running")
+            output_dir = root / job["output_dir"]
+            result_path = output_dir / "BASELINE_JOB_RESULT.json"
+            result = None
+            if result_path.is_file():
+                try:
+                    candidate = json.loads(result_path.read_text())
+                    expected_identity = job["attempt_history"][-1]["command_identity"]
+                    if (
+                        candidate.get("job_id") == job["job_id"]
+                        and candidate.get("command_identity") == expected_identity
+                        and candidate.get("status") in TERMINAL
+                    ):
+                        result = candidate
+                except (OSError, json.JSONDecodeError):
+                    result = None
+            if result is None:
+                result = {
+                    "job_id": job["job_id"],
+                    "status": "failed_infrastructure",
+                    "failure_kind": "stale_running",
+                    "command_identity": job["attempt_history"][-1][
+                        "command_identity"
+                    ],
+                }
+            job["attempt_history"][-1].update(
+                status=result["status"],
+                evidence=result,
+            )
+            job["pid"] = None
+            job["status"] = (
+                "pending"
+                if result["status"] == "failed_infrastructure"
+                and job["attempt_count"] < 2
+                else result["status"]
+            )
+            gu._atomic_write_json(state_path, state)
+
+        for job in state["jobs"]:
+            if job["status"] in TERMINAL:
+                continue
+            output_dir = root / job["output_dir"]
+            while job["status"] == "pending":
+                admit_gpu(physical_gpu)
+                job["status"] = "running"
+                job["attempt_count"] += 1
+                command = _command_record(job, output_dir, physical_gpu)
+                attempt = {
+                    "attempt": job["attempt_count"],
+                    "status": "running",
+                    "pid": None,
+                    "argv": command["argv"],
+                    "command_identity": _command_identity(command),
+                }
+                job["attempt_history"].append(attempt)
+                gu._atomic_write_json(state_path, state)
+
+                def record_pid(pid):
+                    job["pid"] = pid
+                    attempt["pid"] = pid
+                    gu._atomic_write_json(state_path, state)
+
+                result = run_job(
+                    job,
+                    output_dir,
+                    physical_gpu,
+                    launched=record_pid,
+                )
+                if (
+                    result.get("job_id") != job["job_id"]
+                    or result.get("command_identity") != attempt["command_identity"]
+                    or result.get("status") not in TERMINAL
+                ):
+                    raise ValueError("baseline result identity mismatch")
+                attempt.update(status=result["status"], evidence=result)
+                job["pid"] = None
+                if (
+                    result["status"] == "failed_infrastructure"
+                    and job["attempt_count"] < 2
+                ):
+                    job["status"] = "pending"
+                    gu._atomic_write_json(state_path, state)
+                    continue
+                job["status"] = result["status"]
+                gu._atomic_write_json(state_path, state)
+        return state
+    finally:
+        fcntl.flock(lock, fcntl.LOCK_UN)
+        lock.close()
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -315,6 +495,12 @@ def main(argv=None):
     manifest_parser.add_argument("--output-root", type=Path, required=True)
     preflight_parser = commands.add_parser("preflight")
     preflight_parser.add_argument("--manifest", type=Path, required=True)
+    worker_parser = commands.add_parser("worker")
+    worker_parser.add_argument("--manifest", type=Path, required=True)
+    worker_parser.add_argument("--worker", type=int, choices=(0, 1), required=True)
+    worker_parser.add_argument("--gpu", type=int, choices=(0, 1), required=True)
+    status_parser = commands.add_parser("status")
+    status_parser.add_argument("--root", type=Path, required=True)
     args = parser.parse_args(argv)
 
     try:
@@ -325,6 +511,20 @@ def main(argv=None):
             manifest["output_root"] = str(root)
             gu._atomic_write_json(root / "manifest.json", manifest)
             print(root / "manifest.json")
+            return 0
+        if args.command == "worker":
+            state = run_worker(args.manifest, args.worker, args.gpu)
+            counts = dict(Counter(job["status"] for job in state["jobs"]))
+            print(json.dumps(counts, sort_keys=True))
+            return int(any(job["status"] != "completed" for job in state["jobs"]))
+        if args.command == "status":
+            counts = Counter()
+            for worker in (0, 1):
+                path = args.root.resolve() / f"worker{worker}_state.json"
+                if path.is_file():
+                    state = json.loads(path.read_text())
+                    counts.update(job["status"] for job in state["jobs"])
+            print(json.dumps(dict(counts), sort_keys=True))
             return 0
         manifest = json.loads(args.manifest.read_text())
         fingerprints = {}
