@@ -332,3 +332,15 @@ def test_worker_cli_routes_gpu_and_partition(tmp_path, monkeypatch):
 
     assert code == 0
     assert observed == {"path": manifest_path, "worker": 1, "physical_gpu": 1}
+
+
+def test_eval_all_is_checkpoint_free_dual_worker_launcher():
+    text = (ROOT / "scripts/eval_all.sh").read_text()
+
+    assert "run_baseline_reference.py manifest" in text
+    assert "--worker 0 --gpu 0" in text
+    assert "--worker 1 --gpu 1" in text
+    assert text.count("setsid python scripts/run_baseline_reference.py worker") == 2
+    assert "src/eval.py" not in text
+    assert "accelerate launch" not in text
+    assert "saves/unlearn" not in text
