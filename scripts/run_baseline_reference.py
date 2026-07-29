@@ -18,7 +18,7 @@ from pathlib import Path
 
 try:
     from scripts import run_gu_full_matrix as gu
-except ModuleNotFoundError:
+except (ImportError, ModuleNotFoundError):
     import run_gu_full_matrix as gu
 
 

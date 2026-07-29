@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -516,3 +517,22 @@ def test_script_cli_manifest_runs_outside_repository(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert (output_root / "manifest.json").is_file()
+
+
+def test_script_cli_survives_unrelated_scripts_module_shadow(tmp_path):
+    shadow = tmp_path / "shadow"
+    shadow.mkdir()
+    (shadow / "scripts.py").write_text("value = 'unrelated'\n")
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(shadow)
+
+    result = subprocess.run(
+        [sys.executable, str(BASELINE), "--help"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
