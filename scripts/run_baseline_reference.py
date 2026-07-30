@@ -109,11 +109,17 @@ def validate_job(job):
     return expected
 
 
-def child_environment(job, physical_gpu):
+def environment_overrides(job, physical_gpu):
     if physical_gpu not in {0, 1}:
         raise ValueError("physical_gpu must be 0 or 1")
-    environment = gu.build_environment(job)
-    environment["CUDA_VISIBLE_DEVICES"] = str(physical_gpu)
+    overrides = gu.environment_overrides(job)
+    overrides["CUDA_VISIBLE_DEVICES"] = str(physical_gpu)
+    return overrides
+
+
+def child_environment(job, physical_gpu):
+    environment = os.environ.copy()
+    environment.update(environment_overrides(job, physical_gpu))
     return environment
 
 
@@ -131,7 +137,7 @@ def _command_record(job, output_dir, physical_gpu, smoke=False):
             if smoke
             else build_command(job, output_dir)
         ),
-        "environment_overrides": child_environment(job, physical_gpu),
+        "environment_overrides": environment_overrides(job, physical_gpu),
         "provenance": deepcopy(job["provenance"]),
     }
 

@@ -336,6 +336,25 @@ def test_worker_cli_routes_gpu_and_partition(tmp_path, monkeypatch):
     assert observed == {"path": manifest_path, "worker": 1, "physical_gpu": 1}
 
 
+def test_command_evidence_persists_only_registered_environment_overrides(
+    tmp_path,
+    monkeypatch,
+):
+    baseline = load_baseline()
+    gu = load_gu_registry()
+    job = baseline.build_manifest()["jobs"][0]
+    monkeypatch.setenv("BASELINE_TEST_SECRET", "must-not-be-persisted")
+
+    record = baseline._command_record(job, tmp_path / job["job_id"], 0)
+    child = baseline.child_environment(job, 0)
+    expected = gu.environment_overrides(job)
+    expected["CUDA_VISIBLE_DEVICES"] = "0"
+
+    assert record["environment_overrides"] == expected
+    assert "BASELINE_TEST_SECRET" not in record["environment_overrides"]
+    assert child["BASELINE_TEST_SECRET"] == "must-not-be-persisted"
+
+
 def test_eval_all_is_checkpoint_free_dual_worker_launcher():
     text = (ROOT / "scripts/eval_all.sh").read_text()
 
