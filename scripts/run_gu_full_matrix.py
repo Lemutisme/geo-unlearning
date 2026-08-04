@@ -530,7 +530,7 @@ GPU_ADMISSION_COMMAND = [
     "--query-gpu=index,memory.used",
     "--format=csv,noheader,nounits",
 ]
-CONTROLLER_LOCK_PATH = Path("/tmp/geo_unlearning_gu_matrix_dev0.lock")
+MATRIX_GPU_ENV = "GU_MATRIX_GPU"
 TERMINAL_STATUSES = {
     "completed",
     "invalid_scientific",
@@ -566,6 +566,19 @@ RMU_MODEL_OVERRIDES = {
 }
 
 
+def matrix_gpu_index():
+    """Return the configured physical GPU index, defaulting to device 0."""
+    raw = os.environ.get(MATRIX_GPU_ENV, "0")
+    if re.fullmatch(r"0|[1-9][0-9]*", raw) is None:
+        raise ValueError(f"{MATRIX_GPU_ENV} must be a nonnegative integer")
+    return int(raw)
+
+
+def controller_lock_path():
+    """Return the controller lock dedicated to the selected physical GPU."""
+    return Path(f"/tmp/geo_unlearning_gu_matrix_dev{matrix_gpu_index()}.lock")
+
+
 def _make_job(method, benchmark, seed, stage):
     job_id = f"{method}__{benchmark}__seed{seed}"
     job = {
@@ -584,6 +597,7 @@ def _make_job(method, benchmark, seed, stage):
 
 def build_manifest(seed=0):
     """Return the deterministic manifest for one GU matrix seed."""
+    matrix_gpu_index()
     if type(seed) is not int:
         raise TypeError("seed must be an int")
     if seed != 0:
@@ -733,7 +747,7 @@ def environment_overrides(job):
     root = runtime_root(job)
     hub = str(root / "hub")
     return {
-        "CUDA_VISIBLE_DEVICES": "0",
+        "CUDA_VISIBLE_DEVICES": str(matrix_gpu_index()),
         "HF_DATASETS_CACHE": str(root / "datasets"),
         "HF_DATASETS_OFFLINE": "1",
         "HF_HOME": hub,
@@ -2099,12 +2113,13 @@ def live_matrix_children(state, output_root):
 @contextmanager
 def controller_lock():
     """Hold the one local matrix controller lock until its launch work ends."""
-    with CONTROLLER_LOCK_PATH.open("a+") as lock_file:
+    lock_path = controller_lock_path()
+    with lock_path.open("a+") as lock_file:
         try:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise RuntimeError(
-                f"another GU matrix controller is active: {CONTROLLER_LOCK_PATH}"
+                f"another GU matrix controller is active: {lock_path}"
             ) from error
         try:
             yield
@@ -2113,7 +2128,7 @@ def controller_lock():
 
 
 def admit_launch(state, output_root):
-    """Require an idle matrix and less than 500 MiB already used on GPU 0."""
+    """Require an idle matrix and less than 500 MiB on the selected GPU."""
     children = live_matrix_children(state, output_root)
     if children:
         raise RuntimeError(f"matrix child already running: {children}")
@@ -2136,22 +2151,26 @@ def admit_launch(state, output_root):
             f"GPU admission failed with exit {sample.returncode}: "
             f"{(sample.stderr or '').strip()}"
         )
-    device_zero = []
+    gpu_index = matrix_gpu_index()
+    selected_samples = []
     for line in sample.stdout.splitlines():
         fields = [field.strip() for field in line.split(",", 1)]
-        if len(fields) != 2 or fields[0] != "0":
+        if len(fields) != 2 or fields[0] != str(gpu_index):
             continue
         try:
-            device_zero.append(int(re.sub(r"\s*MiB\s*$", "", fields[1])))
+            selected_samples.append(int(re.sub(r"\s*MiB\s*$", "", fields[1])))
         except ValueError:
             continue
-    if len(device_zero) != 1:
-        raise RuntimeError("GPU admission did not return exactly one device 0 sample")
-    if device_zero[0] >= 500:
+    if len(selected_samples) != 1:
         raise RuntimeError(
-            f"GPU 0 has {device_zero[0]} MiB used; launch requires below 500 MiB"
+            f"GPU admission did not return exactly one device {gpu_index} sample"
         )
-    return device_zero[0]
+    if selected_samples[0] >= 500:
+        raise RuntimeError(
+            f"GPU {gpu_index} has {selected_samples[0]} MiB used; "
+            "launch requires below 500 MiB"
+        )
+    return selected_samples[0]
 
 
 def preflight_manifest(manifest_path):
@@ -2191,7 +2210,7 @@ def smoke_manifest(manifest_path):
 
 
 def run_queue(manifest_path, state_path):
-    """Resume and drain the persistent local queue sequentially on GPU 0."""
+    """Resume and drain the queue sequentially on the selected physical GPU."""
     manifest_path, state_path = Path(manifest_path), Path(state_path)
     manifest = validate_manifest(_read_json(manifest_path))
     output_root = Path(manifest.get("output_root", manifest_path.parent)).resolve()

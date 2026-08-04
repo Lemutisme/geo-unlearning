@@ -1016,6 +1016,39 @@ def test_build_environment_enforces_wmdp_verified_offline_dataset_cache(monkeypa
     assert environment["MATRIX_CALLER_VALUE"] == "preserved"
 
 
+def test_matrix_gpu_defaults_to_zero_and_reaches_child_environment(monkeypatch):
+    monkeypatch.delenv("GU_MATRIX_GPU", raising=False)
+    registry = load_registry()
+    job = registry.build_manifest(seed=0)["jobs"][0]
+
+    assert registry.matrix_gpu_index() == 0
+    assert registry.environment_overrides(job)["CUDA_VISIBLE_DEVICES"] == "0"
+    assert registry.controller_lock_path() == Path(
+        "/tmp/geo_unlearning_gu_matrix_dev0.lock"
+    )
+
+
+def test_matrix_gpu_one_reaches_environment_and_uses_distinct_lock(monkeypatch):
+    monkeypatch.setenv("GU_MATRIX_GPU", "1")
+    registry = load_registry()
+    job = registry.build_manifest(seed=0)["jobs"][0]
+
+    assert registry.matrix_gpu_index() == 1
+    assert registry.environment_overrides(job)["CUDA_VISIBLE_DEVICES"] == "1"
+    assert registry.controller_lock_path() == Path(
+        "/tmp/geo_unlearning_gu_matrix_dev1.lock"
+    )
+
+
+@pytest.mark.parametrize("value", ["", "-1", "+1", "1.0", "gpu1", " 1"])
+def test_matrix_gpu_rejects_invalid_values_before_manifest(monkeypatch, value):
+    monkeypatch.setenv("GU_MATRIX_GPU", value)
+    registry = load_registry()
+
+    with pytest.raises(ValueError, match="GU_MATRIX_GPU"):
+        registry.build_manifest(seed=0)
+
+
 def test_every_job_binds_environment_requirements_and_reference_to_one_root():
     registry = load_registry()
     for job in registry.build_manifest(seed=0)["jobs"]:
@@ -2658,6 +2691,43 @@ def test_queue_requires_device_zero_below_500_mib_before_launch(
     assert launched == []
     persisted = json.loads(state_path.read_text())
     assert persisted["jobs"][0]["status"] == "pending"
+
+
+def test_admission_samples_selected_physical_gpu_one(tmp_path, monkeypatch):
+    monkeypatch.setenv("GU_MATRIX_GPU", "1")
+    registry = load_registry()
+    monkeypatch.setattr(registry, "live_matrix_children", lambda *args: [])
+
+    def gpu_query(argv, **kwargs):
+        assert argv == registry.GPU_ADMISSION_COMMAND
+        assert kwargs["timeout"] == 5.0
+        return SimpleNamespace(
+            returncode=0,
+            stdout="0, 1200\n1, 499\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(registry.subprocess, "run", gpu_query)
+
+    assert registry.admit_launch({"jobs": []}, tmp_path) == 499
+
+
+def test_admission_reports_selected_physical_gpu_one_busy(tmp_path, monkeypatch):
+    monkeypatch.setenv("GU_MATRIX_GPU", "1")
+    registry = load_registry()
+    monkeypatch.setattr(registry, "live_matrix_children", lambda *args: [])
+    monkeypatch.setattr(
+        registry.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="0, 0\n1, 500\n",
+            stderr="",
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match=r"GPU 1 has 500 MiB"):
+        registry.admit_launch({"jobs": []}, tmp_path)
 
 
 def test_queue_resume_monitors_exact_live_child_then_adopts_and_continues(
