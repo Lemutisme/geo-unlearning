@@ -1,0 +1,789 @@
+{
+  "jobs": [
+    {
+      "arm": "gu_rank0",
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "holdout_split": "holdout10",
+      "job_id": "CEU__gu_rank0__tofu_forget10__seed0",
+      "method": "CEU",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "output_dir": "jobs/CEU__gu_rank0__tofu_forget10__seed0",
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "stage_a",
+      "status": "pending",
+      "trainer_config": "CEU"
+    },
+    {
+      "arm": "gu_rank8",
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "holdout_split": "holdout10",
+      "job_id": "CEU__gu_rank8__tofu_forget10__seed0",
+      "method": "CEU",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "output_dir": "jobs/CEU__gu_rank8__tofu_forget10__seed0",
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "stage_a",
+      "status": "pending",
+      "trainer_config": "CEU"
+    },
+    {
+      "arm": "native",
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "holdout_split": "holdout10",
+      "job_id": "CEU__native__tofu_forget10__seed0",
+      "method": "CEU",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "output_dir": "jobs/CEU__native__tofu_forget10__seed0",
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "stage_a",
+      "status": "pending",
+      "trainer_config": "CEU"
+    },
+    {
+      "arm": "scope_bf16",
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "holdout_split": "holdout10",
+      "job_id": "CEU__scope_bf16__tofu_forget10__seed0",
+      "method": "CEU",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "output_dir": "jobs/CEU__scope_bf16__tofu_forget10__seed0",
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "stage_a",
+      "status": "pending",
+      "trainer_config": "CEU"
+    },
+    {
+      "arm": "scope_fp32",
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "holdout_split": "holdout10",
+      "job_id": "CEU__scope_fp32__tofu_forget10__seed0",
+      "method": "CEU",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "output_dir": "jobs/CEU__scope_fp32__tofu_forget10__seed0",
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "stage_a",
+      "status": "pending",
+      "trainer_config": "CEU"
+    },
+    {
+      "arm": "gu_rank0",
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "holdout_split": "holdout10",
+      "job_id": "GradDiff__gu_rank0__tofu_forget10__seed0",
+      "method": "GradDiff",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "output_dir": "jobs/GradDiff__gu_rank0__tofu_forget10__seed0",
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "stage_a",
+      "status": "pending",
+      "trainer_config": "GradDiff"
+    },
+    {
+      "arm": "gu_rank8",
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "holdout_split": "holdout10",
+      "job_id": "GradDiff__gu_rank8__tofu_forget10__seed0",
+      "method": "GradDiff",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "output_dir": "jobs/GradDiff__gu_rank8__tofu_forget10__seed0",
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "stage_a",
+      "status": "pending",
+      "trainer_config": "GradDiff"
+    },
+    {
+      "arm": "native",
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "holdout_split": "holdout10",
+      "job_id": "GradDiff__native__tofu_forget10__seed0",
+      "method": "GradDiff",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "output_dir": "jobs/GradDiff__native__tofu_forget10__seed0",
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "stage_a",
+      "status": "pending",
+      "trainer_config": "GradDiff"
+    },
+    {
+      "arm": "scope_bf16",
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "holdout_split": "holdout10",
+      "job_id": "GradDiff__scope_bf16__tofu_forget10__seed0",
+      "method": "GradDiff",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "output_dir": "jobs/GradDiff__scope_bf16__tofu_forget10__seed0",
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "stage_a",
+      "status": "pending",
+      "trainer_config": "GradDiff"
+    },
+    {
+      "arm": "scope_fp32",
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "holdout_split": "holdout10",
+      "job_id": "GradDiff__scope_fp32__tofu_forget10__seed0",
+      "method": "GradDiff",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "output_dir": "jobs/GradDiff__scope_fp32__tofu_forget10__seed0",
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "stage_a",
+      "status": "pending",
+      "trainer_config": "GradDiff"
+    },
+    {
+      "arm": "gu_rank0",
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "holdout_split": "holdout10",
+      "job_id": "SimNPO__gu_rank0__tofu_forget10__seed0",
+      "method": "SimNPO",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "output_dir": "jobs/SimNPO__gu_rank0__tofu_forget10__seed0",
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "stage_a",
+      "status": "pending",
+      "trainer_config": "SimNPO"
+    },
+    {
+      "arm": "gu_rank8",
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "holdout_split": "holdout10",
+      "job_id": "SimNPO__gu_rank8__tofu_forget10__seed0",
+      "method": "SimNPO",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "output_dir": "jobs/SimNPO__gu_rank8__tofu_forget10__seed0",
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "stage_a",
+      "status": "pending",
+      "trainer_config": "SimNPO"
+    },
+    {
+      "arm": "native",
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "holdout_split": "holdout10",
+      "job_id": "SimNPO__native__tofu_forget10__seed0",
+      "method": "SimNPO",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "output_dir": "jobs/SimNPO__native__tofu_forget10__seed0",
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "stage_a",
+      "status": "pending",
+      "trainer_config": "SimNPO"
+    },
+    {
+      "arm": "scope_bf16",
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "holdout_split": "holdout10",
+      "job_id": "SimNPO__scope_bf16__tofu_forget10__seed0",
+      "method": "SimNPO",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "output_dir": "jobs/SimNPO__scope_bf16__tofu_forget10__seed0",
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "stage_a",
+      "status": "pending",
+      "trainer_config": "SimNPO"
+    },
+    {
+      "arm": "scope_fp32",
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "holdout_split": "holdout10",
+      "job_id": "SimNPO__scope_fp32__tofu_forget10__seed0",
+      "method": "SimNPO",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "output_dir": "jobs/SimNPO__scope_fp32__tofu_forget10__seed0",
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "stage_a",
+      "status": "pending",
+      "trainer_config": "SimNPO"
+    },
+    {
+      "arm": "gu_rank0",
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "holdout_split": "holdout10",
+      "job_id": "UNDIAL__gu_rank0__tofu_forget10__seed0",
+      "method": "UNDIAL",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "output_dir": "jobs/UNDIAL__gu_rank0__tofu_forget10__seed0",
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "stage_a",
+      "status": "pending",
+      "trainer_config": "UNDIAL"
+    },
+    {
+      "arm": "gu_rank8",
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "holdout_split": "holdout10",
+      "job_id": "UNDIAL__gu_rank8__tofu_forget10__seed0",
+      "method": "UNDIAL",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "output_dir": "jobs/UNDIAL__gu_rank8__tofu_forget10__seed0",
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "stage_a",
+      "status": "pending",
+      "trainer_config": "UNDIAL"
+    },
+    {
+      "arm": "native",
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "holdout_split": "holdout10",
+      "job_id": "UNDIAL__native__tofu_forget10__seed0",
+      "method": "UNDIAL",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "output_dir": "jobs/UNDIAL__native__tofu_forget10__seed0",
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "stage_a",
+      "status": "pending",
+      "trainer_config": "UNDIAL"
+    },
+    {
+      "arm": "scope_bf16",
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "holdout_split": "holdout10",
+      "job_id": "UNDIAL__scope_bf16__tofu_forget10__seed0",
+      "method": "UNDIAL",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "output_dir": "jobs/UNDIAL__scope_bf16__tofu_forget10__seed0",
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "stage_a",
+      "status": "pending",
+      "trainer_config": "UNDIAL"
+    },
+    {
+      "arm": "scope_fp32",
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "holdout_split": "holdout10",
+      "job_id": "UNDIAL__scope_fp32__tofu_forget10__seed0",
+      "method": "UNDIAL",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "output_dir": "jobs/UNDIAL__scope_fp32__tofu_forget10__seed0",
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "stage_a",
+      "status": "pending",
+      "trainer_config": "UNDIAL"
+    }
+  ],
+  "output_root": "/root/tofu_gu_ablation_20260809_gpu0",
+  "protocol": "tofu_gu_stage_a_20260809",
+  "schema_version": 1,
+  "seed": 0,
+  "stage": "stage_a"
+}
