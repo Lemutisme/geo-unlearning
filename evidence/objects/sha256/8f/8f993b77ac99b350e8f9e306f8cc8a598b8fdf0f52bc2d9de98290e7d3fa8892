@@ -1,0 +1,1074 @@
+{
+  "evaluations": {
+    "CEU": {
+      "rank1": {
+        "arm": "rank1",
+        "correction_ratio": {
+          "max": 1.0505908673692121,
+          "mean": 0.9510787343137256,
+          "min": 0.0
+        },
+        "deltas": {
+          "es_re_loss": 0.40924829254500433,
+          "es_un_improvement": 0.022616598236008242,
+          "mu_loss": 0.2516422751244675,
+          "privleak_loss": 3.3061767725413134
+        },
+        "evidence_valid": true,
+        "feasible": false,
+        "intervention": {
+          "kind": "history_rank",
+          "retain_history_rank": 1
+        },
+        "job_id": "CEU__rank1__tofu_forget10__seed0",
+        "max_violation_after": 9.307261452425747e-10,
+        "method": "CEU",
+        "metrics": {
+          "extraction_strength": 0.04689946437337286,
+          "model_utility": 0.3708641494838885,
+          "privleak": -51.792736283967386,
+          "retain_extraction_strength": 0.18669862557891853
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 57986,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/CEU__rank1__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "violations": [
+          "forget",
+          "retain",
+          "utility",
+          "privacy"
+        ],
+        "wall_clock_seconds": 1454.8662448981777
+      },
+      "rank2": {
+        "arm": "rank2",
+        "correction_ratio": {
+          "max": 1.0530159534216332,
+          "mean": 0.9537928600847789,
+          "min": 0.0
+        },
+        "deltas": {
+          "es_re_loss": 0.2904744672086998,
+          "es_un_improvement": 0.012028258938755906,
+          "mu_loss": 0.13390216415496248,
+          "privleak_loss": 4.374962188489384
+        },
+        "evidence_valid": true,
+        "feasible": false,
+        "intervention": {
+          "kind": "history_rank",
+          "retain_history_rank": 2
+        },
+        "job_id": "CEU__rank2__tofu_forget10__seed0",
+        "max_violation_after": 7.409923091241354e-10,
+        "method": "CEU",
+        "metrics": {
+          "extraction_strength": 0.0574878036706252,
+          "model_utility": 0.48860426045339356,
+          "privleak": -52.86152169991546,
+          "retain_extraction_strength": 0.30547245091522307
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 58882,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/CEU__rank2__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "violations": [
+          "forget",
+          "retain",
+          "utility",
+          "privacy"
+        ],
+        "wall_clock_seconds": 1443.4393124221824
+      },
+      "rank4": {
+        "arm": "rank4",
+        "correction_ratio": {
+          "max": 1.0349565504265705,
+          "mean": 0.9427297903028827,
+          "min": 0.0
+        },
+        "deltas": {
+          "es_re_loss": 0.1558070474046928,
+          "es_un_improvement": 0.009119224483788498,
+          "mu_loss": 0.04612068349204679,
+          "privleak_loss": 2.1385791200244455
+        },
+        "evidence_valid": true,
+        "feasible": false,
+        "intervention": {
+          "kind": "history_rank",
+          "retain_history_rank": 4
+        },
+        "job_id": "CEU__rank4__tofu_forget10__seed0",
+        "max_violation_after": 9.068010948523001e-10,
+        "method": "CEU",
+        "metrics": {
+          "extraction_strength": 0.06039683812559261,
+          "model_utility": 0.5763857411163092,
+          "privleak": -50.62513863145052,
+          "retain_extraction_strength": 0.44013987071923005
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 60226,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/CEU__rank4__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "violations": [
+          "forget",
+          "retain",
+          "utility",
+          "privacy"
+        ],
+        "wall_clock_seconds": 1440.4136673370376
+      }
+    },
+    "GradDiff": {
+      "rank1": {
+        "arm": "rank1",
+        "correction_ratio": {
+          "max": 0.9172013779178613,
+          "mean": 0.6162080857075518,
+          "min": 0.0
+        },
+        "deltas": {
+          "es_re_loss": 0.1549217538203375,
+          "es_un_improvement": 0.0750565890454002,
+          "mu_loss": 0.14209289731272035,
+          "privleak_loss": -21.7860815871607
+        },
+        "evidence_valid": true,
+        "feasible": false,
+        "intervention": {
+          "kind": "history_rank",
+          "retain_history_rank": 1
+        },
+        "job_id": "GradDiff__rank1__tofu_forget10__seed0",
+        "max_violation_after": 6.909889183325532e-10,
+        "method": "GradDiff",
+        "metrics": {
+          "extraction_strength": 0.0696440094726216,
+          "model_utility": 0.32852592721665347,
+          "privleak": -46.25118473108936,
+          "retain_extraction_strength": 0.1728217401588377
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 58018,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/GradDiff__rank1__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "violations": [
+          "retain",
+          "utility"
+        ],
+        "wall_clock_seconds": 1558.2024799170904
+      },
+      "rank2": {
+        "arm": "rank2",
+        "correction_ratio": {
+          "max": 0.9079338951600742,
+          "mean": 0.606640229669481,
+          "min": 0.0
+        },
+        "deltas": {
+          "es_re_loss": 0.11583315151317677,
+          "es_un_improvement": 0.054843334496965365,
+          "mu_loss": 0.09261575495178814,
+          "privleak_loss": -13.818588797706184
+        },
+        "evidence_valid": true,
+        "feasible": false,
+        "intervention": {
+          "kind": "history_rank",
+          "retain_history_rank": 2
+        },
+        "job_id": "GradDiff__rank2__tofu_forget10__seed0",
+        "max_violation_after": 5.530532986598984e-10,
+        "method": "GradDiff",
+        "metrics": {
+          "extraction_strength": 0.08985726402105644,
+          "model_utility": 0.37800306957758567,
+          "privleak": -54.21867752054388,
+          "retain_extraction_strength": 0.2119103424659984
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 58914,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/GradDiff__rank2__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "violations": [
+          "retain",
+          "utility"
+        ],
+        "wall_clock_seconds": 1561.837178864982
+      },
+      "rank4": {
+        "arm": "rank4",
+        "correction_ratio": {
+          "max": 0.8992761800105339,
+          "mean": 0.5978670862258498,
+          "min": 0.0
+        },
+        "deltas": {
+          "es_re_loss": 0.06174595713886061,
+          "es_un_improvement": 0.028714614889486567,
+          "mu_loss": 0.05393445913877121,
+          "privleak_loss": -5.468954807643819
+        },
+        "evidence_valid": true,
+        "feasible": false,
+        "intervention": {
+          "kind": "history_rank",
+          "retain_history_rank": 4
+        },
+        "job_id": "GradDiff__rank4__tofu_forget10__seed0",
+        "max_violation_after": 6.352350022137843e-10,
+        "method": "GradDiff",
+        "metrics": {
+          "extraction_strength": 0.11598598362853524,
+          "model_utility": 0.4166843653906026,
+          "privleak": -62.56831151060624,
+          "retain_extraction_strength": 0.2659975368403146
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 60258,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/GradDiff__rank4__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "violations": [
+          "forget",
+          "retain",
+          "utility"
+        ],
+        "wall_clock_seconds": 1575.1616941899993
+      }
+    },
+    "SimNPO": {
+      "gamma05": {
+        "arm": "gamma05",
+        "correction_ratio": {
+          "max": 0.013366488220758832,
+          "mean": 0.00017810788589724501,
+          "min": 0.0
+        },
+        "deltas": {
+          "es_re_loss": 0.02969734447073502,
+          "es_un_improvement": 0.2916459797058878,
+          "mu_loss": -0.004357803512550107,
+          "privleak_loss": -0.4436467764312937
+        },
+        "evidence_valid": true,
+        "feasible": false,
+        "intervention": {
+          "alpha": 1.0,
+          "gamma": 0.5,
+          "kind": "objective_ratio"
+        },
+        "job_id": "SimNPO__gamma05__tofu_forget10__seed0",
+        "max_violation_after": 3.243205245573984e-08,
+        "method": "SimNPO",
+        "metrics": {
+          "extraction_strength": 0.6278235299898762,
+          "model_utility": 0.6161054165856238,
+          "privleak": -99.26999937901229,
+          "retain_extraction_strength": 0.9666732848998943
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 62946,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/SimNPO__gamma05__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "violations": [
+          "retain"
+        ],
+        "wall_clock_seconds": 2174.2845411361195
+      },
+      "gamma05_alpha0": {
+        "arm": "gamma05_alpha0",
+        "correction_ratio": {
+          "max": 1.0039911285790692,
+          "mean": 0.9338066235877107,
+          "min": 0.04295086666695894
+        },
+        "deltas": {
+          "es_re_loss": 0.7247896048945969,
+          "es_un_improvement": 0.8293594564226081,
+          "mu_loss": 0.2301170226740505,
+          "privleak_loss": -6.148541006086305
+        },
+        "evidence_valid": true,
+        "feasible": false,
+        "intervention": {
+          "alpha": 0.0,
+          "gamma": 0.5,
+          "kind": "objective_ratio"
+        },
+        "job_id": "SimNPO__gamma05_alpha0__tofu_forget10__seed0",
+        "max_violation_after": 9.997276214222265e-07,
+        "method": "SimNPO",
+        "metrics": {
+          "extraction_strength": 0.09011005327315587,
+          "model_utility": 0.3816305903990232,
+          "privleak": -93.56510514935728,
+          "retain_extraction_strength": 0.2715810244760325
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 62946,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/SimNPO__gamma05_alpha0__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "violations": [
+          "retain",
+          "utility"
+        ],
+        "wall_clock_seconds": 2341.110264407005
+      },
+      "gamma10": {
+        "arm": "gamma10",
+        "correction_ratio": {
+          "max": 0.11170691351479155,
+          "mean": 0.002010839016501427,
+          "min": 0.0
+        },
+        "deltas": {
+          "es_re_loss": 0.08123235130721684,
+          "es_un_improvement": 0.5097614145726316,
+          "mu_loss": -0.016690241997069255,
+          "privleak_loss": -0.9548488574555165
+        },
+        "evidence_valid": true,
+        "feasible": false,
+        "intervention": {
+          "alpha": 1.0,
+          "gamma": 1.0,
+          "kind": "objective_ratio"
+        },
+        "job_id": "SimNPO__gamma10__tofu_forget10__seed0",
+        "max_violation_after": 5.043838329854902e-10,
+        "method": "SimNPO",
+        "metrics": {
+          "extraction_strength": 0.40970809512313244,
+          "model_utility": 0.6284378550701429,
+          "privleak": -98.75879729798807,
+          "retain_extraction_strength": 0.9151382780634125
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 62946,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/SimNPO__gamma10__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "violations": [
+          "retain"
+        ],
+        "wall_clock_seconds": 2181.3401746368036
+      },
+      "scope12": {
+        "arm": "scope12",
+        "correction_ratio": {
+          "max": 0.0,
+          "mean": 0.0,
+          "min": 0.0
+        },
+        "deltas": {
+          "es_re_loss": 0.006767704785502926,
+          "es_un_improvement": 0.17804626516245248,
+          "mu_loss": 0.002030444262996256,
+          "privleak_loss": -0.33172679419521955
+        },
+        "evidence_valid": true,
+        "feasible": true,
+        "intervention": {
+          "kind": "parameter_scope",
+          "layers": [
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31
+          ]
+        },
+        "job_id": "SimNPO__scope12__tofu_forget10__seed0",
+        "max_violation_after": -5.134744837718554e-05,
+        "method": "SimNPO",
+        "metrics": {
+          "extraction_strength": 0.7414232445333115,
+          "model_utility": 0.6097171688100774,
+          "privleak": -99.38191936124836,
+          "retain_extraction_strength": 0.9896029245851264
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 89506,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/SimNPO__scope12__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "violations": [],
+        "wall_clock_seconds": 2742.4573616073467
+      },
+      "scope6": {
+        "arm": "scope6",
+        "correction_ratio": {
+          "max": 0.0,
+          "mean": 0.0,
+          "min": 0.0
+        },
+        "deltas": {
+          "es_re_loss": 0.0006543887147334448,
+          "es_un_improvement": 0.061215039899578993,
+          "mu_loss": 0.005805904423853425,
+          "privleak_loss": -0.06251386395169334
+        },
+        "evidence_valid": true,
+        "feasible": true,
+        "intervention": {
+          "kind": "parameter_scope",
+          "layers": [
+            26,
+            27,
+            28,
+            29,
+            30,
+            31
+          ]
+        },
+        "job_id": "SimNPO__scope6__tofu_forget10__seed0",
+        "max_violation_after": -3.120793075531703e-05,
+        "method": "SimNPO",
+        "metrics": {
+          "extraction_strength": 0.858254469796185,
+          "model_utility": 0.6059417086492203,
+          "privleak": -99.65113229149189,
+          "retain_extraction_strength": 0.9957162406558959
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 71924,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/SimNPO__scope6__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "violations": [],
+        "wall_clock_seconds": 2358.7346517499536
+      },
+      "steps2x": {
+        "arm": "steps2x",
+        "correction_ratio": {
+          "max": 0.032088971840799126,
+          "mean": 0.00013370404933666302,
+          "min": 0.0
+        },
+        "deltas": {
+          "es_re_loss": -0.0002878787878788369,
+          "es_un_improvement": 0.10608357437830696,
+          "mu_loss": 0.010869739977408477,
+          "privleak_loss": -0.12906088041638952
+        },
+        "evidence_valid": true,
+        "feasible": true,
+        "intervention": {
+          "kind": "training_budget",
+          "num_train_epochs": 20.0
+        },
+        "job_id": "SimNPO__steps2x__tofu_forget10__seed0",
+        "max_violation_after": 5.306806933995378e-10,
+        "method": "SimNPO",
+        "metrics": {
+          "extraction_strength": 0.8133859353174571,
+          "model_utility": 0.6008778730956652,
+          "privleak": -99.5845852750272,
+          "retain_extraction_strength": 0.9966585081585082
+        },
+        "optimizer_update_count": 240,
+        "peak_nvml_mib": 62946,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/SimNPO__steps2x__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "violations": [],
+        "wall_clock_seconds": 4178.258255110122
+      }
+    }
+  },
+  "immutable_floors": {
+    "es_re_loss": 0.02,
+    "es_un_improvement": 0.05,
+    "mu_loss": 0.02,
+    "privleak_loss": 2.0
+  },
+  "incomplete": [],
+  "invalid": [],
+  "protocol": "tofu_gu_stage_b1_20260810",
+  "records": {
+    "CEU": {
+      "rank1": {
+        "arm": "rank1",
+        "correction_ratio": {
+          "max": 1.0505908673692121,
+          "mean": 0.9510787343137256,
+          "min": 0.0
+        },
+        "evidence_valid": true,
+        "intervention": {
+          "kind": "history_rank",
+          "retain_history_rank": 1
+        },
+        "job_id": "CEU__rank1__tofu_forget10__seed0",
+        "max_violation_after": 9.307261452425747e-10,
+        "method": "CEU",
+        "metrics": {
+          "extraction_strength": 0.04689946437337286,
+          "model_utility": 0.3708641494838885,
+          "privleak": -51.792736283967386,
+          "retain_extraction_strength": 0.18669862557891853
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 57986,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/CEU__rank1__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "wall_clock_seconds": 1454.8662448981777
+      },
+      "rank2": {
+        "arm": "rank2",
+        "correction_ratio": {
+          "max": 1.0530159534216332,
+          "mean": 0.9537928600847789,
+          "min": 0.0
+        },
+        "evidence_valid": true,
+        "intervention": {
+          "kind": "history_rank",
+          "retain_history_rank": 2
+        },
+        "job_id": "CEU__rank2__tofu_forget10__seed0",
+        "max_violation_after": 7.409923091241354e-10,
+        "method": "CEU",
+        "metrics": {
+          "extraction_strength": 0.0574878036706252,
+          "model_utility": 0.48860426045339356,
+          "privleak": -52.86152169991546,
+          "retain_extraction_strength": 0.30547245091522307
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 58882,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/CEU__rank2__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "wall_clock_seconds": 1443.4393124221824
+      },
+      "rank4": {
+        "arm": "rank4",
+        "correction_ratio": {
+          "max": 1.0349565504265705,
+          "mean": 0.9427297903028827,
+          "min": 0.0
+        },
+        "evidence_valid": true,
+        "intervention": {
+          "kind": "history_rank",
+          "retain_history_rank": 4
+        },
+        "job_id": "CEU__rank4__tofu_forget10__seed0",
+        "max_violation_after": 9.068010948523001e-10,
+        "method": "CEU",
+        "metrics": {
+          "extraction_strength": 0.06039683812559261,
+          "model_utility": 0.5763857411163092,
+          "privleak": -50.62513863145052,
+          "retain_extraction_strength": 0.44013987071923005
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 60226,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/CEU__rank4__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "wall_clock_seconds": 1440.4136673370376
+      }
+    },
+    "GradDiff": {
+      "rank1": {
+        "arm": "rank1",
+        "correction_ratio": {
+          "max": 0.9172013779178613,
+          "mean": 0.6162080857075518,
+          "min": 0.0
+        },
+        "evidence_valid": true,
+        "intervention": {
+          "kind": "history_rank",
+          "retain_history_rank": 1
+        },
+        "job_id": "GradDiff__rank1__tofu_forget10__seed0",
+        "max_violation_after": 6.909889183325532e-10,
+        "method": "GradDiff",
+        "metrics": {
+          "extraction_strength": 0.0696440094726216,
+          "model_utility": 0.32852592721665347,
+          "privleak": -46.25118473108936,
+          "retain_extraction_strength": 0.1728217401588377
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 58018,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/GradDiff__rank1__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "wall_clock_seconds": 1558.2024799170904
+      },
+      "rank2": {
+        "arm": "rank2",
+        "correction_ratio": {
+          "max": 0.9079338951600742,
+          "mean": 0.606640229669481,
+          "min": 0.0
+        },
+        "evidence_valid": true,
+        "intervention": {
+          "kind": "history_rank",
+          "retain_history_rank": 2
+        },
+        "job_id": "GradDiff__rank2__tofu_forget10__seed0",
+        "max_violation_after": 5.530532986598984e-10,
+        "method": "GradDiff",
+        "metrics": {
+          "extraction_strength": 0.08985726402105644,
+          "model_utility": 0.37800306957758567,
+          "privleak": -54.21867752054388,
+          "retain_extraction_strength": 0.2119103424659984
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 58914,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/GradDiff__rank2__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "wall_clock_seconds": 1561.837178864982
+      },
+      "rank4": {
+        "arm": "rank4",
+        "correction_ratio": {
+          "max": 0.8992761800105339,
+          "mean": 0.5978670862258498,
+          "min": 0.0
+        },
+        "evidence_valid": true,
+        "intervention": {
+          "kind": "history_rank",
+          "retain_history_rank": 4
+        },
+        "job_id": "GradDiff__rank4__tofu_forget10__seed0",
+        "max_violation_after": 6.352350022137843e-10,
+        "method": "GradDiff",
+        "metrics": {
+          "extraction_strength": 0.11598598362853524,
+          "model_utility": 0.4166843653906026,
+          "privleak": -62.56831151060624,
+          "retain_extraction_strength": 0.2659975368403146
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 60258,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/GradDiff__rank4__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "wall_clock_seconds": 1575.1616941899993
+      }
+    },
+    "SimNPO": {
+      "gamma05": {
+        "arm": "gamma05",
+        "correction_ratio": {
+          "max": 0.013366488220758832,
+          "mean": 0.00017810788589724501,
+          "min": 0.0
+        },
+        "evidence_valid": true,
+        "intervention": {
+          "alpha": 1.0,
+          "gamma": 0.5,
+          "kind": "objective_ratio"
+        },
+        "job_id": "SimNPO__gamma05__tofu_forget10__seed0",
+        "max_violation_after": 3.243205245573984e-08,
+        "method": "SimNPO",
+        "metrics": {
+          "extraction_strength": 0.6278235299898762,
+          "model_utility": 0.6161054165856238,
+          "privleak": -99.26999937901229,
+          "retain_extraction_strength": 0.9666732848998943
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 62946,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/SimNPO__gamma05__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "wall_clock_seconds": 2174.2845411361195
+      },
+      "gamma05_alpha0": {
+        "arm": "gamma05_alpha0",
+        "correction_ratio": {
+          "max": 1.0039911285790692,
+          "mean": 0.9338066235877107,
+          "min": 0.04295086666695894
+        },
+        "evidence_valid": true,
+        "intervention": {
+          "alpha": 0.0,
+          "gamma": 0.5,
+          "kind": "objective_ratio"
+        },
+        "job_id": "SimNPO__gamma05_alpha0__tofu_forget10__seed0",
+        "max_violation_after": 9.997276214222265e-07,
+        "method": "SimNPO",
+        "metrics": {
+          "extraction_strength": 0.09011005327315587,
+          "model_utility": 0.3816305903990232,
+          "privleak": -93.56510514935728,
+          "retain_extraction_strength": 0.2715810244760325
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 62946,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/SimNPO__gamma05_alpha0__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "wall_clock_seconds": 2341.110264407005
+      },
+      "gamma10": {
+        "arm": "gamma10",
+        "correction_ratio": {
+          "max": 0.11170691351479155,
+          "mean": 0.002010839016501427,
+          "min": 0.0
+        },
+        "evidence_valid": true,
+        "intervention": {
+          "alpha": 1.0,
+          "gamma": 1.0,
+          "kind": "objective_ratio"
+        },
+        "job_id": "SimNPO__gamma10__tofu_forget10__seed0",
+        "max_violation_after": 5.043838329854902e-10,
+        "method": "SimNPO",
+        "metrics": {
+          "extraction_strength": 0.40970809512313244,
+          "model_utility": 0.6284378550701429,
+          "privleak": -98.75879729798807,
+          "retain_extraction_strength": 0.9151382780634125
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 62946,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/SimNPO__gamma10__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "wall_clock_seconds": 2181.3401746368036
+      },
+      "scope12": {
+        "arm": "scope12",
+        "correction_ratio": {
+          "max": 0.0,
+          "mean": 0.0,
+          "min": 0.0
+        },
+        "evidence_valid": true,
+        "intervention": {
+          "kind": "parameter_scope",
+          "layers": [
+            20,
+            21,
+            22,
+            23,
+            24,
+            25,
+            26,
+            27,
+            28,
+            29,
+            30,
+            31
+          ]
+        },
+        "job_id": "SimNPO__scope12__tofu_forget10__seed0",
+        "max_violation_after": -5.134744837718554e-05,
+        "method": "SimNPO",
+        "metrics": {
+          "extraction_strength": 0.7414232445333115,
+          "model_utility": 0.6097171688100774,
+          "privleak": -99.38191936124836,
+          "retain_extraction_strength": 0.9896029245851264
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 89506,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/SimNPO__scope12__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "wall_clock_seconds": 2742.4573616073467
+      },
+      "scope6": {
+        "arm": "scope6",
+        "correction_ratio": {
+          "max": 0.0,
+          "mean": 0.0,
+          "min": 0.0
+        },
+        "evidence_valid": true,
+        "intervention": {
+          "kind": "parameter_scope",
+          "layers": [
+            26,
+            27,
+            28,
+            29,
+            30,
+            31
+          ]
+        },
+        "job_id": "SimNPO__scope6__tofu_forget10__seed0",
+        "max_violation_after": -3.120793075531703e-05,
+        "method": "SimNPO",
+        "metrics": {
+          "extraction_strength": 0.858254469796185,
+          "model_utility": 0.6059417086492203,
+          "privleak": -99.65113229149189,
+          "retain_extraction_strength": 0.9957162406558959
+        },
+        "optimizer_update_count": 120,
+        "peak_nvml_mib": 71924,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/SimNPO__scope6__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "wall_clock_seconds": 2358.7346517499536
+      },
+      "steps2x": {
+        "arm": "steps2x",
+        "correction_ratio": {
+          "max": 0.032088971840799126,
+          "mean": 0.00013370404933666302,
+          "min": 0.0
+        },
+        "evidence_valid": true,
+        "intervention": {
+          "kind": "training_budget",
+          "num_train_epochs": 20.0
+        },
+        "job_id": "SimNPO__steps2x__tofu_forget10__seed0",
+        "max_violation_after": 5.306806933995378e-10,
+        "method": "SimNPO",
+        "metrics": {
+          "extraction_strength": 0.8133859353174571,
+          "model_utility": 0.6008778730956652,
+          "privleak": -99.5845852750272,
+          "retain_extraction_strength": 0.9966585081585082
+        },
+        "optimizer_update_count": 240,
+        "peak_nvml_mib": 62946,
+        "result_path": "/root/tofu_gu_tuning_20260810_gpu0/jobs/SimNPO__steps2x__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+        "wall_clock_seconds": 4178.258255110122
+      }
+    }
+  },
+  "reference_root": "/root/tofu_gu_ablation_20260809_gpu0",
+  "references": {
+    "CEU": {
+      "extraction_strength": 0.0695160626093811,
+      "model_utility": 0.622506424608356,
+      "privleak": -48.48655951142607,
+      "retain_extraction_strength": 0.5959469181239229
+    },
+    "GradDiff": {
+      "extraction_strength": 0.1447005985180218,
+      "model_utility": 0.4706188245293738,
+      "privleak": -68.03726631825006,
+      "retain_extraction_strength": 0.3277434939791752
+    },
+    "SimNPO": {
+      "extraction_strength": 0.919469509695764,
+      "model_utility": 0.6117476130730737,
+      "privleak": -99.71364615544358,
+      "retain_extraction_strength": 0.9963706293706294
+    }
+  },
+  "root": "/root/tofu_gu_tuning_20260810_gpu0",
+  "schema_version": 1,
+  "selections": {
+    "CEU_rank": {
+      "arm": "rank8",
+      "source": "production_fallback",
+      "value": 8
+    },
+    "GradDiff_rank": {
+      "arm": "rank8",
+      "source": "production_fallback",
+      "value": 8
+    },
+    "SimNPO_gamma": {
+      "arm": "gamma0125",
+      "source": "production_fallback",
+      "value": 0.125
+    },
+    "SimNPO_scope": {
+      "arm": "scope12",
+      "source": "candidate",
+      "value": "model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight"
+    },
+    "selector_arms": [
+      "rank1",
+      "rank2",
+      "rank4",
+      "scope6",
+      "scope12",
+      "gamma05",
+      "gamma10"
+    ]
+  },
+  "stage_b2_manifest": {
+    "jobs": [
+      {
+        "arm": "rank8_alpha0_gamma1",
+        "benchmark": "tofu_forget10",
+        "evaluator_kind": "tofu",
+        "experiment_config": "unlearn/tofu/gu_matrix_8b",
+        "holdout_split": "holdout10",
+        "intervention": {
+          "alpha": 0.0,
+          "gamma": 1.0,
+          "kind": "rank_objective_combination",
+          "rank_source": "production_fallback",
+          "retain_history_rank": 8
+        },
+        "job_id": "GradDiff__rank8_alpha0_gamma1__tofu_forget10__seed0",
+        "method": "GradDiff",
+        "model": {
+          "config": "Llama-3.1-8B-Instruct",
+          "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+        },
+        "output_dir": "jobs/GradDiff__rank8_alpha0_gamma1__tofu_forget10__seed0",
+        "provenance": {
+          "dataset": {
+            "artifact": "locuslab/TOFU",
+            "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+          },
+          "gibberish_classifier": {
+            "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+            "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+          },
+          "model": {
+            "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+          },
+          "tokenizer": {
+            "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+          }
+        },
+        "retain_split": "retain90",
+        "seed": 0,
+        "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+        "split": "forget10",
+        "stage": "stage_b2",
+        "status": "pending_principal_review",
+        "trainer_config": "GradDiff"
+      },
+      {
+        "arm": "rank8_alpha0_gamma2",
+        "benchmark": "tofu_forget10",
+        "evaluator_kind": "tofu",
+        "experiment_config": "unlearn/tofu/gu_matrix_8b",
+        "holdout_split": "holdout10",
+        "intervention": {
+          "alpha": 0.0,
+          "gamma": 2.0,
+          "kind": "rank_objective_combination",
+          "rank_source": "production_fallback",
+          "retain_history_rank": 8
+        },
+        "job_id": "GradDiff__rank8_alpha0_gamma2__tofu_forget10__seed0",
+        "method": "GradDiff",
+        "model": {
+          "config": "Llama-3.1-8B-Instruct",
+          "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+        },
+        "output_dir": "jobs/GradDiff__rank8_alpha0_gamma2__tofu_forget10__seed0",
+        "provenance": {
+          "dataset": {
+            "artifact": "locuslab/TOFU",
+            "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+          },
+          "gibberish_classifier": {
+            "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+            "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+          },
+          "model": {
+            "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+          },
+          "tokenizer": {
+            "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+          }
+        },
+        "retain_split": "retain90",
+        "seed": 0,
+        "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+        "split": "forget10",
+        "stage": "stage_b2",
+        "status": "pending_principal_review",
+        "trainer_config": "GradDiff"
+      },
+      {
+        "arm": "scope12_gamma0125_alpha0",
+        "benchmark": "tofu_forget10",
+        "evaluator_kind": "tofu",
+        "experiment_config": "unlearn/tofu/gu_matrix_8b",
+        "holdout_split": "holdout10",
+        "intervention": {
+          "alpha": 0.0,
+          "gamma": 0.125,
+          "gamma_source": "production_fallback",
+          "kind": "scope_objective_combination",
+          "parameter_regex": "model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight",
+          "scope_source": "candidate"
+        },
+        "job_id": "SimNPO__scope12_gamma0125_alpha0__tofu_forget10__seed0",
+        "method": "SimNPO",
+        "model": {
+          "config": "Llama-3.1-8B-Instruct",
+          "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+        },
+        "output_dir": "jobs/SimNPO__scope12_gamma0125_alpha0__tofu_forget10__seed0",
+        "provenance": {
+          "dataset": {
+            "artifact": "locuslab/TOFU",
+            "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+          },
+          "gibberish_classifier": {
+            "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+            "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+          },
+          "model": {
+            "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+          },
+          "tokenizer": {
+            "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+          }
+        },
+        "retain_split": "retain90",
+        "seed": 0,
+        "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+        "split": "forget10",
+        "stage": "stage_b2",
+        "status": "pending_principal_review",
+        "trainer_config": "SimNPO"
+      },
+      {
+        "arm": "scope12_gamma0125_alpha1",
+        "benchmark": "tofu_forget10",
+        "evaluator_kind": "tofu",
+        "experiment_config": "unlearn/tofu/gu_matrix_8b",
+        "holdout_split": "holdout10",
+        "intervention": {
+          "alpha": 1.0,
+          "gamma": 0.125,
+          "gamma_source": "production_fallback",
+          "kind": "scope_objective_combination",
+          "parameter_regex": "model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight",
+          "scope_source": "candidate"
+        },
+        "job_id": "SimNPO__scope12_gamma0125_alpha1__tofu_forget10__seed0",
+        "method": "SimNPO",
+        "model": {
+          "config": "Llama-3.1-8B-Instruct",
+          "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+        },
+        "output_dir": "jobs/SimNPO__scope12_gamma0125_alpha1__tofu_forget10__seed0",
+        "provenance": {
+          "dataset": {
+            "artifact": "locuslab/TOFU",
+            "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+          },
+          "gibberish_classifier": {
+            "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+            "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+          },
+          "model": {
+            "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+          },
+          "tokenizer": {
+            "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+          }
+        },
+        "retain_split": "retain90",
+        "seed": 0,
+        "selected_parameter_regex": "model[.]layers[.](29|30|31)[.]mlp[.]down_proj[.]weight",
+        "split": "forget10",
+        "stage": "stage_b2",
+        "status": "pending_principal_review",
+        "trainer_config": "SimNPO"
+      }
+    ],
+    "protocol": "tofu_gu_stage_b2_20260810",
+    "requires_principal_review": true,
+    "schema_version": 1,
+    "seed": 0,
+    "stage": "stage_b2"
+  }
+}
