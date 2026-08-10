@@ -1,0 +1,1 @@
+{"kind_prefixes":{"decision":"D","evidence":"E","idea":"I","knowledge":"K","model":"M","prediction":"P","question":"Q"},"relation_guidance":["addresses","contradicts","decomposes","derived_from","supersedes","supports"],"schema_version":"aros.project_ontology.v1"}

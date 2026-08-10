@@ -190,3 +190,6 @@ analysis.ipynb
 nohup.out
 
 *.csv
+/.aros/
+/.worktree/
+/.venv/
