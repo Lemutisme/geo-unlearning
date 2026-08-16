@@ -1,0 +1,143 @@
+# Anchor-GU: Low-rank functional trust regions for geometric unlearning
+
+## Setup
+
+Let `theta0` be the pre-unlearning model and let the ordinary optimizer produce
+the realized Adam proposal `d_t`. For an anchor distribution `A`, define the
+teacher functional drift
+
+```math
+J_A(\theta)=\mathbb E_{x\sim A}D_{KL}
+(p_{\theta_0}(\cdot|x)\Vert p_\theta(\cdot|x)).
+```
+
+At `theta0`, both `J_A(theta0)=0` and `grad J_A(theta0)=0`. Therefore a cached
+teacher KL is not a useful initial linear GU covector. Its first nonzero local
+term is quadratic:
+
+```math
+J_A(\theta_0+w)=\tfrac12 w^T F_A w+R_3(w),
+```
+
+where `F_A` is the anchor Fisher/Gauss--Newton matrix.
+
+## Low-rank approximation and error bound
+
+Let `F_r=U_r Lambda_r U_r^T` be a rank-r approximation and assume
+`||F_A-F_r||_2 <= epsilon_r`. If the third derivative is bounded by `M` in the
+trust region, then
+
+```math
+J_A(\theta_0+w)
+\le \tfrac12 w^T F_r w
+ +\tfrac12\epsilon_r||w||_2^2
+ +\tfrac{M}{6}||w||_2^3.
+```
+
+Thus the controller can allocate an explicit residual allowance and constrain
+the low-rank term instead of pretending that the zero teacher-KL gradient is a
+linear safety constraint.
+
+## Near-free online controller
+
+Maintain low-rank coordinates
+
+```math
+z_t=Lambda_r^{1/2}U_r^T(\theta_t-\theta_0),
+q_t=Lambda_r^{1/2}U_r^T d_t.
+```
+
+Choose the largest `s in [0,1]` satisfying
+
+```math
+||z_t+s q_t||_2^2\le 2B.
+```
+
+This is the positive root of
+
+```math
+a s^2+2b s+c\le0,
+quad a=||q_t||^2,
+b=z_t^Tq_t,
+c=||z_t||^2-2B.
+```
+
+The runtime cost is rank-r dot products and one scalar quadratic solve. It
+requires no teacher forward. The original top-k teacher logits and Fisher sketch
+are computed once and reused. Replacing the current rank-8 FIFO history with an
+anchor rank <=8 keeps projection memory in the same order.
+
+## Connection to bounded utility
+
+For any bounded anchor score `h in [0,1]`, Pinsker gives
+
+```math
+|E_{p_theta}h-E_{p_theta0}h| <= sqrt(J_A(theta)/2).
+```
+
+Ignoring declared low-rank and distribution-mismatch residuals, a desired
+functional drift of `0.05` corresponds to the interpretable KL budget
+
+```math
+B=2(0.05)^2=0.005.
+```
+
+This is dimensionless and tied to the user's utility tolerance, unlike the
+previous arbitrary cumulative retain-NLL budget.
+
+## Forgetting shadow cost
+
+Let `g_f` be the forget direction in Adam coordinates. Define anchor overlap
+
+```math
+eta=||U_r^T M^{-1/2}g_f||^2 / ||M^{-1/2}g_f||^2.
+```
+
+Low `eta` predicts a nearly free anchor: most forget descent lies outside the
+utility subspace. High `eta` predicts an unavoidable Pareto tradeoff. This
+quantity, not proposal-energy coverage, should determine whether scope or step
+restriction is useful.
+
+## Anchor construction
+
+Use a fixed-token stratified bank from retain QA, real-author, and world-facts
+families. Cache original-model top-k logits with an explicit tail bucket. Build
+the low-rank Fisher sketch offline, or during a reusable calibration pass. No
+additional anchor tokens or teacher forward are used during unlearning.
+
+## Predictions
+
+1. A rank <=8 mixed anchor captures at least 90% of anchor Fisher trace; if not,
+   the low-overhead hypothesis is falsified.
+2. On TOFU forget05 seed0, mixed Anchor-GU reduces general-MU loss by at least
+   25% from about 0.028 to at most 0.021 while ES-Un degradation relative to
+   adaptive-safe is at most 0.03 (hard ceiling 0.05).
+3. At least 90% of optimizer steps retain scale 1 when measured anchor overlap
+   `eta <= 0.1`; otherwise the claimed near-free tradeoff is falsified.
+4. Runtime wall-clock overhead is at most 8% and peak-memory overhead is no more
+   than the replaced rank-8 history storage.
+5. A retain-only anchor underperforms the mixed anchor on general MU, showing
+   that distribution coverage rather than stronger NLL control explains the
+   benefit.
+
+## Fixed GPU1 falsification
+
+Compare on TOFU forget05 seed0:
+
+1. adaptive-safe baseline;
+2. cached-logit retain-only low-rank anchor;
+3. mixed retain/real-author/world-facts low-rank anchor;
+4. mixed-anchor ablation with shuffled anchor basis.
+
+All arms use scope12, alpha1, gamma0.125, max20 epochs, rank<=8, the same token
+budget, no checkpoints, and identical endpoint evaluation. Promote the mixed
+anchor to forget01/10 and seeds1/2 only if predictions 1--4 hold. The shuffled
+basis must not reproduce the gain.
+
+## Caveats
+
+The Pinsker bound governs anchor-distribution functionals, not arbitrary model
+utility under distribution shift. Top-k tail compression and anchor/evaluation
+distribution mismatch require explicit residual reporting. Existing evidence
+shows retain NLL is insufficient; it does not yet show that the proposed mixed
+anchor basis is sufficient.
