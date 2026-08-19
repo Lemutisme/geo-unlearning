@@ -1,0 +1,1481 @@
+{
+  "jobs": [
+    {
+      "alpha": 1.0,
+      "arm": "fixed_gu20",
+      "attempt_count": 1,
+      "attempt_history": [
+        {
+          "argv": [
+            "/root/miniconda3/envs/unlearning/bin/python",
+            "/workspace/AR-projects/geo-unlearning/.worktrees/tofu-gu-ablation/src/train.py",
+            "--config-name=unlearn.yaml",
+            "experiment=unlearn/tofu/gu_matrix_8b",
+            "trainer=SimNPO",
+            "task_name=SimNPO__fixed_gu20__tofu_forget10__seed0",
+            "paths.output_dir=/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget10__seed0",
+            "model.model_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.model_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "model.tokenizer_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.tokenizer_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "forget_split=forget10",
+            "retain_split=retain90",
+            "holdout_split=holdout10",
+            "retain_logs_path=/workspace/re/GU/geo-unlearning/saves/eval/tofu_Llama-3.1-8B-Instruct_retain90/TOFU_EVAL.json",
+            "tofu_dataset_revision=324592d84ae4f482ac7249b9285c2ecdb53e3a68",
+            "retain_logs_sha256=aa4192bc0e60ee97f47aa514e39510e70f3a8cdc8aa6330591a3d7a0f88e95f2",
+            "trainer.args.seed=0",
+            "+trainer.args.data_seed=0",
+            "save_model_after_train=false",
+            "trainer.args.save_strategy=no",
+            "trainer.args.save_only_model=false",
+            "trainer.args.do_eval=true",
+            "trainer.args.eval_on_start=false",
+            "trainer.args.eval_strategy=no",
+            "trainer.args.report_to=none",
+            "trainer.args.logging_steps=1",
+            "trainer.args.per_device_train_batch_size=1",
+            "trainer.args.gradient_accumulation_steps=32",
+            "+trainer.method_args.gu.enabled=true",
+            "+trainer.method_args.gu.parameter_regex=[\"model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight\"]",
+            "+trainer.method_args.gu.retain_history_rank=8",
+            "+trainer.method_args.gu.projection_eps=1e-6",
+            "+trainer.method_args.gu.retain_filter=first_order",
+            "+trainer.method_args.gu.retain_budget=1e-4",
+            "+trainer.method_args.gu.backtracking_scales=[1.0,0.5,0.25,0.125]",
+            "+trainer.method_args.gu.diagnostics_path=gu_diagnostics.jsonl",
+            "trainer.args.num_train_epochs=20.0"
+          ],
+          "attempt": 1,
+          "command_identity": "823d4245ed2264c80709a5971d1be691967a47f3e98b58bc80e9951c84520cee",
+          "evidence": {
+            "arm": "fixed_gu20",
+            "command_identity": "823d4245ed2264c80709a5971d1be691967a47f3e98b58bc80e9951c84520cee",
+            "command_path": "command.json",
+            "correction_ratio": {
+              "max": 0.0,
+              "mean": 0.0,
+              "min": 0.0
+            },
+            "diagnostics_path": "gu_diagnostics.jsonl",
+            "endpoint_raw_path": "checkpoint-240/evals/TOFU_EVAL.json",
+            "endpoint_summary_path": "checkpoint-240/evals/TOFU_SUMMARY.json",
+            "failure_kind": null,
+            "forbidden_artifacts": [],
+            "gpu_memory_sample_count": 4378,
+            "issues": [],
+            "job_id": "SimNPO__fixed_gu20__tofu_forget10__seed0",
+            "max_violation_after": -1.1127325939195044e-05,
+            "method": "SimNPO",
+            "optimizer_update_count": 240,
+            "peak_nvml_mib": 89506,
+            "projection_count": 240,
+            "protocol": "adaptive_gu_causal_matrix_20260819",
+            "provenance": {
+              "dataset": {
+                "artifact": "locuslab/TOFU",
+                "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+              },
+              "gibberish_classifier": {
+                "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+                "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+              },
+              "model": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              },
+              "tokenizer": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              }
+            },
+            "returncode": 0,
+            "run_log_path": "run.log",
+            "schema_version": 1,
+            "seed": 0,
+            "status": "completed",
+            "wall_clock_seconds": 5402.354719384573,
+            "zero_step_count": 0
+          },
+          "pid": 2765956,
+          "status": "completed"
+        }
+      ],
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "gamma": 0.125,
+      "holdout_split": "holdout10",
+      "job_id": "SimNPO__fixed_gu20__tofu_forget10__seed0",
+      "method": "SimNPO",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "num_train_epochs": 20.0,
+      "output_dir": "jobs/SimNPO__fixed_gu20__tofu_forget10__seed0",
+      "pid": null,
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_history_rank": 8,
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "adaptive_gu_causal_matrix",
+      "status": "completed",
+      "trainer_config": "SimNPO"
+    },
+    {
+      "alpha": 1.0,
+      "arm": "fixed_gu20",
+      "attempt_count": 1,
+      "attempt_history": [
+        {
+          "argv": [
+            "/root/miniconda3/envs/unlearning/bin/python",
+            "/workspace/AR-projects/geo-unlearning/.worktrees/tofu-gu-ablation/src/train.py",
+            "--config-name=unlearn.yaml",
+            "experiment=unlearn/tofu/gu_matrix_8b",
+            "trainer=SimNPO",
+            "task_name=SimNPO__fixed_gu20__tofu_forget10__seed2",
+            "paths.output_dir=/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget10__seed2",
+            "model.model_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.model_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "model.tokenizer_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.tokenizer_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "forget_split=forget10",
+            "retain_split=retain90",
+            "holdout_split=holdout10",
+            "retain_logs_path=/workspace/re/GU/geo-unlearning/saves/eval/tofu_Llama-3.1-8B-Instruct_retain90/TOFU_EVAL.json",
+            "tofu_dataset_revision=324592d84ae4f482ac7249b9285c2ecdb53e3a68",
+            "retain_logs_sha256=aa4192bc0e60ee97f47aa514e39510e70f3a8cdc8aa6330591a3d7a0f88e95f2",
+            "trainer.args.seed=2",
+            "+trainer.args.data_seed=2",
+            "save_model_after_train=false",
+            "trainer.args.save_strategy=no",
+            "trainer.args.save_only_model=false",
+            "trainer.args.do_eval=true",
+            "trainer.args.eval_on_start=false",
+            "trainer.args.eval_strategy=no",
+            "trainer.args.report_to=none",
+            "trainer.args.logging_steps=1",
+            "trainer.args.per_device_train_batch_size=1",
+            "trainer.args.gradient_accumulation_steps=32",
+            "+trainer.method_args.gu.enabled=true",
+            "+trainer.method_args.gu.parameter_regex=[\"model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight\"]",
+            "+trainer.method_args.gu.retain_history_rank=8",
+            "+trainer.method_args.gu.projection_eps=1e-6",
+            "+trainer.method_args.gu.retain_filter=first_order",
+            "+trainer.method_args.gu.retain_budget=1e-4",
+            "+trainer.method_args.gu.backtracking_scales=[1.0,0.5,0.25,0.125]",
+            "+trainer.method_args.gu.diagnostics_path=gu_diagnostics.jsonl",
+            "trainer.args.num_train_epochs=20.0"
+          ],
+          "attempt": 1,
+          "command_identity": "99164370df7cedbaf435de421fb29b4e6cac5be36cfb641466598bcc50cbd940",
+          "evidence": {
+            "arm": "fixed_gu20",
+            "command_identity": "99164370df7cedbaf435de421fb29b4e6cac5be36cfb641466598bcc50cbd940",
+            "command_path": "command.json",
+            "correction_ratio": {
+              "max": 0.0,
+              "mean": 0.0,
+              "min": 0.0
+            },
+            "diagnostics_path": "gu_diagnostics.jsonl",
+            "endpoint_raw_path": "checkpoint-240/evals/TOFU_EVAL.json",
+            "endpoint_summary_path": "checkpoint-240/evals/TOFU_SUMMARY.json",
+            "failure_kind": null,
+            "forbidden_artifacts": [],
+            "gpu_memory_sample_count": 4307,
+            "issues": [],
+            "job_id": "SimNPO__fixed_gu20__tofu_forget10__seed2",
+            "max_violation_after": -1.8856041874221996e-05,
+            "method": "SimNPO",
+            "optimizer_update_count": 240,
+            "peak_nvml_mib": 89480,
+            "projection_count": 240,
+            "protocol": "adaptive_gu_causal_matrix_20260819",
+            "provenance": {
+              "dataset": {
+                "artifact": "locuslab/TOFU",
+                "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+              },
+              "gibberish_classifier": {
+                "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+                "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+              },
+              "model": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              },
+              "tokenizer": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              }
+            },
+            "returncode": 0,
+            "run_log_path": "run.log",
+            "schema_version": 1,
+            "seed": 2,
+            "status": "completed",
+            "wall_clock_seconds": 5360.554852559231,
+            "zero_step_count": 0
+          },
+          "pid": 3729063,
+          "status": "completed"
+        }
+      ],
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "gamma": 0.125,
+      "holdout_split": "holdout10",
+      "job_id": "SimNPO__fixed_gu20__tofu_forget10__seed2",
+      "method": "SimNPO",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "num_train_epochs": 20.0,
+      "output_dir": "jobs/SimNPO__fixed_gu20__tofu_forget10__seed2",
+      "pid": null,
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_history_rank": 8,
+      "retain_split": "retain90",
+      "seed": 2,
+      "selected_parameter_regex": "model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "adaptive_gu_causal_matrix",
+      "status": "completed",
+      "trainer_config": "SimNPO"
+    },
+    {
+      "alpha": 1.0,
+      "arm": "native20",
+      "attempt_count": 1,
+      "attempt_history": [
+        {
+          "argv": [
+            "/root/miniconda3/envs/unlearning/bin/python",
+            "/workspace/AR-projects/geo-unlearning/.worktrees/tofu-gu-ablation/src/train.py",
+            "--config-name=unlearn.yaml",
+            "experiment=unlearn/tofu/gu_matrix_8b",
+            "trainer=SimNPO",
+            "task_name=SimNPO__native20__tofu_forget10__seed1",
+            "paths.output_dir=/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget10__seed1",
+            "model.model_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.model_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "model.tokenizer_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.tokenizer_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "forget_split=forget10",
+            "retain_split=retain90",
+            "holdout_split=holdout10",
+            "retain_logs_path=/workspace/re/GU/geo-unlearning/saves/eval/tofu_Llama-3.1-8B-Instruct_retain90/TOFU_EVAL.json",
+            "tofu_dataset_revision=324592d84ae4f482ac7249b9285c2ecdb53e3a68",
+            "retain_logs_sha256=aa4192bc0e60ee97f47aa514e39510e70f3a8cdc8aa6330591a3d7a0f88e95f2",
+            "trainer.args.seed=1",
+            "+trainer.args.data_seed=1",
+            "save_model_after_train=false",
+            "trainer.args.save_strategy=no",
+            "trainer.args.save_only_model=false",
+            "trainer.args.do_eval=true",
+            "trainer.args.eval_on_start=false",
+            "trainer.args.eval_strategy=no",
+            "trainer.args.report_to=none",
+            "trainer.args.logging_steps=1",
+            "trainer.args.per_device_train_batch_size=1",
+            "trainer.args.gradient_accumulation_steps=32",
+            "trainer.args.num_train_epochs=20.0"
+          ],
+          "attempt": 1,
+          "command_identity": "659e1d990a14e8d4aad91d669e7da0347635e946c3de0c9baee0de5a5074ffb3",
+          "evidence": {
+            "arm": "native20",
+            "command_identity": "659e1d990a14e8d4aad91d669e7da0347635e946c3de0c9baee0de5a5074ffb3",
+            "command_path": "command.json",
+            "correction_ratio": null,
+            "diagnostics_path": null,
+            "endpoint_raw_path": "checkpoint-240/evals/TOFU_EVAL.json",
+            "endpoint_summary_path": "checkpoint-240/evals/TOFU_SUMMARY.json",
+            "failure_kind": null,
+            "forbidden_artifacts": [],
+            "gpu_memory_sample_count": 2356,
+            "issues": [],
+            "job_id": "SimNPO__native20__tofu_forget10__seed1",
+            "max_violation_after": null,
+            "method": "SimNPO",
+            "optimizer_update_count": 240,
+            "peak_nvml_mib": 83010,
+            "projection_count": null,
+            "protocol": "adaptive_gu_causal_matrix_20260819",
+            "provenance": {
+              "dataset": {
+                "artifact": "locuslab/TOFU",
+                "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+              },
+              "gibberish_classifier": {
+                "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+                "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+              },
+              "model": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              },
+              "tokenizer": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              }
+            },
+            "returncode": 0,
+            "run_log_path": "run.log",
+            "schema_version": 1,
+            "seed": 1,
+            "status": "completed",
+            "wall_clock_seconds": 2932.83203429915,
+            "zero_step_count": null
+          },
+          "pid": 568411,
+          "status": "completed"
+        }
+      ],
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "gamma": 0.125,
+      "holdout_split": "holdout10",
+      "job_id": "SimNPO__native20__tofu_forget10__seed1",
+      "method": "SimNPO",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "num_train_epochs": 20.0,
+      "output_dir": "jobs/SimNPO__native20__tofu_forget10__seed1",
+      "pid": null,
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_history_rank": 8,
+      "retain_split": "retain90",
+      "seed": 1,
+      "selected_parameter_regex": "model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "adaptive_gu_causal_matrix",
+      "status": "completed",
+      "trainer_config": "SimNPO"
+    },
+    {
+      "alpha": 1.0,
+      "arm": "scope12_no_gu20",
+      "attempt_count": 1,
+      "attempt_history": [
+        {
+          "argv": [
+            "/root/miniconda3/envs/unlearning/bin/python",
+            "/workspace/AR-projects/geo-unlearning/.worktrees/tofu-gu-ablation/src/train.py",
+            "--config-name=unlearn.yaml",
+            "experiment=unlearn/tofu/gu_matrix_8b",
+            "trainer=SimNPO",
+            "task_name=SimNPO__scope12_no_gu20__tofu_forget10__seed0",
+            "paths.output_dir=/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget10__seed0",
+            "model.model_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.model_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "model.tokenizer_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.tokenizer_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "forget_split=forget10",
+            "retain_split=retain90",
+            "holdout_split=holdout10",
+            "retain_logs_path=/workspace/re/GU/geo-unlearning/saves/eval/tofu_Llama-3.1-8B-Instruct_retain90/TOFU_EVAL.json",
+            "tofu_dataset_revision=324592d84ae4f482ac7249b9285c2ecdb53e3a68",
+            "retain_logs_sha256=aa4192bc0e60ee97f47aa514e39510e70f3a8cdc8aa6330591a3d7a0f88e95f2",
+            "trainer.args.seed=0",
+            "+trainer.args.data_seed=0",
+            "save_model_after_train=false",
+            "trainer.args.save_strategy=no",
+            "trainer.args.save_only_model=false",
+            "trainer.args.do_eval=true",
+            "trainer.args.eval_on_start=false",
+            "trainer.args.eval_strategy=no",
+            "trainer.args.report_to=none",
+            "trainer.args.logging_steps=1",
+            "trainer.args.per_device_train_batch_size=1",
+            "trainer.args.gradient_accumulation_steps=32",
+            "trainer.args.num_train_epochs=20.0",
+            "+trainer.method_args.scope_control={enabled:true,parameter_regex:[\"model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight\"],selected_storage:float32}"
+          ],
+          "attempt": 1,
+          "command_identity": "0c121a28656428829147c8ca08aabcfa78e102314c2321eac461808641116ddf",
+          "evidence": {
+            "arm": "scope12_no_gu20",
+            "command_identity": "0c121a28656428829147c8ca08aabcfa78e102314c2321eac461808641116ddf",
+            "command_path": "command.json",
+            "correction_ratio": null,
+            "diagnostics_path": null,
+            "endpoint_raw_path": "checkpoint-240/evals/TOFU_EVAL.json",
+            "endpoint_summary_path": "checkpoint-240/evals/TOFU_SUMMARY.json",
+            "failure_kind": null,
+            "forbidden_artifacts": [],
+            "gpu_memory_sample_count": 1880,
+            "issues": [],
+            "job_id": "SimNPO__scope12_no_gu20__tofu_forget10__seed0",
+            "max_violation_after": null,
+            "method": "SimNPO",
+            "optimizer_update_count": 240,
+            "peak_nvml_mib": 59088,
+            "projection_count": null,
+            "protocol": "adaptive_gu_causal_matrix_20260819",
+            "provenance": {
+              "dataset": {
+                "artifact": "locuslab/TOFU",
+                "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+              },
+              "gibberish_classifier": {
+                "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+                "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+              },
+              "model": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              },
+              "tokenizer": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              }
+            },
+            "returncode": 0,
+            "run_log_path": "run.log",
+            "schema_version": 1,
+            "seed": 0,
+            "status": "completed",
+            "wall_clock_seconds": 2351.2435971917585,
+            "zero_step_count": null
+          },
+          "pid": 913368,
+          "status": "completed"
+        }
+      ],
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "gamma": 0.125,
+      "holdout_split": "holdout10",
+      "job_id": "SimNPO__scope12_no_gu20__tofu_forget10__seed0",
+      "method": "SimNPO",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "num_train_epochs": 20.0,
+      "output_dir": "jobs/SimNPO__scope12_no_gu20__tofu_forget10__seed0",
+      "pid": null,
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_history_rank": 8,
+      "retain_split": "retain90",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "adaptive_gu_causal_matrix",
+      "status": "completed",
+      "trainer_config": "SimNPO"
+    },
+    {
+      "alpha": 1.0,
+      "arm": "scope12_no_gu20",
+      "attempt_count": 1,
+      "attempt_history": [
+        {
+          "argv": [
+            "/root/miniconda3/envs/unlearning/bin/python",
+            "/workspace/AR-projects/geo-unlearning/.worktrees/tofu-gu-ablation/src/train.py",
+            "--config-name=unlearn.yaml",
+            "experiment=unlearn/tofu/gu_matrix_8b",
+            "trainer=SimNPO",
+            "task_name=SimNPO__scope12_no_gu20__tofu_forget10__seed2",
+            "paths.output_dir=/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget10__seed2",
+            "model.model_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.model_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "model.tokenizer_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.tokenizer_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "forget_split=forget10",
+            "retain_split=retain90",
+            "holdout_split=holdout10",
+            "retain_logs_path=/workspace/re/GU/geo-unlearning/saves/eval/tofu_Llama-3.1-8B-Instruct_retain90/TOFU_EVAL.json",
+            "tofu_dataset_revision=324592d84ae4f482ac7249b9285c2ecdb53e3a68",
+            "retain_logs_sha256=aa4192bc0e60ee97f47aa514e39510e70f3a8cdc8aa6330591a3d7a0f88e95f2",
+            "trainer.args.seed=2",
+            "+trainer.args.data_seed=2",
+            "save_model_after_train=false",
+            "trainer.args.save_strategy=no",
+            "trainer.args.save_only_model=false",
+            "trainer.args.do_eval=true",
+            "trainer.args.eval_on_start=false",
+            "trainer.args.eval_strategy=no",
+            "trainer.args.report_to=none",
+            "trainer.args.logging_steps=1",
+            "trainer.args.per_device_train_batch_size=1",
+            "trainer.args.gradient_accumulation_steps=32",
+            "trainer.args.num_train_epochs=20.0",
+            "+trainer.method_args.scope_control={enabled:true,parameter_regex:[\"model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight\"],selected_storage:float32}"
+          ],
+          "attempt": 1,
+          "command_identity": "6f733645e68a76f3711e06141dfc1318f405298beeb79386380a328929fa4c4b",
+          "evidence": {
+            "arm": "scope12_no_gu20",
+            "command_identity": "6f733645e68a76f3711e06141dfc1318f405298beeb79386380a328929fa4c4b",
+            "command_path": "command.json",
+            "correction_ratio": null,
+            "diagnostics_path": null,
+            "endpoint_raw_path": "checkpoint-240/evals/TOFU_EVAL.json",
+            "endpoint_summary_path": "checkpoint-240/evals/TOFU_SUMMARY.json",
+            "failure_kind": null,
+            "forbidden_artifacts": [],
+            "gpu_memory_sample_count": 1998,
+            "issues": [],
+            "job_id": "SimNPO__scope12_no_gu20__tofu_forget10__seed2",
+            "max_violation_after": null,
+            "method": "SimNPO",
+            "optimizer_update_count": 240,
+            "peak_nvml_mib": 59046,
+            "projection_count": null,
+            "protocol": "adaptive_gu_causal_matrix_20260819",
+            "provenance": {
+              "dataset": {
+                "artifact": "locuslab/TOFU",
+                "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+              },
+              "gibberish_classifier": {
+                "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+                "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+              },
+              "model": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              },
+              "tokenizer": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              }
+            },
+            "returncode": 0,
+            "run_log_path": "run.log",
+            "schema_version": 1,
+            "seed": 2,
+            "status": "completed",
+            "wall_clock_seconds": 2375.0954624209553,
+            "zero_step_count": null
+          },
+          "pid": 3223710,
+          "status": "completed"
+        }
+      ],
+      "benchmark": "tofu_forget10",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "gamma": 0.125,
+      "holdout_split": "holdout10",
+      "job_id": "SimNPO__scope12_no_gu20__tofu_forget10__seed2",
+      "method": "SimNPO",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "num_train_epochs": 20.0,
+      "output_dir": "jobs/SimNPO__scope12_no_gu20__tofu_forget10__seed2",
+      "pid": null,
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_history_rank": 8,
+      "retain_split": "retain90",
+      "seed": 2,
+      "selected_parameter_regex": "model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget10",
+      "stage": "adaptive_gu_causal_matrix",
+      "status": "completed",
+      "trainer_config": "SimNPO"
+    },
+    {
+      "alpha": 1.0,
+      "arm": "fixed_gu20",
+      "attempt_count": 1,
+      "attempt_history": [
+        {
+          "argv": [
+            "/root/miniconda3/envs/unlearning/bin/python",
+            "/workspace/AR-projects/geo-unlearning/.worktrees/tofu-gu-ablation/src/train.py",
+            "--config-name=unlearn.yaml",
+            "experiment=unlearn/tofu/gu_matrix_8b",
+            "trainer=SimNPO",
+            "task_name=SimNPO__fixed_gu20__tofu_forget05__seed2",
+            "paths.output_dir=/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget05__seed2",
+            "model.model_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.model_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "model.tokenizer_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.tokenizer_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "forget_split=forget05",
+            "retain_split=retain95",
+            "holdout_split=holdout05",
+            "retain_logs_path=/workspace/re/GU/geo-unlearning/saves/eval/tofu_Llama-3.1-8B-Instruct_retain95/TOFU_EVAL.json",
+            "tofu_dataset_revision=324592d84ae4f482ac7249b9285c2ecdb53e3a68",
+            "retain_logs_sha256=d94b259bc878e1a38f97cc0fac6937147d09d5958cd24d7fe0437d4be7d3a29f",
+            "trainer.args.seed=2",
+            "+trainer.args.data_seed=2",
+            "save_model_after_train=false",
+            "trainer.args.save_strategy=no",
+            "trainer.args.save_only_model=false",
+            "trainer.args.do_eval=true",
+            "trainer.args.eval_on_start=false",
+            "trainer.args.eval_strategy=no",
+            "trainer.args.report_to=none",
+            "trainer.args.logging_steps=1",
+            "trainer.args.per_device_train_batch_size=1",
+            "trainer.args.gradient_accumulation_steps=32",
+            "+trainer.method_args.gu.enabled=true",
+            "+trainer.method_args.gu.parameter_regex=[\"model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight\"]",
+            "+trainer.method_args.gu.retain_history_rank=8",
+            "+trainer.method_args.gu.projection_eps=1e-6",
+            "+trainer.method_args.gu.retain_filter=first_order",
+            "+trainer.method_args.gu.retain_budget=1e-4",
+            "+trainer.method_args.gu.backtracking_scales=[1.0,0.5,0.25,0.125]",
+            "+trainer.method_args.gu.diagnostics_path=gu_diagnostics.jsonl",
+            "trainer.args.num_train_epochs=20.0"
+          ],
+          "attempt": 1,
+          "command_identity": "4518ba780fa3bd6986449143c044eb0f213d2cc36573abf6427aa0a8a1006009",
+          "evidence": {
+            "arm": "fixed_gu20",
+            "command_identity": "4518ba780fa3bd6986449143c044eb0f213d2cc36573abf6427aa0a8a1006009",
+            "command_path": "command.json",
+            "correction_ratio": {
+              "max": 0.0,
+              "mean": 0.0,
+              "min": 0.0
+            },
+            "diagnostics_path": "gu_diagnostics.jsonl",
+            "endpoint_raw_path": "checkpoint-120/evals/TOFU_EVAL.json",
+            "endpoint_summary_path": "checkpoint-120/evals/TOFU_SUMMARY.json",
+            "failure_kind": null,
+            "forbidden_artifacts": [],
+            "gpu_memory_sample_count": 2303,
+            "issues": [],
+            "job_id": "SimNPO__fixed_gu20__tofu_forget05__seed2",
+            "max_violation_after": -4.4590022235130815e-05,
+            "method": "SimNPO",
+            "optimizer_update_count": 120,
+            "peak_nvml_mib": 99516,
+            "projection_count": 120,
+            "protocol": "adaptive_gu_causal_matrix_20260819",
+            "provenance": {
+              "dataset": {
+                "artifact": "locuslab/TOFU",
+                "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+              },
+              "gibberish_classifier": {
+                "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+                "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+              },
+              "model": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              },
+              "tokenizer": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              }
+            },
+            "returncode": 0,
+            "run_log_path": "run.log",
+            "schema_version": 1,
+            "seed": 2,
+            "status": "completed",
+            "wall_clock_seconds": 2736.1636241683736,
+            "zero_step_count": 0
+          },
+          "pid": 3626922,
+          "status": "completed"
+        }
+      ],
+      "benchmark": "tofu_forget05",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "gamma": 0.125,
+      "holdout_split": "holdout05",
+      "job_id": "SimNPO__fixed_gu20__tofu_forget05__seed2",
+      "method": "SimNPO",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "num_train_epochs": 20.0,
+      "output_dir": "jobs/SimNPO__fixed_gu20__tofu_forget05__seed2",
+      "pid": null,
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_history_rank": 8,
+      "retain_split": "retain95",
+      "seed": 2,
+      "selected_parameter_regex": "model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget05",
+      "stage": "adaptive_gu_causal_matrix",
+      "status": "completed",
+      "trainer_config": "SimNPO"
+    },
+    {
+      "alpha": 1.0,
+      "arm": "native20",
+      "attempt_count": 1,
+      "attempt_history": [
+        {
+          "argv": [
+            "/root/miniconda3/envs/unlearning/bin/python",
+            "/workspace/AR-projects/geo-unlearning/.worktrees/tofu-gu-ablation/src/train.py",
+            "--config-name=unlearn.yaml",
+            "experiment=unlearn/tofu/gu_matrix_8b",
+            "trainer=SimNPO",
+            "task_name=SimNPO__native20__tofu_forget05__seed1",
+            "paths.output_dir=/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget05__seed1",
+            "model.model_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.model_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "model.tokenizer_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.tokenizer_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "forget_split=forget05",
+            "retain_split=retain95",
+            "holdout_split=holdout05",
+            "retain_logs_path=/workspace/re/GU/geo-unlearning/saves/eval/tofu_Llama-3.1-8B-Instruct_retain95/TOFU_EVAL.json",
+            "tofu_dataset_revision=324592d84ae4f482ac7249b9285c2ecdb53e3a68",
+            "retain_logs_sha256=d94b259bc878e1a38f97cc0fac6937147d09d5958cd24d7fe0437d4be7d3a29f",
+            "trainer.args.seed=1",
+            "+trainer.args.data_seed=1",
+            "save_model_after_train=false",
+            "trainer.args.save_strategy=no",
+            "trainer.args.save_only_model=false",
+            "trainer.args.do_eval=true",
+            "trainer.args.eval_on_start=false",
+            "trainer.args.eval_strategy=no",
+            "trainer.args.report_to=none",
+            "trainer.args.logging_steps=1",
+            "trainer.args.per_device_train_batch_size=1",
+            "trainer.args.gradient_accumulation_steps=32",
+            "trainer.args.num_train_epochs=20.0"
+          ],
+          "attempt": 1,
+          "command_identity": "83ac23b4e33ec00cf69d58965b78465cf153907ca01a96b49a2869a75e43f9cd",
+          "evidence": {
+            "arm": "native20",
+            "command_identity": "83ac23b4e33ec00cf69d58965b78465cf153907ca01a96b49a2869a75e43f9cd",
+            "command_path": "command.json",
+            "correction_ratio": null,
+            "diagnostics_path": null,
+            "endpoint_raw_path": "checkpoint-120/evals/TOFU_EVAL.json",
+            "endpoint_summary_path": "checkpoint-120/evals/TOFU_SUMMARY.json",
+            "failure_kind": null,
+            "forbidden_artifacts": [],
+            "gpu_memory_sample_count": 1273,
+            "issues": [],
+            "job_id": "SimNPO__native20__tofu_forget05__seed1",
+            "max_violation_after": null,
+            "method": "SimNPO",
+            "optimizer_update_count": 120,
+            "peak_nvml_mib": 93198,
+            "projection_count": null,
+            "protocol": "adaptive_gu_causal_matrix_20260819",
+            "provenance": {
+              "dataset": {
+                "artifact": "locuslab/TOFU",
+                "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+              },
+              "gibberish_classifier": {
+                "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+                "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+              },
+              "model": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              },
+              "tokenizer": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              }
+            },
+            "returncode": 0,
+            "run_log_path": "run.log",
+            "schema_version": 1,
+            "seed": 1,
+            "status": "completed",
+            "wall_clock_seconds": 1510.1526002725586,
+            "zero_step_count": null
+          },
+          "pid": 55788,
+          "status": "completed"
+        }
+      ],
+      "benchmark": "tofu_forget05",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "gamma": 0.125,
+      "holdout_split": "holdout05",
+      "job_id": "SimNPO__native20__tofu_forget05__seed1",
+      "method": "SimNPO",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "num_train_epochs": 20.0,
+      "output_dir": "jobs/SimNPO__native20__tofu_forget05__seed1",
+      "pid": null,
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_history_rank": 8,
+      "retain_split": "retain95",
+      "seed": 1,
+      "selected_parameter_regex": "model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget05",
+      "stage": "adaptive_gu_causal_matrix",
+      "status": "completed",
+      "trainer_config": "SimNPO"
+    },
+    {
+      "alpha": 1.0,
+      "arm": "scope12_no_gu20",
+      "attempt_count": 1,
+      "attempt_history": [
+        {
+          "argv": [
+            "/root/miniconda3/envs/unlearning/bin/python",
+            "/workspace/AR-projects/geo-unlearning/.worktrees/tofu-gu-ablation/src/train.py",
+            "--config-name=unlearn.yaml",
+            "experiment=unlearn/tofu/gu_matrix_8b",
+            "trainer=SimNPO",
+            "task_name=SimNPO__scope12_no_gu20__tofu_forget05__seed0",
+            "paths.output_dir=/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget05__seed0",
+            "model.model_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.model_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "model.tokenizer_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.tokenizer_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "forget_split=forget05",
+            "retain_split=retain95",
+            "holdout_split=holdout05",
+            "retain_logs_path=/workspace/re/GU/geo-unlearning/saves/eval/tofu_Llama-3.1-8B-Instruct_retain95/TOFU_EVAL.json",
+            "tofu_dataset_revision=324592d84ae4f482ac7249b9285c2ecdb53e3a68",
+            "retain_logs_sha256=d94b259bc878e1a38f97cc0fac6937147d09d5958cd24d7fe0437d4be7d3a29f",
+            "trainer.args.seed=0",
+            "+trainer.args.data_seed=0",
+            "save_model_after_train=false",
+            "trainer.args.save_strategy=no",
+            "trainer.args.save_only_model=false",
+            "trainer.args.do_eval=true",
+            "trainer.args.eval_on_start=false",
+            "trainer.args.eval_strategy=no",
+            "trainer.args.report_to=none",
+            "trainer.args.logging_steps=1",
+            "trainer.args.per_device_train_batch_size=1",
+            "trainer.args.gradient_accumulation_steps=32",
+            "trainer.args.num_train_epochs=20.0",
+            "+trainer.method_args.scope_control={enabled:true,parameter_regex:[\"model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight\"],selected_storage:float32}"
+          ],
+          "attempt": 1,
+          "command_identity": "d5f67ac081875428c7cea99a7e1f4aa4b5546703f3cffa25ae54adb717bc27a6",
+          "evidence": {
+            "arm": "scope12_no_gu20",
+            "command_identity": "d5f67ac081875428c7cea99a7e1f4aa4b5546703f3cffa25ae54adb717bc27a6",
+            "command_path": "command.json",
+            "correction_ratio": null,
+            "diagnostics_path": null,
+            "endpoint_raw_path": "checkpoint-120/evals/TOFU_EVAL.json",
+            "endpoint_summary_path": "checkpoint-120/evals/TOFU_SUMMARY.json",
+            "failure_kind": null,
+            "forbidden_artifacts": [],
+            "gpu_memory_sample_count": 1021,
+            "issues": [],
+            "job_id": "SimNPO__scope12_no_gu20__tofu_forget05__seed0",
+            "max_violation_after": null,
+            "method": "SimNPO",
+            "optimizer_update_count": 120,
+            "peak_nvml_mib": 69178,
+            "projection_count": null,
+            "protocol": "adaptive_gu_causal_matrix_20260819",
+            "provenance": {
+              "dataset": {
+                "artifact": "locuslab/TOFU",
+                "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+              },
+              "gibberish_classifier": {
+                "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+                "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+              },
+              "model": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              },
+              "tokenizer": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              }
+            },
+            "returncode": 0,
+            "run_log_path": "run.log",
+            "schema_version": 1,
+            "seed": 0,
+            "status": "completed",
+            "wall_clock_seconds": 1212.4923690492287,
+            "zero_step_count": null
+          },
+          "pid": 216717,
+          "status": "completed"
+        }
+      ],
+      "benchmark": "tofu_forget05",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "gamma": 0.125,
+      "holdout_split": "holdout05",
+      "job_id": "SimNPO__scope12_no_gu20__tofu_forget05__seed0",
+      "method": "SimNPO",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "num_train_epochs": 20.0,
+      "output_dir": "jobs/SimNPO__scope12_no_gu20__tofu_forget05__seed0",
+      "pid": null,
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_history_rank": 8,
+      "retain_split": "retain95",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget05",
+      "stage": "adaptive_gu_causal_matrix",
+      "status": "completed",
+      "trainer_config": "SimNPO"
+    },
+    {
+      "alpha": 1.0,
+      "arm": "scope12_no_gu20",
+      "attempt_count": 1,
+      "attempt_history": [
+        {
+          "argv": [
+            "/root/miniconda3/envs/unlearning/bin/python",
+            "/workspace/AR-projects/geo-unlearning/.worktrees/tofu-gu-ablation/src/train.py",
+            "--config-name=unlearn.yaml",
+            "experiment=unlearn/tofu/gu_matrix_8b",
+            "trainer=SimNPO",
+            "task_name=SimNPO__scope12_no_gu20__tofu_forget05__seed2",
+            "paths.output_dir=/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget05__seed2",
+            "model.model_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.model_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "model.tokenizer_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.tokenizer_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "forget_split=forget05",
+            "retain_split=retain95",
+            "holdout_split=holdout05",
+            "retain_logs_path=/workspace/re/GU/geo-unlearning/saves/eval/tofu_Llama-3.1-8B-Instruct_retain95/TOFU_EVAL.json",
+            "tofu_dataset_revision=324592d84ae4f482ac7249b9285c2ecdb53e3a68",
+            "retain_logs_sha256=d94b259bc878e1a38f97cc0fac6937147d09d5958cd24d7fe0437d4be7d3a29f",
+            "trainer.args.seed=2",
+            "+trainer.args.data_seed=2",
+            "save_model_after_train=false",
+            "trainer.args.save_strategy=no",
+            "trainer.args.save_only_model=false",
+            "trainer.args.do_eval=true",
+            "trainer.args.eval_on_start=false",
+            "trainer.args.eval_strategy=no",
+            "trainer.args.report_to=none",
+            "trainer.args.logging_steps=1",
+            "trainer.args.per_device_train_batch_size=1",
+            "trainer.args.gradient_accumulation_steps=32",
+            "trainer.args.num_train_epochs=20.0",
+            "+trainer.method_args.scope_control={enabled:true,parameter_regex:[\"model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight\"],selected_storage:float32}"
+          ],
+          "attempt": 1,
+          "command_identity": "717d15a589b20b3c5a5e29f161d67917c32c82a8a7a6e53114439ead868fc2b5",
+          "evidence": {
+            "arm": "scope12_no_gu20",
+            "command_identity": "717d15a589b20b3c5a5e29f161d67917c32c82a8a7a6e53114439ead868fc2b5",
+            "command_path": "command.json",
+            "correction_ratio": null,
+            "diagnostics_path": null,
+            "endpoint_raw_path": "checkpoint-120/evals/TOFU_EVAL.json",
+            "endpoint_summary_path": "checkpoint-120/evals/TOFU_SUMMARY.json",
+            "failure_kind": null,
+            "forbidden_artifacts": [],
+            "gpu_memory_sample_count": 1018,
+            "issues": [],
+            "job_id": "SimNPO__scope12_no_gu20__tofu_forget05__seed2",
+            "max_violation_after": null,
+            "method": "SimNPO",
+            "optimizer_update_count": 120,
+            "peak_nvml_mib": 69176,
+            "projection_count": null,
+            "protocol": "adaptive_gu_causal_matrix_20260819",
+            "provenance": {
+              "dataset": {
+                "artifact": "locuslab/TOFU",
+                "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+              },
+              "gibberish_classifier": {
+                "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+                "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+              },
+              "model": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              },
+              "tokenizer": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              }
+            },
+            "returncode": 0,
+            "run_log_path": "run.log",
+            "schema_version": 1,
+            "seed": 2,
+            "status": "completed",
+            "wall_clock_seconds": 1209.9428732832894,
+            "zero_step_count": null
+          },
+          "pid": 347289,
+          "status": "completed"
+        }
+      ],
+      "benchmark": "tofu_forget05",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "gamma": 0.125,
+      "holdout_split": "holdout05",
+      "job_id": "SimNPO__scope12_no_gu20__tofu_forget05__seed2",
+      "method": "SimNPO",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "num_train_epochs": 20.0,
+      "output_dir": "jobs/SimNPO__scope12_no_gu20__tofu_forget05__seed2",
+      "pid": null,
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_history_rank": 8,
+      "retain_split": "retain95",
+      "seed": 2,
+      "selected_parameter_regex": "model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget05",
+      "stage": "adaptive_gu_causal_matrix",
+      "status": "completed",
+      "trainer_config": "SimNPO"
+    },
+    {
+      "alpha": 1.0,
+      "arm": "scope12_no_gu20",
+      "attempt_count": 1,
+      "attempt_history": [
+        {
+          "argv": [
+            "/root/miniconda3/envs/unlearning/bin/python",
+            "/workspace/AR-projects/geo-unlearning/.worktrees/tofu-gu-ablation/src/train.py",
+            "--config-name=unlearn.yaml",
+            "experiment=unlearn/tofu/gu_matrix_8b",
+            "trainer=SimNPO",
+            "task_name=SimNPO__scope12_no_gu20__tofu_forget01__seed0",
+            "paths.output_dir=/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget01__seed0",
+            "model.model_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.model_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "model.tokenizer_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.tokenizer_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "forget_split=forget01",
+            "retain_split=retain99",
+            "holdout_split=holdout01",
+            "retain_logs_path=/workspace/re/GU/geo-unlearning/saves/eval/tofu_Llama-3.1-8B-Instruct_retain99/TOFU_EVAL.json",
+            "tofu_dataset_revision=324592d84ae4f482ac7249b9285c2ecdb53e3a68",
+            "retain_logs_sha256=d307bb83ea3e3409fd01cc50908501ea16aba49e9ed6a779f8ceb75ec2e5503f",
+            "trainer.args.seed=0",
+            "+trainer.args.data_seed=0",
+            "save_model_after_train=false",
+            "trainer.args.save_strategy=no",
+            "trainer.args.save_only_model=false",
+            "trainer.args.do_eval=true",
+            "trainer.args.eval_on_start=false",
+            "trainer.args.eval_strategy=no",
+            "trainer.args.report_to=none",
+            "trainer.args.logging_steps=1",
+            "trainer.args.per_device_train_batch_size=1",
+            "trainer.args.gradient_accumulation_steps=32",
+            "trainer.args.num_train_epochs=20.0",
+            "+trainer.method_args.scope_control={enabled:true,parameter_regex:[\"model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight\"],selected_storage:float32}"
+          ],
+          "attempt": 1,
+          "command_identity": "2456d4a133aea67d1200c8dae15b9b2b2ebf89c7b41ea6be6a58a0c7ae6e81c8",
+          "evidence": {
+            "arm": "scope12_no_gu20",
+            "command_identity": "2456d4a133aea67d1200c8dae15b9b2b2ebf89c7b41ea6be6a58a0c7ae6e81c8",
+            "command_path": "command.json",
+            "correction_ratio": null,
+            "diagnostics_path": null,
+            "endpoint_raw_path": "checkpoint-20/evals/TOFU_EVAL.json",
+            "endpoint_summary_path": "checkpoint-20/evals/TOFU_SUMMARY.json",
+            "failure_kind": null,
+            "forbidden_artifacts": [],
+            "gpu_memory_sample_count": 229,
+            "issues": [],
+            "job_id": "SimNPO__scope12_no_gu20__tofu_forget01__seed0",
+            "max_violation_after": null,
+            "method": "SimNPO",
+            "optimizer_update_count": 20,
+            "peak_nvml_mib": 61670,
+            "projection_count": null,
+            "protocol": "adaptive_gu_causal_matrix_20260819",
+            "provenance": {
+              "dataset": {
+                "artifact": "locuslab/TOFU",
+                "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+              },
+              "gibberish_classifier": {
+                "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+                "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+              },
+              "model": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              },
+              "tokenizer": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              }
+            },
+            "returncode": 0,
+            "run_log_path": "run.log",
+            "schema_version": 1,
+            "seed": 0,
+            "status": "completed",
+            "wall_clock_seconds": 277.73937526065856,
+            "zero_step_count": null
+          },
+          "pid": 510572,
+          "status": "completed"
+        }
+      ],
+      "benchmark": "tofu_forget01",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "gamma": 0.125,
+      "holdout_split": "holdout01",
+      "job_id": "SimNPO__scope12_no_gu20__tofu_forget01__seed0",
+      "method": "SimNPO",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "num_train_epochs": 20.0,
+      "output_dir": "jobs/SimNPO__scope12_no_gu20__tofu_forget01__seed0",
+      "pid": null,
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_history_rank": 8,
+      "retain_split": "retain99",
+      "seed": 0,
+      "selected_parameter_regex": "model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget01",
+      "stage": "adaptive_gu_causal_matrix",
+      "status": "completed",
+      "trainer_config": "SimNPO"
+    },
+    {
+      "alpha": 1.0,
+      "arm": "scope12_no_gu20",
+      "attempt_count": 1,
+      "attempt_history": [
+        {
+          "argv": [
+            "/root/miniconda3/envs/unlearning/bin/python",
+            "/workspace/AR-projects/geo-unlearning/.worktrees/tofu-gu-ablation/src/train.py",
+            "--config-name=unlearn.yaml",
+            "experiment=unlearn/tofu/gu_matrix_8b",
+            "trainer=SimNPO",
+            "task_name=SimNPO__scope12_no_gu20__tofu_forget01__seed2",
+            "paths.output_dir=/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget01__seed2",
+            "model.model_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.model_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "model.tokenizer_args.pretrained_model_name_or_path=open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+            "model.tokenizer_args.revision=1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+            "forget_split=forget01",
+            "retain_split=retain99",
+            "holdout_split=holdout01",
+            "retain_logs_path=/workspace/re/GU/geo-unlearning/saves/eval/tofu_Llama-3.1-8B-Instruct_retain99/TOFU_EVAL.json",
+            "tofu_dataset_revision=324592d84ae4f482ac7249b9285c2ecdb53e3a68",
+            "retain_logs_sha256=d307bb83ea3e3409fd01cc50908501ea16aba49e9ed6a779f8ceb75ec2e5503f",
+            "trainer.args.seed=2",
+            "+trainer.args.data_seed=2",
+            "save_model_after_train=false",
+            "trainer.args.save_strategy=no",
+            "trainer.args.save_only_model=false",
+            "trainer.args.do_eval=true",
+            "trainer.args.eval_on_start=false",
+            "trainer.args.eval_strategy=no",
+            "trainer.args.report_to=none",
+            "trainer.args.logging_steps=1",
+            "trainer.args.per_device_train_batch_size=1",
+            "trainer.args.gradient_accumulation_steps=32",
+            "trainer.args.num_train_epochs=20.0",
+            "+trainer.method_args.scope_control={enabled:true,parameter_regex:[\"model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight\"],selected_storage:float32}"
+          ],
+          "attempt": 1,
+          "command_identity": "dbdd5295a521602f86662610cab8a4563adf053e6eeb75401a972e0109d46670",
+          "evidence": {
+            "arm": "scope12_no_gu20",
+            "command_identity": "dbdd5295a521602f86662610cab8a4563adf053e6eeb75401a972e0109d46670",
+            "command_path": "command.json",
+            "correction_ratio": null,
+            "diagnostics_path": null,
+            "endpoint_raw_path": "checkpoint-20/evals/TOFU_EVAL.json",
+            "endpoint_summary_path": "checkpoint-20/evals/TOFU_SUMMARY.json",
+            "failure_kind": null,
+            "forbidden_artifacts": [],
+            "gpu_memory_sample_count": 229,
+            "issues": [],
+            "job_id": "SimNPO__scope12_no_gu20__tofu_forget01__seed2",
+            "max_violation_after": null,
+            "method": "SimNPO",
+            "optimizer_update_count": 20,
+            "peak_nvml_mib": 61764,
+            "projection_count": null,
+            "protocol": "adaptive_gu_causal_matrix_20260819",
+            "provenance": {
+              "dataset": {
+                "artifact": "locuslab/TOFU",
+                "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+              },
+              "gibberish_classifier": {
+                "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+                "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+              },
+              "model": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              },
+              "tokenizer": {
+                "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+                "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+              }
+            },
+            "returncode": 0,
+            "run_log_path": "run.log",
+            "schema_version": 1,
+            "seed": 2,
+            "status": "completed",
+            "wall_clock_seconds": 280.0021075513214,
+            "zero_step_count": null
+          },
+          "pid": 545220,
+          "status": "completed"
+        }
+      ],
+      "benchmark": "tofu_forget01",
+      "evaluator_kind": "tofu",
+      "experiment_config": "unlearn/tofu/gu_matrix_8b",
+      "gamma": 0.125,
+      "holdout_split": "holdout01",
+      "job_id": "SimNPO__scope12_no_gu20__tofu_forget01__seed2",
+      "method": "SimNPO",
+      "model": {
+        "config": "Llama-3.1-8B-Instruct",
+        "pretrained_model_name_or_path": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full"
+      },
+      "num_train_epochs": 20.0,
+      "output_dir": "jobs/SimNPO__scope12_no_gu20__tofu_forget01__seed2",
+      "pid": null,
+      "provenance": {
+        "dataset": {
+          "artifact": "locuslab/TOFU",
+          "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+        },
+        "gibberish_classifier": {
+          "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+          "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+        },
+        "model": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        },
+        "tokenizer": {
+          "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+          "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+        }
+      },
+      "retain_history_rank": 8,
+      "retain_split": "retain99",
+      "seed": 2,
+      "selected_parameter_regex": "model[.]layers[.](20|21|22|23|24|25|26|27|28|29|30|31)[.]mlp[.]down_proj[.]weight",
+      "split": "forget01",
+      "stage": "adaptive_gu_causal_matrix",
+      "status": "completed",
+      "trainer_config": "SimNPO"
+    }
+  ],
+  "output_root": "/root/adaptive_gu_causal_matrix_20260819_gpu01",
+  "physical_gpu": 0,
+  "protocol": "adaptive_gu_causal_matrix_20260819",
+  "schema_version": 1,
+  "worker": 0
+}
