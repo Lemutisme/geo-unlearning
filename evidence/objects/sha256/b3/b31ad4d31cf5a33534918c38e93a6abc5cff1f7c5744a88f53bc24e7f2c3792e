@@ -1,0 +1,12 @@
+# Adaptive GU Causal Attribution Report
+
+Protocol: `adaptive_gu_causal_analysis_20260819`
+
+Existing evidence: `/root/adaptive_safe_baseline_all_tofu_20260817_gpu1`
+Causal controls: `/root/adaptive_gu_causal_matrix_20260819_gpu01`
+
+All endpoint and effect decisions remain split/seed specific; unrelated metrics are never averaged.
+
+An inactive mechanism cannot receive causal credit, even when a composite endpoint changes.
+
+See `ADAPTIVE_GU_CAUSAL_TABLES.md` for all five arms and adjacent effects.
