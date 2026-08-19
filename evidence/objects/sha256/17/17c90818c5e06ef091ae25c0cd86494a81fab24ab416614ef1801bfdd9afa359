@@ -1,0 +1,99 @@
+# Adaptive GU Five-Arm Causal Tables
+
+Lower extraction strength is better; all other endpoint metrics are higher-is-better.
+
+| Split | Seed | Arm | ES-Un ↓ | ES-Re ↑ | MU ↑ | Privacy ↑ |
+|---|---:|---|---:|---:|---:|---:|
+| forget01 | 0 | native10 | 0.609736 | 0.979841 | 0.635942 | -99.250000 |
+| forget01 | 0 | native20 | 0.494116 | 0.971397 | 0.636956 | -96.625000 |
+| forget01 | 0 | scope12_no_gu20 | 0.619389 | 0.968707 | 0.615341 | -99.250000 |
+| forget01 | 0 | fixed_gu20 | 0.619389 | 0.968707 | 0.615341 | -99.250000 |
+| forget01 | 0 | adaptive_safe20 | 0.624389 | 0.968837 | 0.614644 | -99.250000 |
+| forget01 | 1 | native10 | 0.749665 | 0.972740 | 0.627230 | -99.750000 |
+| forget01 | 1 | native20 | 0.496703 | 0.971597 | 0.628431 | -99.125000 |
+| forget01 | 1 | scope12_no_gu20 | 0.678690 | 0.976174 | 0.621690 | -99.500000 |
+| forget01 | 1 | fixed_gu20 | 0.678690 | 0.976174 | 0.621690 | -99.500000 |
+| forget01 | 1 | adaptive_safe20 | 0.678690 | 0.976174 | 0.621398 | -99.500000 |
+| forget01 | 2 | native10 | 0.695861 | 0.967903 | 0.628993 | -99.625000 |
+| forget01 | 2 | native20 | 0.486567 | 0.968231 | 0.628758 | -98.750000 |
+| forget01 | 2 | scope12_no_gu20 | 0.660912 | 0.981207 | 0.624435 | -99.375000 |
+| forget01 | 2 | fixed_gu20 | 0.660912 | 0.983113 | 0.623858 | -99.375000 |
+| forget01 | 2 | adaptive_safe20 | 0.660912 | 0.981976 | 0.624363 | -99.375000 |
+| forget05 | 0 | native10 | 0.726411 | 0.980180 | 0.625200 | -99.735943 |
+| forget05 | 0 | native20 | 0.490866 | 0.988192 | 0.623347 | -98.819509 |
+| forget05 | 0 | scope12_no_gu20 | 0.542736 | 0.979848 | 0.596324 | -98.240913 |
+| forget05 | 0 | fixed_gu20 | 0.548314 | 0.980485 | 0.595799 | -98.264212 |
+| forget05 | 0 | adaptive_safe20 | 0.542178 | 0.979239 | 0.596012 | -98.275862 |
+| forget05 | 1 | native10 | 0.694701 | 0.976380 | 0.624163 | -99.149581 |
+| forget05 | 1 | native20 | 0.465461 | 0.982006 | 0.628988 | -97.437092 |
+| forget05 | 1 | scope12_no_gu20 | 0.580405 | 0.990298 | 0.613773 | -98.035104 |
+| forget05 | 1 | fixed_gu20 | 0.579911 | 0.989021 | 0.613374 | -98.050637 |
+| forget05 | 1 | adaptive_safe20 | 0.579189 | 0.990926 | 0.613075 | -98.058403 |
+| forget05 | 2 | native10 | 0.694494 | 0.983120 | 0.616724 | -99.203945 |
+| forget05 | 2 | native20 | 0.514081 | 0.990611 | 0.623179 | -98.015688 |
+| forget05 | 2 | scope12_no_gu20 | 0.557573 | 0.987256 | 0.612593 | -98.392358 |
+| forget05 | 2 | fixed_gu20 | 0.557573 | 0.987256 | 0.612593 | -98.392358 |
+| forget05 | 2 | adaptive_safe20 | 0.559656 | 0.987970 | 0.613280 | -98.431190 |
+| forget10 | 0 | native10 | 0.693763 | 0.979038 | 0.618502 | -99.268991 |
+| forget10 | 0 | native20 | 0.449209 | 0.986640 | 0.614974 | -97.710178 |
+| forget10 | 0 | scope12_no_gu20 | 0.485378 | 0.991390 | 0.603369 | -98.076186 |
+| forget10 | 0 | fixed_gu20 | 0.485378 | 0.991390 | 0.603369 | -98.076186 |
+| forget10 | 0 | adaptive_safe20 | 0.483081 | 0.991390 | 0.603091 | -98.048962 |
+| forget10 | 1 | native10 | 0.685000 | 0.980713 | 0.628297 | -99.461574 |
+| forget10 | 1 | native20 | 0.459550 | 0.986098 | 0.633854 | -98.298010 |
+| forget10 | 1 | scope12_no_gu20 | 0.494578 | 0.990024 | 0.602444 | -98.127609 |
+| forget10 | 1 | fixed_gu20 | 0.494578 | 0.990024 | 0.602444 | -98.127609 |
+| forget10 | 1 | adaptive_safe20 | 0.500593 | 0.989285 | 0.601323 | -98.142733 |
+| forget10 | 2 | native10 | 0.676534 | 0.975566 | 0.638710 | -99.485773 |
+| forget10 | 2 | native20 | 0.456894 | 0.984604 | 0.634748 | -98.124584 |
+| forget10 | 2 | scope12_no_gu20 | 0.495279 | 0.989414 | 0.594820 | -98.142733 |
+| forget10 | 2 | fixed_gu20 | 0.495279 | 0.989414 | 0.594820 | -98.142733 |
+| forget10 | 2 | adaptive_safe20 | 0.493024 | 0.990850 | 0.594666 | -98.128617 |
+
+| Split | Seed | Effect | Δ forgetting ↑ | Δ MU ↑ | Strict Pareto | Tolerance |
+|---|---:|---|---:|---:|---|---|
+| forget01 | 0 | epoch | +0.115620 | +0.001014 | False | True |
+| forget01 | 0 | scope | -0.125274 | -0.021615 | False | False |
+| forget01 | 0 | fixed_gu | +0.000000 | +0.000000 | True | True |
+| forget01 | 0 | adaptive | -0.005000 | -0.000697 | False | True |
+| forget01 | 0 | composite | -0.014653 | -0.021298 | False | True |
+| forget01 | 1 | epoch | +0.252962 | +0.001202 | False | True |
+| forget01 | 1 | scope | -0.181987 | -0.006742 | False | False |
+| forget01 | 1 | fixed_gu | +0.000000 | +0.000000 | True | True |
+| forget01 | 1 | adaptive | +0.000000 | -0.000292 | False | True |
+| forget01 | 1 | composite | +0.070975 | -0.005832 | False | True |
+| forget01 | 2 | epoch | +0.209294 | -0.000236 | False | True |
+| forget01 | 2 | scope | -0.174345 | -0.004323 | False | False |
+| forget01 | 2 | fixed_gu | +0.000000 | -0.000577 | False | True |
+| forget01 | 2 | adaptive | +0.000000 | +0.000504 | False | True |
+| forget01 | 2 | composite | +0.034949 | -0.004631 | False | True |
+| forget05 | 0 | epoch | +0.235545 | -0.001853 | False | True |
+| forget05 | 0 | scope | -0.051870 | -0.027023 | False | False |
+| forget05 | 0 | fixed_gu | -0.005577 | -0.000524 | False | True |
+| forget05 | 0 | adaptive | +0.006135 | +0.000213 | False | True |
+| forget05 | 0 | composite | +0.184233 | -0.029188 | False | True |
+| forget05 | 1 | epoch | +0.229240 | +0.004825 | True | True |
+| forget05 | 1 | scope | -0.114944 | -0.015215 | False | False |
+| forget05 | 1 | fixed_gu | +0.000493 | -0.000399 | False | True |
+| forget05 | 1 | adaptive | +0.000722 | -0.000299 | False | True |
+| forget05 | 1 | composite | +0.115512 | -0.011088 | False | True |
+| forget05 | 2 | epoch | +0.180412 | +0.006455 | True | True |
+| forget05 | 2 | scope | -0.043492 | -0.010586 | False | False |
+| forget05 | 2 | fixed_gu | +0.000000 | +0.000000 | True | True |
+| forget05 | 2 | adaptive | -0.002083 | +0.000687 | False | True |
+| forget05 | 2 | composite | +0.134837 | -0.003444 | False | True |
+| forget10 | 0 | epoch | +0.244554 | -0.003527 | False | True |
+| forget10 | 0 | scope | -0.036169 | -0.011605 | False | False |
+| forget10 | 0 | fixed_gu | +0.000000 | +0.000000 | True | True |
+| forget10 | 0 | adaptive | +0.002297 | -0.000278 | False | True |
+| forget10 | 0 | composite | +0.210682 | -0.015410 | False | True |
+| forget10 | 1 | epoch | +0.225450 | +0.005556 | True | True |
+| forget10 | 1 | scope | -0.035027 | -0.031409 | False | False |
+| forget10 | 1 | fixed_gu | +0.000000 | +0.000000 | True | True |
+| forget10 | 1 | adaptive | -0.006015 | -0.001122 | False | True |
+| forget10 | 1 | composite | +0.184407 | -0.026975 | False | True |
+| forget10 | 2 | epoch | +0.219640 | -0.003961 | False | True |
+| forget10 | 2 | scope | -0.038386 | -0.039928 | False | False |
+| forget10 | 2 | fixed_gu | +0.000000 | +0.000000 | True | True |
+| forget10 | 2 | adaptive | +0.002255 | -0.000154 | False | True |
+| forget10 | 2 | composite | +0.183509 | -0.044044 | False | True |
