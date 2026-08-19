@@ -1,0 +1,2465 @@
+{
+  "causal_root": "/root/adaptive_gu_causal_matrix_20260819_gpu01",
+  "existing_root": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1",
+  "protocol": "adaptive_gu_causal_analysis_20260819",
+  "rows": [
+    {
+      "arms": {
+        "adaptive_safe20": {
+          "command_identity": "ef4e4318b67d914e31bb0c60bc017851c136ba2f6b0cec1d1d53a3e4f369be95",
+          "mechanism": {
+            "activated": false,
+            "active_constraint_steps": 0,
+            "corrected_steps": 0,
+            "max_correction_ratio": 0.0,
+            "max_retain_spent": 0.0,
+            "max_retained_history": 0,
+            "min_scale": 1.0,
+            "nonunit_scale_steps": 0,
+            "steps": 20,
+            "stop_requests": 0,
+            "zero_steps": 0
+          },
+          "metrics": {
+            "extraction_strength": 0.6243892709472737,
+            "model_utility": 0.6146441574542296,
+            "privleak": -99.24999998015,
+            "retain_extraction_strength": 0.9688365205428496
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget01__seed0/checkpoint-20/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 20,
+            "peak_nvml_mib": 91786.0,
+            "wall_clock_seconds": 700.539852054324
+          },
+          "result_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget01__seed0/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget01__seed0/checkpoint-20/evals/TOFU_SUMMARY.json"
+        },
+        "fixed_gu20": {
+          "command_identity": "de3a37d2b166d7b23d6d83ba04ba21eddfdc57a3dc185ddd428f19446dd04f97",
+          "mechanism": {
+            "activated": false,
+            "active_constraint_steps": 0,
+            "corrected_steps": 0,
+            "max_correction_ratio": 0.0,
+            "min_scale": 1.0,
+            "nonunit_scale_steps": 0,
+            "steps": 20,
+            "zero_steps": 0
+          },
+          "metrics": {
+            "extraction_strength": 0.6193892709472737,
+            "model_utility": 0.6153411200605784,
+            "privleak": -99.24999998015,
+            "retain_extraction_strength": 0.9687071707259999
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget01__seed0/checkpoint-20/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 20,
+            "peak_nvml_mib": 92010.0,
+            "wall_clock_seconds": 516.3130258889869
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget01__seed0/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget01__seed0/checkpoint-20/evals/TOFU_SUMMARY.json"
+        },
+        "native10": {
+          "command_identity": "8941a9ac357a019a9bc59bec8a09dac452461eb8c0aa5bae9a1d0a84362febd6",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.609736203829921,
+            "model_utility": 0.6359422572044153,
+            "privleak": -99.24999998015002,
+            "retain_extraction_strength": 0.9798413990112007
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget01__seed0/checkpoint-10/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 10,
+            "peak_nvml_mib": 86634.0,
+            "wall_clock_seconds": 220.85308121191338
+          },
+          "result_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget01__seed0/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget01__seed0/checkpoint-10/evals/TOFU_SUMMARY.json"
+        },
+        "native20": {
+          "command_identity": "180c380b2548070cbcb3f3668ccc2883214fa22a81c0be0a79c6896a0b428b02",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.4941157436469149,
+            "model_utility": 0.6369560075335277,
+            "privleak": -96.62499998067501,
+            "retain_extraction_strength": 0.9713970554294501
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget01__seed0/checkpoint-20/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 20,
+            "peak_nvml_mib": 86658.0,
+            "wall_clock_seconds": 332.4722801623866
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget01__seed0/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget01__seed0/checkpoint-20/evals/TOFU_SUMMARY.json"
+        },
+        "scope12_no_gu20": {
+          "command_identity": "2456d4a133aea67d1200c8dae15b9b2b2ebf89c7b41ea6be6a58a0c7ae6e81c8",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.6193892709472737,
+            "model_utility": 0.6153411200605784,
+            "privleak": -99.24999998015,
+            "retain_extraction_strength": 0.9687071707259999
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget01__seed0/checkpoint-20/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 20,
+            "peak_nvml_mib": 61670.0,
+            "wall_clock_seconds": 277.73937526065856
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget01__seed0/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget01__seed0/checkpoint-20/evals/TOFU_SUMMARY.json"
+        }
+      },
+      "effects": {
+        "adaptive": {
+          "candidate_arm": "adaptive_safe20",
+          "causal_credit": false,
+          "improvements": {
+            "extraction_strength": -0.0050000000000000044,
+            "model_utility": -0.0006969626063487722,
+            "privleak": 0.0,
+            "retain_extraction_strength": 0.00012934981684975533
+          },
+          "mechanism_activated": false,
+          "reference_arm": "fixed_gu20",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "composite": {
+          "candidate_arm": "adaptive_safe20",
+          "improvements": {
+            "extraction_strength": -0.014653067117352703,
+            "model_utility": -0.021298099750185706,
+            "privleak": 2.842170943040401e-14,
+            "retain_extraction_strength": -0.011004878468351076
+          },
+          "reference_arm": "native10",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "epoch": {
+          "candidate_arm": "native20",
+          "improvements": {
+            "extraction_strength": 0.11562046018300609,
+            "model_utility": 0.0010137503291123284,
+            "privleak": 2.6249999994750084,
+            "retain_extraction_strength": -0.008444343581750613
+          },
+          "reference_arm": "native10",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "fixed_gu": {
+          "candidate_arm": "fixed_gu20",
+          "causal_credit": false,
+          "improvements": {
+            "extraction_strength": 0.0,
+            "model_utility": 0.0,
+            "privleak": 0.0,
+            "retain_extraction_strength": 0.0
+          },
+          "mechanism_activated": false,
+          "reference_arm": "scope12_no_gu20",
+          "strict_pareto": true,
+          "tolerance_pass": true
+        },
+        "scope": {
+          "candidate_arm": "scope12_no_gu20",
+          "improvements": {
+            "extraction_strength": -0.1252735273003588,
+            "model_utility": -0.021614887472949262,
+            "privleak": -2.62499999947498,
+            "retain_extraction_strength": -0.0026898847034502182
+          },
+          "reference_arm": "native20",
+          "strict_pareto": false,
+          "tolerance_pass": false
+        }
+      },
+      "seed": 0,
+      "split": "forget01"
+    },
+    {
+      "arms": {
+        "adaptive_safe20": {
+          "command_identity": "d99e49be579da951fb41182c760d41aae2464e4cf3a3ab8c96714a650eb7596f",
+          "mechanism": {
+            "activated": false,
+            "active_constraint_steps": 0,
+            "corrected_steps": 0,
+            "max_correction_ratio": 0.0,
+            "max_retain_spent": 0.0,
+            "max_retained_history": 0,
+            "min_scale": 1.0,
+            "nonunit_scale_steps": 0,
+            "steps": 20,
+            "stop_requests": 0,
+            "zero_steps": 0
+          },
+          "metrics": {
+            "extraction_strength": 0.6786899800120517,
+            "model_utility": 0.6213976948809176,
+            "privleak": -99.49999998009999,
+            "retain_extraction_strength": 0.9761737249846173
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget01__seed1/checkpoint-20/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 20,
+            "peak_nvml_mib": 92004.0,
+            "wall_clock_seconds": 713.1301990682259
+          },
+          "result_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget01__seed1/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget01__seed1/checkpoint-20/evals/TOFU_SUMMARY.json"
+        },
+        "fixed_gu20": {
+          "command_identity": "30d7c0f89f9a1145ab08229eb5fb424fe72239cabf2c81412e5e20ae8844b0e6",
+          "mechanism": {
+            "activated": false,
+            "active_constraint_steps": 0,
+            "corrected_steps": 0,
+            "max_correction_ratio": 0.0,
+            "min_scale": 1.0,
+            "nonunit_scale_steps": 0,
+            "steps": 20,
+            "zero_steps": 0
+          },
+          "metrics": {
+            "extraction_strength": 0.6786899800120517,
+            "model_utility": 0.6216896077475143,
+            "privleak": -99.49999998009999,
+            "retain_extraction_strength": 0.9761737249846173
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget01__seed1/checkpoint-20/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 20,
+            "peak_nvml_mib": 92228.0,
+            "wall_clock_seconds": 519.9744736189023
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget01__seed1/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget01__seed1/checkpoint-20/evals/TOFU_SUMMARY.json"
+        },
+        "native10": {
+          "command_identity": "19027d6f7a805829dde07d2002c5ede2bb09b749a15afb774797af8ab22c74e2",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.7496651944133156,
+            "model_utility": 0.6272295566454891,
+            "privleak": -99.74999998005,
+            "retain_extraction_strength": 0.9727396548314823
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget01__seed1/checkpoint-10/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 10,
+            "peak_nvml_mib": 86662.0,
+            "wall_clock_seconds": 224.02334124594927
+          },
+          "result_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget01__seed1/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget01__seed1/checkpoint-10/evals/TOFU_SUMMARY.json"
+        },
+        "native20": {
+          "command_identity": "2e5fa1c7159a0f694a41a9a416ffa67c88d78e979cfff39d5d200b5a2ce239ef",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.4967029739060681,
+            "model_utility": 0.6284313296393655,
+            "privleak": -99.124999980175,
+            "retain_extraction_strength": 0.9715969400194127
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget01__seed1/checkpoint-20/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 20,
+            "peak_nvml_mib": 86674.0,
+            "wall_clock_seconds": 330.3848444102332
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget01__seed1/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget01__seed1/checkpoint-20/evals/TOFU_SUMMARY.json"
+        },
+        "scope12_no_gu20": {
+          "command_identity": "b40507c80f7e2160a92fcb636b8091afe210effefdc423c951ea03c737d52057",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.6786899800120517,
+            "model_utility": 0.6216896077475143,
+            "privleak": -99.49999998009999,
+            "retain_extraction_strength": 0.9761737249846173
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget01__seed1/checkpoint-20/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 20,
+            "peak_nvml_mib": 61804.0,
+            "wall_clock_seconds": 276.9775687819347
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget01__seed1/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget01__seed1/checkpoint-20/evals/TOFU_SUMMARY.json"
+        }
+      },
+      "effects": {
+        "adaptive": {
+          "candidate_arm": "adaptive_safe20",
+          "causal_credit": false,
+          "improvements": {
+            "extraction_strength": 0.0,
+            "model_utility": -0.0002919128665966886,
+            "privleak": 0.0,
+            "retain_extraction_strength": 0.0
+          },
+          "mechanism_activated": false,
+          "reference_arm": "fixed_gu20",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "composite": {
+          "candidate_arm": "adaptive_safe20",
+          "improvements": {
+            "extraction_strength": 0.07097521440126386,
+            "model_utility": -0.005831861764571511,
+            "privleak": 0.24999999995002042,
+            "retain_extraction_strength": 0.003434070153135016
+          },
+          "reference_arm": "native10",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "epoch": {
+          "candidate_arm": "native20",
+          "improvements": {
+            "extraction_strength": 0.2529622205072475,
+            "model_utility": 0.001201772993876471,
+            "privleak": 0.6249999998750013,
+            "retain_extraction_strength": -0.0011427148120696229
+          },
+          "reference_arm": "native10",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "fixed_gu": {
+          "candidate_arm": "fixed_gu20",
+          "causal_credit": false,
+          "improvements": {
+            "extraction_strength": 0.0,
+            "model_utility": 0.0,
+            "privleak": 0.0,
+            "retain_extraction_strength": 0.0
+          },
+          "mechanism_activated": false,
+          "reference_arm": "scope12_no_gu20",
+          "strict_pareto": true,
+          "tolerance_pass": true
+        },
+        "scope": {
+          "candidate_arm": "scope12_no_gu20",
+          "improvements": {
+            "extraction_strength": -0.18198700610598362,
+            "model_utility": -0.006741721891851293,
+            "privleak": -0.3749999999249809,
+            "retain_extraction_strength": 0.004576784965204639
+          },
+          "reference_arm": "native20",
+          "strict_pareto": false,
+          "tolerance_pass": false
+        }
+      },
+      "seed": 1,
+      "split": "forget01"
+    },
+    {
+      "arms": {
+        "adaptive_safe20": {
+          "command_identity": "8b04971e2deac4b1152697e8f5a4a4be13919c258ba09ac2ffd913222632fc84",
+          "mechanism": {
+            "activated": true,
+            "active_constraint_steps": 2,
+            "corrected_steps": 2,
+            "max_correction_ratio": 0.01868827274893615,
+            "max_retain_spent": 0.0,
+            "max_retained_history": 1,
+            "min_scale": 1.0,
+            "nonunit_scale_steps": 0,
+            "steps": 20,
+            "stop_requests": 0,
+            "zero_steps": 0
+          },
+          "metrics": {
+            "extraction_strength": 0.6609123426233626,
+            "model_utility": 0.6243626949276238,
+            "privleak": -99.37499998012498,
+            "retain_extraction_strength": 0.9819762641011551
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget01__seed2/checkpoint-20/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 20,
+            "peak_nvml_mib": 92254.0,
+            "wall_clock_seconds": 707.5576455970295
+          },
+          "result_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget01__seed2/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget01__seed2/checkpoint-20/evals/TOFU_SUMMARY.json"
+        },
+        "fixed_gu20": {
+          "command_identity": "255e0568a78e5a00515af093d304e1308df75f473b3cb5b616675bb7849aa879",
+          "mechanism": {
+            "activated": true,
+            "active_constraint_steps": 2,
+            "corrected_steps": 2,
+            "max_correction_ratio": 0.0186882727502968,
+            "min_scale": 1.0,
+            "nonunit_scale_steps": 0,
+            "steps": 20,
+            "zero_steps": 0
+          },
+          "metrics": {
+            "extraction_strength": 0.6609123426233626,
+            "model_utility": 0.6238584354148107,
+            "privleak": -99.37499998012498,
+            "retain_extraction_strength": 0.9831126277375187
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget01__seed2/checkpoint-20/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 20,
+            "peak_nvml_mib": 92030.0,
+            "wall_clock_seconds": 517.127121864818
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget01__seed2/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget01__seed2/checkpoint-20/evals/TOFU_SUMMARY.json"
+        },
+        "native10": {
+          "command_identity": "e5ecf0b578b2c27b0ffbe279a60750ba744900ce440920553cff239fb0ba915a",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.6958613540217004,
+            "model_utility": 0.6289934307421495,
+            "privleak": -99.62499998007497,
+            "retain_extraction_strength": 0.9679026129786845
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget01__seed2/checkpoint-10/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 10,
+            "peak_nvml_mib": 86552.0,
+            "wall_clock_seconds": 229.53621861385182
+          },
+          "result_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget01__seed2/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget01__seed2/checkpoint-10/evals/TOFU_SUMMARY.json"
+        },
+        "native20": {
+          "command_identity": "00d6ace8e17a82e5de060034a09130e6978d3ca3db3939ec9b50450dfe35c05b",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.4865670645166203,
+            "model_utility": 0.6287578949052676,
+            "privleak": -98.74999998025001,
+            "retain_extraction_strength": 0.9682312821902392
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget01__seed2/checkpoint-20/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 20,
+            "peak_nvml_mib": 86552.0,
+            "wall_clock_seconds": 334.0899585504085
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget01__seed2/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget01__seed2/checkpoint-20/evals/TOFU_SUMMARY.json"
+        },
+        "scope12_no_gu20": {
+          "command_identity": "dbdd5295a521602f86662610cab8a4563adf053e6eeb75401a972e0109d46670",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.6609123426233626,
+            "model_utility": 0.62443525643342,
+            "privleak": -99.37499998012498,
+            "retain_extraction_strength": 0.9812070333319244
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget01__seed2/checkpoint-20/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 20,
+            "peak_nvml_mib": 61764.0,
+            "wall_clock_seconds": 280.0021075513214
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget01__seed2/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget01__seed2/checkpoint-20/evals/TOFU_SUMMARY.json"
+        }
+      },
+      "effects": {
+        "adaptive": {
+          "candidate_arm": "adaptive_safe20",
+          "causal_credit": true,
+          "improvements": {
+            "extraction_strength": 0.0,
+            "model_utility": 0.0005042595128130767,
+            "privleak": 0.0,
+            "retain_extraction_strength": -0.001136363636363602
+          },
+          "mechanism_activated": true,
+          "reference_arm": "fixed_gu20",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "composite": {
+          "candidate_arm": "adaptive_safe20",
+          "improvements": {
+            "extraction_strength": 0.034949011398337726,
+            "model_utility": -0.004630735814525777,
+            "privleak": 0.249999999949992,
+            "retain_extraction_strength": 0.01407365112247061
+          },
+          "reference_arm": "native10",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "epoch": {
+          "candidate_arm": "native20",
+          "improvements": {
+            "extraction_strength": 0.20929428950508006,
+            "model_utility": -0.00023553583688196156,
+            "privleak": 0.8749999998249649,
+            "retain_extraction_strength": 0.00032866921155472184
+          },
+          "reference_arm": "native10",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "fixed_gu": {
+          "candidate_arm": "fixed_gu20",
+          "causal_credit": true,
+          "improvements": {
+            "extraction_strength": 0.0,
+            "model_utility": -0.0005768210186093414,
+            "privleak": 0.0,
+            "retain_extraction_strength": 0.0019055944055943463
+          },
+          "mechanism_activated": true,
+          "reference_arm": "scope12_no_gu20",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "scope": {
+          "candidate_arm": "scope12_no_gu20",
+          "improvements": {
+            "extraction_strength": -0.17434527810674233,
+            "model_utility": -0.004322638471847551,
+            "privleak": -0.6249999998749729,
+            "retain_extraction_strength": 0.012975751141685143
+          },
+          "reference_arm": "native20",
+          "strict_pareto": false,
+          "tolerance_pass": false
+        }
+      },
+      "seed": 2,
+      "split": "forget01"
+    },
+    {
+      "arms": {
+        "adaptive_safe20": {
+          "command_identity": "0ad388a2cae4475e11d514cb027a3fab55f09ea21c468a1858f880e3d5638b56",
+          "mechanism": {
+            "activated": true,
+            "active_constraint_steps": 3,
+            "corrected_steps": 3,
+            "max_correction_ratio": 0.0397892345579257,
+            "max_retain_spent": 1.1760785127989948e-05,
+            "max_retained_history": 1,
+            "min_scale": 1.0,
+            "nonunit_scale_steps": 0,
+            "steps": 120,
+            "stop_requests": 0,
+            "zero_steps": 0
+          },
+          "metrics": {
+            "extraction_strength": 0.5421781203900901,
+            "model_utility": 0.5960122545452226,
+            "privleak": -98.27586205370055,
+            "retain_extraction_strength": 0.9792385329934311
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget05__seed0/checkpoint-120/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 120,
+            "peak_nvml_mib": 99298.0,
+            "wall_clock_seconds": 3722.631625019014
+          },
+          "result_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget05__seed0/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget05__seed0/checkpoint-120/evals/TOFU_SUMMARY.json"
+        },
+        "fixed_gu20": {
+          "command_identity": "bfeef07746313e091b9cdc9947ffdf15fb49f0c1e516379810beac4df88c683b",
+          "mechanism": {
+            "activated": true,
+            "active_constraint_steps": 3,
+            "corrected_steps": 3,
+            "max_correction_ratio": 0.0401439873394933,
+            "min_scale": 1.0,
+            "nonunit_scale_steps": 0,
+            "steps": 120,
+            "zero_steps": 0
+          },
+          "metrics": {
+            "extraction_strength": 0.5483135370567568,
+            "model_utility": 0.5957994354569173,
+            "privleak": -98.26421247308726,
+            "retain_extraction_strength": 0.9804846527273557
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget05__seed0/checkpoint-120/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 120,
+            "peak_nvml_mib": 99524.0,
+            "wall_clock_seconds": 2711.584655797109
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget05__seed0/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget05__seed0/checkpoint-120/evals/TOFU_SUMMARY.json"
+        },
+        "native10": {
+          "command_identity": "18a0ca5fe4cbef93194de3ee2efa71723101b3fab67576dfe2647ffe8b97ab1c",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.7264107141598352,
+            "model_utility": 0.6251997903412498,
+            "privleak": -99.73594282389935,
+            "retain_extraction_strength": 0.9801795782833459
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget05__seed0/checkpoint-60/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 60,
+            "peak_nvml_mib": 93006.0,
+            "wall_clock_seconds": 832.3012585449032
+          },
+          "result_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget05__seed0/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget05__seed0/checkpoint-60/evals/TOFU_SUMMARY.json"
+        },
+        "native20": {
+          "command_identity": "73b9c95506b58e2f65c38383b9919aaee28f5791fc798d776d7d15fa433a809e",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.4908661661476076,
+            "model_utility": 0.6233465724118121,
+            "privleak": -98.81950914898735,
+            "retain_extraction_strength": 0.9881922754266091
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget05__seed0/checkpoint-120/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 120,
+            "peak_nvml_mib": 93006.0,
+            "wall_clock_seconds": 1506.7613412905484
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget05__seed0/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget05__seed0/checkpoint-120/evals/TOFU_SUMMARY.json"
+        },
+        "scope12_no_gu20": {
+          "command_identity": "d5f67ac081875428c7cea99a7e1f4aa4b5546703f3cffa25ae54adb717bc27a6",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.5427360914045828,
+            "model_utility": 0.5963237665497076,
+            "privleak": -98.24091331186068,
+            "retain_extraction_strength": 0.9798482890909921
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget05__seed0/checkpoint-120/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 120,
+            "peak_nvml_mib": 69178.0,
+            "wall_clock_seconds": 1212.4923690492287
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget05__seed0/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget05__seed0/checkpoint-120/evals/TOFU_SUMMARY.json"
+        }
+      },
+      "effects": {
+        "adaptive": {
+          "candidate_arm": "adaptive_safe20",
+          "causal_credit": true,
+          "improvements": {
+            "extraction_strength": 0.0061354166666667265,
+            "model_utility": 0.00021281908830528273,
+            "privleak": -0.011649580613294575,
+            "retain_extraction_strength": -0.0012461197339246333
+          },
+          "mechanism_activated": true,
+          "reference_arm": "fixed_gu20",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "composite": {
+          "candidate_arm": "adaptive_safe20",
+          "improvements": {
+            "extraction_strength": 0.1842325937697451,
+            "model_utility": -0.029187535796027286,
+            "privleak": 1.4600807701988003,
+            "retain_extraction_strength": -0.0009410452899147881
+          },
+          "reference_arm": "native10",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "epoch": {
+          "candidate_arm": "native20",
+          "improvements": {
+            "extraction_strength": 0.23554454801222757,
+            "model_utility": -0.0018532179294377116,
+            "privleak": 0.9164336749119997,
+            "retain_extraction_strength": 0.008012697143263248
+          },
+          "reference_arm": "native10",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "fixed_gu": {
+          "candidate_arm": "fixed_gu20",
+          "causal_credit": true,
+          "improvements": {
+            "extraction_strength": -0.005577445652173996,
+            "model_utility": -0.0005243310927903755,
+            "privleak": -0.023299161226574938,
+            "retain_extraction_strength": 0.0006363636363636571
+          },
+          "mechanism_activated": true,
+          "reference_arm": "scope12_no_gu20",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "scope": {
+          "candidate_arm": "scope12_no_gu20",
+          "improvements": {
+            "extraction_strength": -0.0518699252569752,
+            "model_utility": -0.027022805862104482,
+            "privleak": 0.5785958371266702,
+            "retain_extraction_strength": -0.00834398633561706
+          },
+          "reference_arm": "native20",
+          "strict_pareto": false,
+          "tolerance_pass": false
+        }
+      },
+      "seed": 0,
+      "split": "forget05"
+    },
+    {
+      "arms": {
+        "adaptive_safe20": {
+          "command_identity": "9c1b8fe172d2970955406fb638dcf22001b9a42910710202e2a4ddd472cdbc9e",
+          "mechanism": {
+            "activated": true,
+            "active_constraint_steps": 2,
+            "corrected_steps": 2,
+            "max_correction_ratio": 0.07307424208085814,
+            "max_retain_spent": 0.0,
+            "max_retained_history": 2,
+            "min_scale": 0.5,
+            "nonunit_scale_steps": 1,
+            "steps": 120,
+            "stop_requests": 0,
+            "zero_steps": 0
+          },
+          "metrics": {
+            "extraction_strength": 0.57918925793969,
+            "model_utility": 0.6130747232561703,
+            "privleak": -98.05840321558584,
+            "retain_extraction_strength": 0.9909261789383944
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget05__seed1/checkpoint-120/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 120,
+            "peak_nvml_mib": 99802.0,
+            "wall_clock_seconds": 3743.5102466233075
+          },
+          "result_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget05__seed1/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget05__seed1/checkpoint-120/evals/TOFU_SUMMARY.json"
+        },
+        "fixed_gu20": {
+          "command_identity": "eb32711b64354f1d06a40b6fc07ea9a1c9a6093d2a23109ceec3c48b0c1687bd",
+          "mechanism": {
+            "activated": true,
+            "active_constraint_steps": 2,
+            "corrected_steps": 2,
+            "max_correction_ratio": 0.07544265395812369,
+            "min_scale": 1.0,
+            "nonunit_scale_steps": 0,
+            "steps": 120,
+            "zero_steps": 0
+          },
+          "metrics": {
+            "extraction_strength": 0.5799114801619122,
+            "model_utility": 0.6133741554468342,
+            "privleak": -98.05063682851029,
+            "retain_extraction_strength": 0.9890214170336327
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget05__seed1/checkpoint-120/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 120,
+            "peak_nvml_mib": 99578.0,
+            "wall_clock_seconds": 2716.297588906251
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget05__seed1/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget05__seed1/checkpoint-120/evals/TOFU_SUMMARY.json"
+        },
+        "native10": {
+          "command_identity": "8a6a97359dd38bfab28e956462da1e0406d98f2de75c5360c021cf83bcf69439",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.6947010624511896,
+            "model_utility": 0.6241626786499768,
+            "privleak": -99.14958059969717,
+            "retain_extraction_strength": 0.9763799031226634
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget05__seed1/checkpoint-60/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 60,
+            "peak_nvml_mib": 93198.0,
+            "wall_clock_seconds": 852.9069386781193
+          },
+          "result_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget05__seed1/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget05__seed1/checkpoint-60/evals/TOFU_SUMMARY.json"
+        },
+        "native20": {
+          "command_identity": "83ac23b4e33ec00cf69d58965b78465cf153907ca01a96b49a2869a75e43f9cd",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.4654608881832043,
+            "model_utility": 0.6289881377972523,
+            "privleak": -97.43709224954378,
+            "retain_extraction_strength": 0.9820057413841187
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget05__seed1/checkpoint-120/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 120,
+            "peak_nvml_mib": 93198.0,
+            "wall_clock_seconds": 1510.1526002725586
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget05__seed1/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget05__seed1/checkpoint-120/evals/TOFU_SUMMARY.json"
+        },
+        "scope12_no_gu20": {
+          "command_identity": "731d3cc8af0cc03601752b6aad2bd321376fc2672e233bb897005ea4cdec6acc",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.5804045357174678,
+            "model_utility": 0.6137733349591311,
+            "privleak": -98.03510405435927,
+            "retain_extraction_strength": 0.9902983593895223
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget05__seed1/checkpoint-120/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 120,
+            "peak_nvml_mib": 69140.0,
+            "wall_clock_seconds": 1206.575882458128
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget05__seed1/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget05__seed1/checkpoint-120/evals/TOFU_SUMMARY.json"
+        }
+      },
+      "effects": {
+        "adaptive": {
+          "candidate_arm": "adaptive_safe20",
+          "causal_credit": true,
+          "improvements": {
+            "extraction_strength": 0.0007222222222221797,
+            "model_utility": -0.00029943219066386195,
+            "privleak": -0.007766387075548664,
+            "retain_extraction_strength": 0.0019047619047617426
+          },
+          "mechanism_activated": true,
+          "reference_arm": "fixed_gu20",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "composite": {
+          "candidate_arm": "adaptive_safe20",
+          "improvements": {
+            "extraction_strength": 0.11551180451149956,
+            "model_utility": -0.01108795539380647,
+            "privleak": 1.091177384111333,
+            "retain_extraction_strength": 0.01454627581573098
+          },
+          "reference_arm": "native10",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "epoch": {
+          "candidate_arm": "native20",
+          "improvements": {
+            "extraction_strength": 0.22924017426798526,
+            "model_utility": 0.0048254591472755015,
+            "privleak": 1.712488350153393,
+            "retain_extraction_strength": 0.0056258382614552405
+          },
+          "reference_arm": "native10",
+          "strict_pareto": true,
+          "tolerance_pass": true
+        },
+        "fixed_gu": {
+          "candidate_arm": "fixed_gu20",
+          "causal_credit": true,
+          "improvements": {
+            "extraction_strength": 0.000493055555555566,
+            "model_utility": -0.00039917951229695436,
+            "privleak": -0.015532774151026274,
+            "retain_extraction_strength": -0.0012769423558895987
+          },
+          "mechanism_activated": true,
+          "reference_arm": "scope12_no_gu20",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "scope": {
+          "candidate_arm": "scope12_no_gu20",
+          "improvements": {
+            "extraction_strength": -0.11494364753426345,
+            "model_utility": -0.015214802838121155,
+            "privleak": -0.598011804815485,
+            "retain_extraction_strength": 0.008292618005403596
+          },
+          "reference_arm": "native20",
+          "strict_pareto": false,
+          "tolerance_pass": false
+        }
+      },
+      "seed": 1,
+      "split": "forget05"
+    },
+    {
+      "arms": {
+        "adaptive_safe20": {
+          "command_identity": "e99761a98f7852a39a25cfe5527f4d6e986c350daca9b1b59bcf082c40bf633c",
+          "mechanism": {
+            "activated": true,
+            "active_constraint_steps": 0,
+            "corrected_steps": 0,
+            "max_correction_ratio": 0.0,
+            "max_retain_spent": 0.0,
+            "max_retained_history": 0,
+            "min_scale": 0.5,
+            "nonunit_scale_steps": 1,
+            "steps": 120,
+            "stop_requests": 0,
+            "zero_steps": 0
+          },
+          "metrics": {
+            "extraction_strength": 0.5596562601748398,
+            "model_utility": 0.6132802261686391,
+            "privleak": -98.43118979521105,
+            "retain_extraction_strength": 0.9879700085165877
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget05__seed2/checkpoint-120/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 120,
+            "peak_nvml_mib": 99290.0,
+            "wall_clock_seconds": 3761.375819380861
+          },
+          "result_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget05__seed2/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget05__seed2/checkpoint-120/evals/TOFU_SUMMARY.json"
+        },
+        "fixed_gu20": {
+          "command_identity": "4518ba780fa3bd6986449143c044eb0f213d2cc36573abf6427aa0a8a1006009",
+          "mechanism": {
+            "activated": false,
+            "active_constraint_steps": 0,
+            "corrected_steps": 0,
+            "max_correction_ratio": 0.0,
+            "min_scale": 1.0,
+            "nonunit_scale_steps": 0,
+            "steps": 120,
+            "zero_steps": 0
+          },
+          "metrics": {
+            "extraction_strength": 0.5575729268415066,
+            "model_utility": 0.6125927536162251,
+            "privleak": -98.39235785983344,
+            "retain_extraction_strength": 0.9872562154131392
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget05__seed2/checkpoint-120/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 120,
+            "peak_nvml_mib": 99516.0,
+            "wall_clock_seconds": 2736.1636241683736
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget05__seed2/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget05__seed2/checkpoint-120/evals/TOFU_SUMMARY.json"
+        },
+        "native10": {
+          "command_identity": "594677f8fa5823dbb351960ebbf38bc2bdfe51c370a0d2c9dde092614afd7a82",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.6944937388811787,
+            "model_utility": 0.6167237789907458,
+            "privleak": -99.20394530922586,
+            "retain_extraction_strength": 0.9831198413377022
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget05__seed2/checkpoint-60/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 60,
+            "peak_nvml_mib": 93022.0,
+            "wall_clock_seconds": 834.672474978026
+          },
+          "result_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget05__seed2/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget05__seed2/checkpoint-60/evals/TOFU_SUMMARY.json"
+        },
+        "native20": {
+          "command_identity": "ba321d97254be296d30183e9ed6bc7c013d59f65562a10f64eade0a8cdae416f",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.5140812529246286,
+            "model_utility": 0.6231789781013829,
+            "privleak": -98.01568808667042,
+            "retain_extraction_strength": 0.9906108950211383
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget05__seed2/checkpoint-120/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 120,
+            "peak_nvml_mib": 93030.0,
+            "wall_clock_seconds": 1508.7608859799802
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget05__seed2/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget05__seed2/checkpoint-120/evals/TOFU_SUMMARY.json"
+        },
+        "scope12_no_gu20": {
+          "command_identity": "717d15a589b20b3c5a5e29f161d67917c32c82a8a7a6e53114439ead868fc2b5",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.5575729268415066,
+            "model_utility": 0.6125927536162251,
+            "privleak": -98.39235785983344,
+            "retain_extraction_strength": 0.9872562154131392
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget05__seed2/checkpoint-120/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 120,
+            "peak_nvml_mib": 69176.0,
+            "wall_clock_seconds": 1209.9428732832894
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget05__seed2/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget05__seed2/checkpoint-120/evals/TOFU_SUMMARY.json"
+        }
+      },
+      "effects": {
+        "adaptive": {
+          "candidate_arm": "adaptive_safe20",
+          "causal_credit": true,
+          "improvements": {
+            "extraction_strength": -0.002083333333333215,
+            "model_utility": 0.0006874725524139702,
+            "privleak": -0.03883193537761542,
+            "retain_extraction_strength": 0.0007137931034484346
+          },
+          "mechanism_activated": true,
+          "reference_arm": "fixed_gu20",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "composite": {
+          "candidate_arm": "adaptive_safe20",
+          "improvements": {
+            "extraction_strength": 0.1348374787063389,
+            "model_utility": -0.0034435528221067324,
+            "privleak": 0.7727555140148041,
+            "retain_extraction_strength": 0.004850167178885423
+          },
+          "reference_arm": "native10",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "epoch": {
+          "candidate_arm": "native20",
+          "improvements": {
+            "extraction_strength": 0.18041248595655013,
+            "model_utility": 0.006455199110637078,
+            "privleak": 1.1882572225554355,
+            "retain_extraction_strength": 0.007491053683436055
+          },
+          "reference_arm": "native10",
+          "strict_pareto": true,
+          "tolerance_pass": true
+        },
+        "fixed_gu": {
+          "candidate_arm": "fixed_gu20",
+          "causal_credit": false,
+          "improvements": {
+            "extraction_strength": 0.0,
+            "model_utility": 0.0,
+            "privleak": 0.0,
+            "retain_extraction_strength": 0.0
+          },
+          "mechanism_activated": false,
+          "reference_arm": "scope12_no_gu20",
+          "strict_pareto": true,
+          "tolerance_pass": true
+        },
+        "scope": {
+          "candidate_arm": "scope12_no_gu20",
+          "improvements": {
+            "extraction_strength": -0.043491673916878026,
+            "model_utility": -0.01058622448515778,
+            "privleak": -0.376669773163016,
+            "retain_extraction_strength": -0.003354679607999067
+          },
+          "reference_arm": "native20",
+          "strict_pareto": false,
+          "tolerance_pass": false
+        }
+      },
+      "seed": 2,
+      "split": "forget05"
+    },
+    {
+      "arms": {
+        "adaptive_safe20": {
+          "command_identity": "b6e17f5668c8e2742f61f32c7d729d19e72cdccef3bc0f22f218370c49e4e5de",
+          "mechanism": {
+            "activated": true,
+            "active_constraint_steps": 0,
+            "corrected_steps": 0,
+            "max_correction_ratio": 0.0,
+            "max_retain_spent": 0.0,
+            "max_retained_history": 0,
+            "min_scale": 0.0,
+            "nonunit_scale_steps": 3,
+            "steps": 240,
+            "stop_requests": 0,
+            "zero_steps": 1
+          },
+          "metrics": {
+            "extraction_strength": 0.4830812641799328,
+            "model_utility": 0.603091152339908,
+            "privleak": -98.04896245569802,
+            "retain_extraction_strength": 0.9913902978683812
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget10__seed0/checkpoint-240/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 240,
+            "peak_nvml_mib": 89282.0,
+            "wall_clock_seconds": 7348.767639657948
+          },
+          "result_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget10__seed0/checkpoint-240/evals/TOFU_SUMMARY.json"
+        },
+        "fixed_gu20": {
+          "command_identity": "823d4245ed2264c80709a5971d1be691967a47f3e98b58bc80e9951c84520cee",
+          "mechanism": {
+            "activated": false,
+            "active_constraint_steps": 0,
+            "corrected_steps": 0,
+            "max_correction_ratio": 0.0,
+            "min_scale": 1.0,
+            "nonunit_scale_steps": 0,
+            "steps": 240,
+            "zero_steps": 0
+          },
+          "metrics": {
+            "extraction_strength": 0.4853780736649409,
+            "model_utility": 0.6033689349548802,
+            "privleak": -98.07618623516083,
+            "retain_extraction_strength": 0.9913902978683812
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget10__seed0/checkpoint-240/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 240,
+            "peak_nvml_mib": 89506.0,
+            "wall_clock_seconds": 5402.354719384573
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget10__seed0/checkpoint-240/evals/TOFU_SUMMARY.json"
+        },
+        "native10": {
+          "command_identity": "f70929d963aad04b0cf71bd45b64443e2f3daf997726b995e17113ac93cbad31",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.6937628025286972,
+            "model_utility": 0.6185015166080688,
+            "privleak": -99.26899109088403,
+            "retain_extraction_strength": 0.9790376758728006
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget10__seed0/checkpoint-120/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 120,
+            "peak_nvml_mib": 83048.0,
+            "wall_clock_seconds": 1572.6181516828947
+          },
+          "result_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget10__seed0/checkpoint-120/evals/TOFU_SUMMARY.json"
+        },
+        "native20": {
+          "command_identity": "d9edbc469bc902f6be65a3fa633a9739f7d0156adf7cd96d55e50780c2716e79",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.44920882107423793,
+            "model_utility": 0.6149743004898176,
+            "privleak": -97.71017764460503,
+            "retain_extraction_strength": 0.9866397101577254
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget10__seed0/checkpoint-240/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 240,
+            "peak_nvml_mib": 83048.0,
+            "wall_clock_seconds": 2939.4408947089687
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget10__seed0/checkpoint-240/evals/TOFU_SUMMARY.json"
+        },
+        "scope12_no_gu20": {
+          "command_identity": "0c121a28656428829147c8ca08aabcfa78e102314c2321eac461808641116ddf",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.4853780736649409,
+            "model_utility": 0.6033689349548802,
+            "privleak": -98.07618623516083,
+            "retain_extraction_strength": 0.9913902978683812
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget10__seed0/checkpoint-240/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 240,
+            "peak_nvml_mib": 59088.0,
+            "wall_clock_seconds": 2351.2435971917585
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget10__seed0/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget10__seed0/checkpoint-240/evals/TOFU_SUMMARY.json"
+        }
+      },
+      "effects": {
+        "adaptive": {
+          "candidate_arm": "adaptive_safe20",
+          "causal_credit": true,
+          "improvements": {
+            "extraction_strength": 0.0022968094850081,
+            "model_utility": -0.000277782614972244,
+            "privleak": 0.0272237794628154,
+            "retain_extraction_strength": 0.0
+          },
+          "mechanism_activated": true,
+          "reference_arm": "fixed_gu20",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "composite": {
+          "candidate_arm": "adaptive_safe20",
+          "improvements": {
+            "extraction_strength": 0.21068153834876435,
+            "model_utility": -0.015410364268160892,
+            "privleak": 1.2200286351860115,
+            "retain_extraction_strength": 0.012352621995580626
+          },
+          "reference_arm": "native10",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "epoch": {
+          "candidate_arm": "native20",
+          "improvements": {
+            "extraction_strength": 0.24455398145445922,
+            "model_utility": -0.003527216118251242,
+            "privleak": 1.5588134462790038,
+            "retain_extraction_strength": 0.007602034284924897
+          },
+          "reference_arm": "native10",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "fixed_gu": {
+          "candidate_arm": "fixed_gu20",
+          "causal_credit": false,
+          "improvements": {
+            "extraction_strength": 0.0,
+            "model_utility": 0.0,
+            "privleak": 0.0,
+            "retain_extraction_strength": 0.0
+          },
+          "mechanism_activated": false,
+          "reference_arm": "scope12_no_gu20",
+          "strict_pareto": true,
+          "tolerance_pass": true
+        },
+        "scope": {
+          "candidate_arm": "scope12_no_gu20",
+          "improvements": {
+            "extraction_strength": -0.03616925259070297,
+            "model_utility": -0.011605365534937406,
+            "privleak": -0.3660085905558077,
+            "retain_extraction_strength": 0.004750587710655729
+          },
+          "reference_arm": "native20",
+          "strict_pareto": false,
+          "tolerance_pass": false
+        }
+      },
+      "seed": 0,
+      "split": "forget10"
+    },
+    {
+      "arms": {
+        "adaptive_safe20": {
+          "command_identity": "378817a18948af42e0e2f2a2bd3129367707e2d6292f4f409e6d6eef7ac6f7a1",
+          "mechanism": {
+            "activated": true,
+            "active_constraint_steps": 0,
+            "corrected_steps": 0,
+            "max_correction_ratio": 0.0,
+            "max_retain_spent": 0.0,
+            "max_retained_history": 0,
+            "min_scale": 0.0,
+            "nonunit_scale_steps": 5,
+            "steps": 240,
+            "stop_requests": 0,
+            "zero_steps": 1
+          },
+          "metrics": {
+            "extraction_strength": 0.5005926249524976,
+            "model_utility": 0.6013225605746171,
+            "privleak": -98.14273325162551,
+            "retain_extraction_strength": 0.9892852071335528
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget10__seed1/checkpoint-240/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 240,
+            "peak_nvml_mib": 89252.0,
+            "wall_clock_seconds": 7396.139877865091
+          },
+          "result_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget10__seed1/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget10__seed1/checkpoint-240/evals/TOFU_SUMMARY.json"
+        },
+        "fixed_gu20": {
+          "command_identity": "5edb2e3c758cc832cc53c10daf7c08ca4d1fbe6f8a122e58d4867bd1748bde80",
+          "mechanism": {
+            "activated": false,
+            "active_constraint_steps": 0,
+            "corrected_steps": 0,
+            "max_correction_ratio": 0.0,
+            "min_scale": 1.0,
+            "nonunit_scale_steps": 0,
+            "steps": 240,
+            "zero_steps": 0
+          },
+          "metrics": {
+            "extraction_strength": 0.49457792644692666,
+            "model_utility": 0.602444389374209,
+            "privleak": -98.12760892970174,
+            "retain_extraction_strength": 0.9900238434971891
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget10__seed1/checkpoint-240/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 240,
+            "peak_nvml_mib": 89478.0,
+            "wall_clock_seconds": 5374.951599282213
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget10__seed1/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget10__seed1/checkpoint-240/evals/TOFU_SUMMARY.json"
+        },
+        "native10": {
+          "command_identity": "76307aa83213120db9ebb07487490d1975810510d9f1642d565ab427a1480c7f",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.6850000762327022,
+            "model_utility": 0.6282972555059828,
+            "privleak": -99.46157412338033,
+            "retain_extraction_strength": 0.9807131074435986
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget10__seed1/checkpoint-120/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 120,
+            "peak_nvml_mib": 83010.0,
+            "wall_clock_seconds": 1559.1618089200929
+          },
+          "result_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget10__seed1/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget10__seed1/checkpoint-120/evals/TOFU_SUMMARY.json"
+        },
+        "native20": {
+          "command_identity": "659e1d990a14e8d4aad91d669e7da0347635e946c3de0c9baee0de5a5074ffb3",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.4595504568445667,
+            "model_utility": 0.6338537111569398,
+            "privleak": -98.29800962337646,
+            "retain_extraction_strength": 0.986097664921692
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget10__seed1/checkpoint-240/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 240,
+            "peak_nvml_mib": 83010.0,
+            "wall_clock_seconds": 2932.83203429915
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget10__seed1/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget10__seed1/checkpoint-240/evals/TOFU_SUMMARY.json"
+        },
+        "scope12_no_gu20": {
+          "command_identity": "d58c21693680ce51a6e1ce8459a84b9ea40f86b3923724c09608c6ca01695f96",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.49457792644692666,
+            "model_utility": 0.602444389374209,
+            "privleak": -98.12760892970174,
+            "retain_extraction_strength": 0.9900238434971891
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget10__seed1/checkpoint-240/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 240,
+            "peak_nvml_mib": 59046.0,
+            "wall_clock_seconds": 2337.672109056264
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget10__seed1/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget10__seed1/checkpoint-240/evals/TOFU_SUMMARY.json"
+        }
+      },
+      "effects": {
+        "adaptive": {
+          "candidate_arm": "adaptive_safe20",
+          "causal_credit": true,
+          "improvements": {
+            "extraction_strength": -0.0060146985055709035,
+            "model_utility": -0.001121828799591884,
+            "privleak": -0.015124321923778439,
+            "retain_extraction_strength": -0.000738636363636247
+          },
+          "mechanism_activated": true,
+          "reference_arm": "fixed_gu20",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "composite": {
+          "candidate_arm": "adaptive_safe20",
+          "improvements": {
+            "extraction_strength": 0.18440745128020464,
+            "model_utility": -0.026974694931365728,
+            "privleak": 1.3188408717548157,
+            "retain_extraction_strength": 0.008572099689954205
+          },
+          "reference_arm": "native10",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "epoch": {
+          "candidate_arm": "native20",
+          "improvements": {
+            "extraction_strength": 0.2254496193881355,
+            "model_utility": 0.005556455650956971,
+            "privleak": 1.1635645000038721,
+            "retain_extraction_strength": 0.00538455747809341
+          },
+          "reference_arm": "native10",
+          "strict_pareto": true,
+          "tolerance_pass": true
+        },
+        "fixed_gu": {
+          "candidate_arm": "fixed_gu20",
+          "causal_credit": false,
+          "improvements": {
+            "extraction_strength": 0.0,
+            "model_utility": 0.0,
+            "privleak": 0.0,
+            "retain_extraction_strength": 0.0
+          },
+          "mechanism_activated": false,
+          "reference_arm": "scope12_no_gu20",
+          "strict_pareto": true,
+          "tolerance_pass": true
+        },
+        "scope": {
+          "candidate_arm": "scope12_no_gu20",
+          "improvements": {
+            "extraction_strength": -0.03502746960235997,
+            "model_utility": -0.031409321782730815,
+            "privleak": 0.170400693674722,
+            "retain_extraction_strength": 0.003926178575497041
+          },
+          "reference_arm": "native20",
+          "strict_pareto": false,
+          "tolerance_pass": false
+        }
+      },
+      "seed": 1,
+      "split": "forget10"
+    },
+    {
+      "arms": {
+        "adaptive_safe20": {
+          "command_identity": "6f25095e8bb3089f07794928fd9363f81e8de3827b85d5d104bf3673bbb1215b",
+          "mechanism": {
+            "activated": true,
+            "active_constraint_steps": 0,
+            "corrected_steps": 0,
+            "max_correction_ratio": 0.0,
+            "max_retain_spent": 0.0,
+            "max_retained_history": 0,
+            "min_scale": 0.0,
+            "nonunit_scale_steps": 1,
+            "steps": 240,
+            "stop_requests": 0,
+            "zero_steps": 1
+          },
+          "metrics": {
+            "extraction_strength": 0.4930242337844182,
+            "model_utility": 0.5946660192177248,
+            "privleak": -98.12861721783,
+            "retain_extraction_strength": 0.9908499090239724
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget10__seed2/checkpoint-240/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 240,
+            "peak_nvml_mib": 89256.0,
+            "wall_clock_seconds": 7339.070565097034
+          },
+          "result_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget10__seed2/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__adaptive_safe__tofu_forget10__seed2/checkpoint-240/evals/TOFU_SUMMARY.json"
+        },
+        "fixed_gu20": {
+          "command_identity": "99164370df7cedbaf435de421fb29b4e6cac5be36cfb641466598bcc50cbd940",
+          "mechanism": {
+            "activated": false,
+            "active_constraint_steps": 0,
+            "corrected_steps": 0,
+            "max_correction_ratio": 0.0,
+            "min_scale": 1.0,
+            "nonunit_scale_steps": 0,
+            "steps": 240,
+            "zero_steps": 0
+          },
+          "metrics": {
+            "extraction_strength": 0.4952794529346376,
+            "model_utility": 0.5948201808897844,
+            "privleak": -98.14273325162551,
+            "retain_extraction_strength": 0.9894144251530047
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget10__seed2/checkpoint-240/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 240,
+            "peak_nvml_mib": 89480.0,
+            "wall_clock_seconds": 5360.554852559231
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget10__seed2/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__fixed_gu20__tofu_forget10__seed2/checkpoint-240/evals/TOFU_SUMMARY.json"
+        },
+        "native10": {
+          "command_identity": "d997e10368a7f92fc25e97f357f8f0417ec19ac78488c0d8184cdc571dc256ce",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.6765337079505165,
+            "model_utility": 0.6387097390277218,
+            "privleak": -99.48577303845842,
+            "retain_extraction_strength": 0.9755659864748801
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget10__seed2/checkpoint-120/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 120,
+            "peak_nvml_mib": 82896.0,
+            "wall_clock_seconds": 1575.3766091731377
+          },
+          "result_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget10__seed2/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_safe_baseline_all_tofu_20260817_gpu1/jobs/SimNPO__native_baseline__tofu_forget10__seed2/checkpoint-120/evals/TOFU_SUMMARY.json"
+        },
+        "native20": {
+          "command_identity": "7e2b39e1a8415bc42e496808c76ca61d1bff2c06a1378a6b0fcbd0223ec7cd0a",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.4568937249466114,
+            "model_utility": 0.6347483714789075,
+            "privleak": -98.12458406531697,
+            "retain_extraction_strength": 0.9846037945320338
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget10__seed2/checkpoint-240/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 240,
+            "peak_nvml_mib": 82900.0,
+            "wall_clock_seconds": 2943.7505901502445
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget10__seed2/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__native20__tofu_forget10__seed2/checkpoint-240/evals/TOFU_SUMMARY.json"
+        },
+        "scope12_no_gu20": {
+          "command_identity": "6f733645e68a76f3711e06141dfc1318f405298beeb79386380a328929fa4c4b",
+          "mechanism": null,
+          "metrics": {
+            "extraction_strength": 0.4952794529346376,
+            "model_utility": 0.5948201808897844,
+            "privleak": -98.14273325162551,
+            "retain_extraction_strength": 0.9894144251530047
+          },
+          "provenance": {
+            "dataset": {
+              "artifact": "locuslab/TOFU",
+              "revision": "324592d84ae4f482ac7249b9285c2ecdb53e3a68"
+            },
+            "gibberish_classifier": {
+              "artifact": "madhurjindal/autonlp-Gibberish-Detector-492513457",
+              "revision": "76672dd7d3575f68ab980705bcec975cc62de71c"
+            },
+            "model": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            },
+            "tokenizer": {
+              "artifact": "open-unlearning/tofu_Llama-3.1-8B-Instruct_full",
+              "revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e"
+            }
+          },
+          "raw_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget10__seed2/checkpoint-240/evals/TOFU_EVAL.json",
+          "resources": {
+            "optimizer_update_count": 240,
+            "peak_nvml_mib": 59046.0,
+            "wall_clock_seconds": 2375.0954624209553
+          },
+          "result_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget10__seed2/ABLATION_JOB_RESULT.json",
+          "summary_path": "/root/adaptive_gu_causal_matrix_20260819_gpu01/jobs/SimNPO__scope12_no_gu20__tofu_forget10__seed2/checkpoint-240/evals/TOFU_SUMMARY.json"
+        }
+      },
+      "effects": {
+        "adaptive": {
+          "candidate_arm": "adaptive_safe20",
+          "causal_credit": true,
+          "improvements": {
+            "extraction_strength": 0.002255219150219423,
+            "model_utility": -0.00015416167205961617,
+            "privleak": 0.014116033795517069,
+            "retain_extraction_strength": 0.001435483870967702
+          },
+          "mechanism_activated": true,
+          "reference_arm": "fixed_gu20",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "composite": {
+          "candidate_arm": "adaptive_safe20",
+          "improvements": {
+            "extraction_strength": 0.1835094741660983,
+            "model_utility": -0.044043719809996995,
+            "privleak": 1.3571558206284209,
+            "retain_extraction_strength": 0.015283922549092277
+          },
+          "reference_arm": "native10",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "epoch": {
+          "candidate_arm": "native20",
+          "improvements": {
+            "extraction_strength": 0.21963998300390508,
+            "model_utility": -0.003961367548814265,
+            "privleak": 1.3611889731414522,
+            "retain_extraction_strength": 0.009037808057153707
+          },
+          "reference_arm": "native10",
+          "strict_pareto": false,
+          "tolerance_pass": true
+        },
+        "fixed_gu": {
+          "candidate_arm": "fixed_gu20",
+          "causal_credit": false,
+          "improvements": {
+            "extraction_strength": 0.0,
+            "model_utility": 0.0,
+            "privleak": 0.0,
+            "retain_extraction_strength": 0.0
+          },
+          "mechanism_activated": false,
+          "reference_arm": "scope12_no_gu20",
+          "strict_pareto": true,
+          "tolerance_pass": true
+        },
+        "scope": {
+          "candidate_arm": "scope12_no_gu20",
+          "improvements": {
+            "extraction_strength": -0.0383857279880262,
+            "model_utility": -0.039928190589123114,
+            "privleak": -0.018149186308548337,
+            "retain_extraction_strength": 0.004810630620970868
+          },
+          "reference_arm": "native20",
+          "strict_pareto": false,
+          "tolerance_pass": false
+        }
+      },
+      "seed": 2,
+      "split": "forget10"
+    }
+  ],
+  "schema_version": 1
+}
