@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "commitment_ref": "C-681fe9c2491a86c03c63e46d159e6cf1",
+  "per_rank_gpu_total_mib": 143771,
+  "pass_threshold_mib": 129393.9,
+  "resident_base_mib": 107215.5546875,
+  "forward_backward_phase": {
+    "checkpointed_activation_allowance_mib": 16384.0,
+    "reference_logits_bfloat16_length512_mib": 125.25,
+    "selected_KL_gradient_float32_mib": 4500.109375,
+    "DDP_communication_allowance_mib": 50.0,
+    "estimated_peak_mib": 128274.9140625,
+    "headroom_to_threshold_mib": 1118.9859375
+  },
+  "projection_phase": {
+    "largest_rank8_basis_bfloat16_mib": 8016.0,
+    "largest_two_components_float32_mib": 4008.0,
+    "largest_metric_output_temp_three_float32_mib": 6012.0,
+    "DDP_communication_allowance_mib": 50.0,
+    "estimated_peak_mib": 125301.5546875,
+    "headroom_to_threshold_mib": 4092.3453125
+  },
+  "host_per_rank": {
+    "raw_rank8_FIFO_float16_mib": 18000.4375,
+    "stored_rank8_basis_float16_mib": 18000.4375,
+    "two_component_buffers_float32_mib": 9000.21875,
+    "total_mib": 45001.09375
+  },
+  "aggregate_host_mib": 90002.1875,
+  "host_budget_mib": 524288,
+  "estimated_pass": true,
+  "warning": "Forward estimate has only 1118.99 MiB headroom; measured smoke is decisive."
+}

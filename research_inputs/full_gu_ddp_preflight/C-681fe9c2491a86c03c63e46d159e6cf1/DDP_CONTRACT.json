@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "commitment_ref": "C-681fe9c2491a86c03c63e46d159e6cf1",
+  "physical_gpus": [
+    {"rank": 0, "index": 0, "uuid": "GPU-a8adbe48-1936-af09-4bf8-28a955b87f39", "name": "NVIDIA H200"},
+    {"rank": 1, "index": 1, "uuid": "GPU-f297c801-cb98-80b8-74cc-e7e27b18c809", "name": "NVIDIA H200"}
+  ],
+  "distributed": {
+    "type": "native_DDP",
+    "backend": "nccl",
+    "world_size": 2,
+    "find_unused_parameters": false,
+    "gradient_as_bucket_view": true,
+    "zero": false,
+    "fsdp": false,
+    "offload_optimizer": false,
+    "offload_parameters": false,
+    "no_sync_on_nonfinal_microsteps": true
+  },
+  "effective_batch": {
+    "per_rank_batch": 1,
+    "per_rank_accumulation": 16,
+    "world_size": 2,
+    "global_effective_batch": 32,
+    "seed": 0,
+    "data_seed": 0,
+    "sampler": "DistributedSampler_deterministic"
+  },
+  "resident_per_rank": {
+    "current_model": "replicated_bfloat16_GPU",
+    "reference_model": "replicated_bfloat16_GPU_eval_no_grad",
+    "current_gradients": "DDP_bucket_views_parameter_dtype_GPU",
+    "optimizer_moments": "replicated_two_float32_GPU",
+    "raw_KL_FIFO": "pinned_CPU_float16",
+    "basis": "pinned_CPU_float16",
+    "forget_component": "pinned_CPU_float32",
+    "KL_component": "pinned_CPU_float32"
+  },
+  "collectives": {
+    "ordinary_gradients": "DDP_mean_once_at_final_accumulation_microstep",
+    "selected_forget_component": "explicit_all_reduce_SUM_then_divide_world_size_once",
+    "selected_KL_component": "explicit_all_reduce_SUM_then_divide_world_size_once",
+    "parameter_order": "sorted_fully_qualified_name",
+    "basis_construction": "identical_global_mean_components_on_each_rank",
+    "cross_rank_required_equal": ["component_hash", "basis_hash", "projected_gradient_hash"]
+  },
+  "basis_warmup": {
+    "empty_valid_steps": [1, 2],
+    "first_refresh_before_step": 3,
+    "subsequent_refresh_before_steps": "5,7,...,119",
+    "expected_post_divergence_refresh_count": 59
+  },
+  "algorithm_contract": "sha256:15f80e4b4dfd8b74deceda71977a09e6046d6d2e4dcc13d9734592a4d269decc",
+  "endpoint_allowed": false,
+  "forbidden_payloads": ["model", "checkpoint", "optimizer", "scheduler", "trainer_state", "rng"]
+}

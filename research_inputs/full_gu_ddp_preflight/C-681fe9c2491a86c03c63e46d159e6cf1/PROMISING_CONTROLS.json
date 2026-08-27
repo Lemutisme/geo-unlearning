@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "purpose": "Operational controls; none is a paper-row reproduction claim.",
+  "tofu_forget10": {
+    "native_best": {
+      "method": "NPO",
+      "extraction_strength": 0.04783828174474256,
+      "retain_extraction_strength": 0.8106501980302074,
+      "model_utility": 0.5918169031271417,
+      "privacy": 8.147976364411786,
+      "endpoint_sha256": "5992921422403af2edc586139754f3ff7bea11c360748dd63d5cfb25ec61bbc3"
+    },
+    "current_GU_best": {
+      "method": "UNDIAL",
+      "scope": "layers20-31_down_proj_rank8_first_order_10epochs",
+      "extraction_strength": 0.04293165845396956,
+      "retain_extraction_strength": 0.5755359826138542,
+      "model_utility": 0.5906582419368478,
+      "privacy": -58.27199579612059,
+      "endpoint_sha256": "f3c05f14d70073e0d661e8b020c972b7054d32c7643071c10840371d07ab7929"
+    },
+    "paper_CEU_GU_target": {
+      "extraction_strength": 0.0325,
+      "retain_extraction_strength": 0.6987,
+      "model_utility": 0.6773,
+      "privacy": 0.6856,
+      "precision": "four_decimal_table"
+    },
+    "minimal_sign_aware_CEU": {
+      "extraction_strength": 0.03250892997513522,
+      "retain_extraction_strength": 0.10190451280896816,
+      "model_utility": 0.26516880494388767,
+      "privacy": 61.133517504102365,
+      "endpoint_sha256": "f4291579634fbca66833c96b754acc18cec63734631bd46db3b7e5226f5f089a",
+      "status": "offline_revalidated_after_original_invalid_scientific"
+    }
+  }
+}

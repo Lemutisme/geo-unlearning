@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "commitment_ref": "C-681fe9c2491a86c03c63e46d159e6cf1",
+  "attempt_id": "ddp_h200_smoke_1",
+  "model_path": "/dev/shm/gu-matrix-tofu/hub/models--open-unlearning--tofu_Llama-3.1-8B-Instruct_full/snapshots/1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+  "model_revision": "1a5c5b1a557f8c99bdadecd5168ebd03f640b00e",
+  "sequence_length": 512,
+  "vocab_size": 128256,
+  "selected_numel": 1179676672,
+  "largest_selected_numel": 525336576,
+  "rank": 8,
+  "world_size": 2,
+  "physical_gpus": [0, 1],
+  "timeout_seconds": 900,
+  "pass_threshold_mib": 129393.9,
+  "command": "CUDA_VISIBLE_DEVICES=0,1 torchrun --standalone --nproc_per_node=2 research_inputs/full_gu_ddp_preflight/C-681fe9c2491a86c03c63e46d159e6cf1/ddp_memory_smoke.py --result research_inputs/full_gu_ddp_preflight/C-681fe9c2491a86c03c63e46d159e6cf1/SMOKE_RESULT.json",
+  "stopping_rule": "One attempt. Any OOM, timeout, rank mismatch, threshold breach, wrong GPU, or forbidden payload is terminal placement failure."
+}
